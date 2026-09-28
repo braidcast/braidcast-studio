@@ -1,50 +1,73 @@
-// Shared virtualized-feed engine for the Multichat and Events docks. Both render a
-// ring-capped, bottom-sticky, absolutely-positioned virtual list measured row by
-// row; this extracts the identical machinery (rAF-batched enqueue, ring trim,
-// per-row measurement, visible-range windowing, auto-stick-to-bottom, scroll
-// anchoring) so the two docks share one implementation.
+// Shared virtualized, paged feed engine for the Multichat and Events docks. Both render a
+// bottom-sticky, absolutely-positioned virtual list measured row by row over a window of
+// the host's history: the dock opens on the newest few screens, older pages load on their
+// own as the reader scrolls up (no "show earlier" control), and the window is trimmed back
+// while the reader sits at the bottom. The machinery -- rAF-batched appends, the paged
+// window, per-row measurement, visible-range windowing, auto-stick-to-bottom and scroll
+// anchoring -- lives here once.
 //
-// The docks diverge in a few ways, all parameterized here rather than picked:
-//   - row-height ESTIMATE (chat 30px, events 38px)      -> config.estimate
-//   - ring cap MAX (chat 1000, events 500)              -> config.max
-//   - each shows a derived subset of its ring           -> config.getDisplay
-//   - item identity across a whole-feed replace         -> config.key
-// Both whole-feed-replace through setFeed (events on list/backfill/clear, chat once
-// when it hydrates) and append through enqueue.
+// The docks diverge only in configuration: row-height estimate, order (config.compare,
+// which must equal the host's page order), item identity (config.key), window sizes, and
+// the fetch, which closes over the dock's current destination filter -- filtering happens
+// on the host, so every row held matches the filter and a filter switch is a load().
 //
-// A consumer constructs one instance in its <script> (so the internal effects bind
-// to the component), renders `visible` over a `layout.total`-high sizer, and wires
-// the two actions (`scroll` on the scroll container, `measureRow` per row). The
-// display set is whatever getDisplay returns (the full ring by default, or a
-// filtered/sorted subset), so height keys stay stable across filtering.
+// A consumer constructs one instance in its <script> (so the internal effects bind to the
+// component), renders `visible` over a `layout.total`-high sizer, and wires the two
+// actions (`scroll` on the scroll container, `measureRow` per row). `display` leads with
+// a `top` row of fixed height, which reads "loading", nothing, or "start of history".
 //
 // Scroll anchoring: rows sit at `style:top` over a sizer, which suppresses CSS scroll
 // anchoring, so this does it by hand. While the reader is scrolled up, every layout
-// change (a trim, a row measured, a row inserted above, a whole-feed replace, a display
-// change) puts the row under the reader's eye back at the same viewport offset.
+// change (a page prepended, a row measured, a row inserted above, a window replaced) puts
+// the row under the reader's eye back at the same viewport offset.
 
 import { untrack } from "svelte";
+import type { FeedPage } from "$lib/api/bridge";
+import { RequestGuard } from "$lib/utils/requestGuard";
 
-export interface FeedRow<T> {
-  clientKey: number;
-  item: T;
-}
+// A failed load is asked again after this long, doubling per failure up to the cap.
+const LOAD_RETRY_MS = 1000;
+const LOAD_RETRY_MAX_MS = 30_000;
 
-interface FeedConfig<T> {
-  /** Hard cap on retained rows; the oldest are trimmed (heights pruned in lockstep). */
-  max: number;
-  /** Px height estimate for an unmeasured row. */
+/** What the top row says: a page is loading, older rows are there to load, the window
+ * reaches the oldest row the host holds, or the newest page failed and is being asked
+ * for again. */
+export type TopState = "loading" | "idle" | "start" | "retrying";
+
+/** The top row's key. Item keys count up from 1, so no item can take it. */
+export const TOP_KEY = -1;
+
+export type DisplayRow<T> = { kind: "item"; clientKey: number; item: T } | { kind: "top"; clientKey: -1; state: TopState };
+
+type ItemRow<T> = Extract<DisplayRow<T>, { kind: "item" }>;
+
+export interface FeedConfig<T> {
+  /** Px height estimate for an unmeasured item row. */
   estimate: number;
   /** Rows rendered beyond the viewport on each side (default 6). */
   overscan?: number;
   /** Within this many px of the bottom counts as "stuck to latest" (default 24). */
   stickPx?: number;
-  /** The rows to display — the full ring by default, or a filtered subset. */
-  getDisplay?: () => FeedRow<T>[];
-  /** Stable identity for an item. With it, setFeed keeps a surviving item's clientKey,
-   * and with the key its measured height and its place as the reader's scroll anchor;
-   * without it a whole-feed replace starts every row fresh. */
-  key?: (item: T) => string;
+  /** The top row's fixed CSS height. */
+  topHeight: number;
+  /** Stable identity; a row keeps its clientKey (its measured height and its hold on the
+   * reader's scroll position) for as long as an item with its key is in the window. */
+  key(item: T): string;
+  /** The host's page order. */
+  compare(a: T, b: T): number;
+  /** One page, oldest-first: the newest without `before`, else the rows just older. */
+  fetch(q: { before?: T; limit: number }): Promise<FeedPage<T>>;
+  /** Rows a load asks for and a trim keeps (raised to three screens when that is more). */
+  base: number;
+  /** Rows an older page asks for. */
+  page: number;
+  /** Rows past which a window stuck to the bottom is trimmed back to base. */
+  highWater: number;
+  /** Rows past which a window the reader has scrolled up in stops taking live rows. */
+  hardMax: number;
+  /** An older page loads once the viewport top is within this many screens of the window's
+   * top (default 1.5). */
+  prefetchScreens?: number;
 }
 
 interface Layout {
@@ -59,23 +82,42 @@ interface Layout {
 // layout the user actually saw.
 interface Anchor<T> {
   at: number;
-  rows: FeedRow<T>[];
+  rows: DisplayRow<T>[];
   layout: Layout;
   marks: { key: number; offset: number }[];
 }
 
 export class FeedVirtualizer<T> {
-  // The retained ring (append order, oldest -> newest). Raw, not deep: rows are only
-  // ever replaced wholesale (flush/setFeed assign a fresh array), never mutated, so a
-  // per-row proxy would buy nothing but cost on every burst. The component reads this
-  // for its empty-state and derives any filtered display set from it.
-  rows = $state.raw<FeedRow<T>[]>([]);
+  // The window, sorted by config.compare. Raw, not deep: rows are only ever replaced
+  // wholesale, never mutated, so a per-row proxy would buy nothing but cost on every
+  // burst. The component reads this for its empty state.
+  rows = $state.raw<ItemRow<T>[]>([]);
   // Bumped on every measured-height change so layout/range recompute.
   measureVersion = $state(0);
   viewTop = $state(0);
   viewH = $state(0);
-  // Whether the view is pinned to the newest row (drives the jump-to-latest chip).
+  // Whether the view is pinned to the newest row (drives the jump chip).
   autoStick = $state(true);
+  // Older rows than the window holds exist on the host.
+  more = $state(false);
+  // A load or an older page is in flight.
+  fetching = $state(false);
+  // An older page is in flight: what the top row's spinner shows.
+  private fetchingOlder = $state(false);
+  // Scrolled up past hardMax rows: live rows no longer join the window, only `unseen`.
+  detached = $state(false);
+  // Rows that arrived below the viewport while the reader was scrolled up.
+  unseen = $state(0);
+  // The newest page failed to load and is being asked for again.
+  private retrying = $state(false);
+  top = $derived<TopState>(
+    this.fetchingOlder ? "loading" : this.retrying ? "retrying" : this.more ? "idle" : "start",
+  );
+
+  display = $derived.by<DisplayRow<T>[]>(() => {
+    const top: DisplayRow<T> = { kind: "top", clientKey: TOP_KEY, state: this.top };
+    return [top, ...this.rows];
+  });
 
   private readonly config: FeedConfig<T>;
   private heights = new Map<number, number>();
@@ -86,6 +128,28 @@ export class FeedVirtualizer<T> {
   private pending: T[] = [];
   private rafId = 0;
   private anchor: Anchor<T> | null = null;
+  // key -> clientKey over `rows`, rebuilt whenever rows are replaced.
+  private keys = new Map<string, number>();
+  private guard = new RequestGuard();
+  private inflight: "load" | "older" | null = null;
+  // The newest clear epoch seen; a page from an older one is discarded.
+  private epoch = 0;
+  // Old rows that arrived while an older page was in flight, settled when it lands.
+  private heldOld: T[] = [];
+  // Rows that arrived while a load was in flight, merged into the page it returns.
+  private loadBuf: T[] = [];
+  // An older page failed: wait for the reader to scroll before trying again, rather than
+  // retrying from every effect run.
+  private retryBlocked = false;
+  // A load failed: the timer that asks again, and how long the next one waits.
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryMs = LOAD_RETRY_MS;
+  // The window still holds a previous filter's rows: load() was called and no page has
+  // replaced them yet.
+  private staleFilter = false;
+  // A detached window's reload is in flight: the reader asked for the newest row, and lands
+  // on it once the page does. Until then the window stays detached and unstuck.
+  private restickOnLoad = false;
 
   constructor(config: FeedConfig<T>) {
     this.config = config;
@@ -96,10 +160,9 @@ export class FeedVirtualizer<T> {
     // shrink above. Done after the DOM update instead, the shorter sizer would already
     // have clamped a scrollTop near the bottom, losing the position to compensate from.
     //
-    // A pre effect runs synchronously, inside this constructor, and the consumer declares
-    // the set getDisplay reads only after constructing the feed (it derives from
-    // feed.rows). So the scroll container is checked before anything reads the display
-    // set; the container is attached after the consumer's script has finished.
+    // A pre effect runs synchronously, inside this constructor, before the consumer's
+    // script has finished. So the scroll container is checked before anything reads the
+    // display set; the container is attached after the consumer's script has finished.
     $effect.pre(() => {
       const el = this.scrollEl;
       if (!el || this.autoStick) {
@@ -119,9 +182,10 @@ export class FeedVirtualizer<T> {
 
     // After the DOM update: pin to the newest row while stuck, else land the anchor
     // (a growth above can only be applied once the taller sizer exists). Depends on the
-    // display set (re-pin on a filter switch), layout.total (re-pin after a freshly
-    // measured row grows the sizer), autoStick (jumpToLatest/restick) and the container
-    // (the first pin once it attaches).
+    // display set (a page or a new window), layout.total (re-pin after a freshly
+    // measured row grows the sizer), autoStick (jumpToLatest/load) and the container
+    // (the first pin once it attaches). Either way the view has settled, so this is
+    // where the next older page is asked for.
     $effect(() => {
       const el = this.scrollEl;
       if (!el) {
@@ -134,6 +198,7 @@ export class FeedVirtualizer<T> {
         el.scrollTop = el.scrollHeight;
         // Keep the window state coherent without waiting on the async scroll event.
         this.viewTop = el.scrollTop;
+        untrack(() => this.maybeFetchOlder());
         return;
       }
       untrack(() => {
@@ -144,20 +209,27 @@ export class FeedVirtualizer<T> {
         }
         this.viewTop = el.scrollTop;
         this.anchor = this.mark(el.scrollTop, rows, layout);
+        this.maybeFetchOlder();
       });
     });
   }
 
-  private get display(): FeedRow<T>[] {
-    return this.config.getDisplay ? this.config.getDisplay() : this.rows;
+  private heightOf(row: DisplayRow<T>): number {
+    return this.heights.get(row.clientKey) ?? (row.kind === "top" ? this.config.topHeight : this.config.estimate);
   }
 
-  private heightOf(row: FeedRow<T>): number {
-    return this.heights.get(row.clientKey) ?? this.config.estimate;
+  // Three screens of rows at the estimate, or config.base when that is more.
+  private effBase(): number {
+    return Math.max(this.config.base, Math.ceil((3 * this.viewH) / this.config.estimate));
+  }
+
+  // Never under four windows, so a tall window cannot trim straight back into a refill.
+  private effHigh(): number {
+    return Math.max(this.config.highWater, 4 * this.effBase());
   }
 
   // Cumulative row offsets + total height over the display set; recomputed when the
-  // display set or any measured height changes. O(n) over the <=MAX ring -- cheap.
+  // display set or any measured height changes. O(n) over the window -- cheap.
   layout = $derived.by<Layout>(() => {
     void this.measureVersion;
     const rows = this.display;
@@ -198,18 +270,23 @@ export class FeedVirtualizer<T> {
     return { start: Math.max(0, start - overscan), end: Math.min(n, end + overscan) };
   });
 
-  visible = $derived.by<(FeedRow<T> & { top: number })[]>(() => {
+  visible = $derived.by<(DisplayRow<T> & { top: number })[]>(() => {
     const r = this.range;
     const rows = this.display;
     return rows.slice(r.start, r.end).map((row, i) => ({ ...row, top: this.layout.tops[r.start + i] }));
   });
 
   // The rows intersecting the viewport at `scrollTop`, against `layout`. More than one
-  // mark, so a trim that takes the top row still leaves the next one to hold on to.
-  private mark(scrollTop: number, rows: FeedRow<T>[], layout: Layout): Anchor<T> {
+  // mark, so a trim that takes the top row still leaves the next one to hold on to. The
+  // top row is never one: it stays pinned at index 0, so a page prepended under it would
+  // hold it still and carry the rows the reader was looking at away.
+  private mark(scrollTop: number, rows: DisplayRow<T>[], layout: Layout): Anchor<T> {
     const bottom = scrollTop + Math.max(this.viewH, 1);
     const marks: Anchor<T>["marks"] = [];
     for (let i = 0; i < rows.length; i++) {
+      if (rows[i].kind === "top") {
+        continue;
+      }
       const top = layout.tops[i];
       const end = i + 1 < rows.length ? layout.tops[i + 1] : layout.total;
       if (end <= scrollTop) {
@@ -238,7 +315,7 @@ export class FeedVirtualizer<T> {
 
   // Where scrollTop has to be for the anchor's first surviving row to sit where it sat;
   // null when none of the rows the reader was looking at survive.
-  private resolve(a: Anchor<T>, rows: FeedRow<T>[], layout: Layout): number | null {
+  private resolve(a: Anchor<T>, rows: DisplayRow<T>[], layout: Layout): number | null {
     if (a.marks.length === 0) {
       return null;
     }
@@ -258,93 +335,410 @@ export class FeedVirtualizer<T> {
     return null;
   }
 
-  // Batch incoming rows onto a single rAF flush so a burst re-renders once (not once
-  // per row) and the array is rebuilt at most once per frame.
-  enqueue = (item: T): void => {
-    this.pending.push(item);
-    if (!this.rafId) {
-      this.rafId = requestAnimationFrame(this.flush);
-    }
-  };
+  private setInflight(kind: "load" | "older" | null): void {
+    this.inflight = kind;
+    this.fetching = kind !== null;
+    this.fetchingOlder = kind === "older";
+  }
 
-  private flush = (): void => {
-    this.rafId = 0;
-    if (this.pending.length === 0) {
-      return;
-    }
-    let next = this.rows.concat(this.pending.map((item) => ({ clientKey: ++this.seq, item })));
-    this.pending = [];
-    if (next.length > this.config.max) {
-      // clientKeys are unique+monotonic, so trimmed rows never alias a kept one --
-      // prune their heights directly, in lockstep with the ring trim.
-      for (const d of next.slice(0, next.length - this.config.max)) {
-        this.heights.delete(d.clientKey);
-      }
-      next = next.slice(next.length - this.config.max);
-    }
-    this.rows = next;
-  };
-
-  // Replace the whole feed (events list/backfill/clear, chat hydrate). `reverse` flips a
-  // newest-first source into oldest->newest (top->bottom) append order. Drops any
-  // pending appends. With config.key, an item already shown keeps its clientKey (and so
-  // its measured height and its hold on the reader's scroll position); every other row
-  // starts fresh. The stuck state is left alone: a reader scrolled up stays where they
-  // are, and one at the bottom stays pinned there.
-  setFeed(list: T[], reverse = false): void {
-    this.pending = [];
+  // Forget the rows queued for the next frame.
+  private dropPending(): void {
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
-      this.rafId = 0;
     }
+    this.rafId = 0;
+    this.pending = [];
+  }
+
+  private cancelRetry(): void {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+
+  private setRows(rows: ItemRow<T>[]): void {
     const keyOf = this.config.key;
-    const kept = new Map<string, number>();
-    if (keyOf) {
-      for (const r of this.rows) {
-        kept.set(keyOf(r.item), r.clientKey);
-      }
-    }
-    const n = Math.min(list.length, this.config.max);
-    const rows: FeedRow<T>[] = new Array(n);
-    const live = new Set<number>();
-    for (let i = 0; i < n; i++) {
-      const item = reverse ? list[n - 1 - i] : list[list.length - n + i];
-      const k = keyOf ? keyOf(item) : undefined;
-      let clientKey = k !== undefined ? kept.get(k) : undefined;
-      if (clientKey === undefined || live.has(clientKey)) {
-        clientKey = ++this.seq;
-      }
-      live.add(clientKey);
-      rows[i] = { clientKey, item };
-    }
+    this.keys = new Map(rows.map((r) => [keyOf(r.item), r.clientKey]));
+    this.rows = rows;
+  }
+
+  private byOrder = (a: ItemRow<T>, b: ItemRow<T>): number => this.config.compare(a.item, b.item);
+
+  // `items` (sorted) as the whole window, keeping the clientKey of every row whose key
+  // stays, and with it its measured height and its hold on the reader's scroll position.
+  private replaceRows(items: T[]): void {
+    const keyOf = this.config.key;
+    const rows: ItemRow<T>[] = items.map((item) => ({
+      kind: "item",
+      clientKey: this.keys.get(keyOf(item)) ?? ++this.seq,
+      item,
+    }));
+    const live = new Set(rows.map((r) => r.clientKey));
     for (const key of [...this.heights.keys()]) {
-      if (!live.has(key)) {
+      if (key > 0 && !live.has(key)) {
         this.heights.delete(key);
       }
     }
-    this.rows = rows;
+    this.setRows(rows);
     this.measureVersion++;
-    if (rows.length === 0) {
-      // Nothing left to be scrolled up in.
+  }
+
+  /** Replace the window with the newest page for the current filter, which the rows it
+   * holds may no longer match. Supersedes any page in flight; only a later load or a reset
+   * supersedes it. Untracked, so an effect that calls it (a filter switch) does not come to
+   * depend on the state it reads. */
+  load = (): void => {
+    this.staleFilter = true;
+    this.retrying = false;
+    this.restickOnLoad = false;
+    this.fetchNewest();
+  };
+
+  // Ask for the newest page: under a new filter when load() says so, else under the one
+  // the window's rows already match (a retry, or reloading a detached window). A new filter
+  // lands on the newest row at once; a retry leaves the reader where they are.
+  private fetchNewest(restick = true): void {
+    untrack(() => {
+      this.guard.supersede();
+      const ok = this.guard.claim("load");
+      this.cancelRetry();
+      // Rows still queued for the next frame may have passed a filter being replaced. The
+      // host stores a row before it pushes it, so the page brings back any that match.
+      this.dropPending();
+      this.setInflight("load");
+      this.heldOld = [];
+      this.loadBuf = [];
+      this.retryBlocked = false;
+      if (restick) {
+        this.autoStick = true;
+        this.unseen = 0;
+        this.detached = false;
+      }
+      this.config.fetch({ limit: this.effBase() }).then(
+        (page) => {
+          if (ok()) {
+            this.applyLoad(page);
+          }
+        },
+        () => {
+          if (ok()) {
+            this.failLoad();
+          }
+        },
+      );
+    });
+  }
+
+  // A window of another filter's rows is emptied, since none of them may stay; one that
+  // already matches the filter keeps its rows. Either way what arrived while the load was
+  // in flight matches and shows, and the host is asked again after a pause.
+  private failLoad(): void {
+    const buffered = this.loadBuf;
+    this.loadBuf = [];
+    this.setInflight(null);
+    this.restickOnLoad = false;
+    if (this.staleFilter) {
+      this.staleFilter = false;
+      this.more = true;
+      this.detached = false;
+      this.replaceRows([]);
+    }
+    this.release(buffered);
+    this.retrying = true;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.fetchNewest(false);
+    }, this.retryMs);
+    this.retryMs = Math.min(this.retryMs * 2, LOAD_RETRY_MAX_MS);
+  }
+
+  // The new window is the page plus whatever arrived while it was in flight and sorts
+  // after the page's oldest row, deduped by key. What sorts before it is kept only when
+  // the host has nothing older: otherwise the host holds it and a later page brings it.
+  private applyLoad(page: FeedPage<T>): void {
+    const buffered = this.loadBuf;
+    this.loadBuf = [];
+    this.heldOld = [];
+    this.setInflight(null);
+    this.retryMs = LOAD_RETRY_MS;
+    this.retrying = false;
+    this.staleFilter = false;
+    const restick = this.restickOnLoad;
+    this.restickOnLoad = false;
+    if (page.epoch < this.epoch) {
+      this.release(buffered);
+      return;
+    }
+    this.epoch = page.epoch;
+    const { key, compare } = this.config;
+    const byKey = new Map<string, T>();
+    for (const item of page.items) {
+      byKey.set(key(item), item);
+    }
+    const oldest = page.items[0];
+    for (const item of buffered) {
+      const k = key(item);
+      if (byKey.has(k) || (oldest !== undefined && page.more && compare(item, oldest) < 0)) {
+        continue;
+      }
+      byKey.set(k, item);
+    }
+    // A detached reload the reader asked for lands on the newest row, and so does a window
+    // where nothing the reader could have scrolled to survives (a filter switch).
+    if (restick || ![...byKey.keys()].some((k) => this.keys.has(k))) {
       this.autoStick = true;
+      this.unseen = 0;
+    }
+    this.more = page.more;
+    this.detached = false;
+    this.replaceRows([...byKey.values()].sort(compare));
+  }
+
+  // Asks for the page before the window's oldest row once the reader is near the top of
+  // the window. Called from the scroll handler and after every settle of the view.
+  private maybeFetchOlder(): void {
+    if (
+      this.inflight !== null ||
+      this.retryTimer !== undefined ||
+      !this.more ||
+      this.detached ||
+      this.retryBlocked ||
+      this.rows.length === 0
+    ) {
+      return;
+    }
+    if (!this.scrollEl || this.viewTop >= (this.config.prefetchScreens ?? 1.5) * this.viewH) {
+      return;
+    }
+    const ok = this.guard.claim("older");
+    this.setInflight("older");
+    const cursor = this.rows[0].item;
+    const cursorKey = this.config.key(cursor);
+    this.config.fetch({ before: cursor, limit: this.config.page }).then(
+      (page) => {
+        if (ok()) {
+          this.applyOlder(page, cursorKey);
+        }
+      },
+      () => {
+        if (ok()) {
+          this.setInflight(null);
+          this.heldOld = [];
+          this.retryBlocked = true;
+        }
+      },
+    );
+  }
+
+  // Prepends an older page, but only onto the window it was asked for: from the current
+  // epoch, and with the cursor row still the window's oldest.
+  private applyOlder(page: FeedPage<T>, cursorKey: string): void {
+    const held = this.heldOld;
+    this.heldOld = [];
+    this.setInflight(null);
+    const { key, compare } = this.config;
+    if (page.epoch < this.epoch || this.rows.length === 0 || key(this.rows[0].item) !== cursorKey) {
+      return;
+    }
+    const known = new Set(this.keys.keys());
+    const added: ItemRow<T>[] = [];
+    for (const item of page.items) {
+      const k = key(item);
+      if (!known.has(k)) {
+        known.add(k);
+        added.push({ kind: "item", clientKey: ++this.seq, item });
+      }
+    }
+    // An old row that arrived meanwhile: kept if it sorts inside the new window, or if the
+    // host has nothing older; otherwise the next page brings it.
+    const newOldest = page.items[0] ?? this.rows[0].item;
+    let sort = false;
+    for (const item of held) {
+      const k = key(item);
+      if (known.has(k) || (page.more && compare(item, newOldest) < 0)) {
+        continue;
+      }
+      known.add(k);
+      added.push({ kind: "item", clientKey: ++this.seq, item });
+      sort = true;
+    }
+    const next = added.concat(this.rows);
+    if (sort) {
+      next.sort(this.byOrder);
+    }
+    this.more = page.more;
+    this.setRows(next);
+    this.detachIfOver();
+  }
+
+  private detachIfOver(): void {
+    if (!this.autoStick && this.rows.length > this.config.hardMax) {
+      this.detached = true;
     }
   }
 
-  jumpToLatest = (): void => {
+  /** A live row (events.new, chat.message) that matches the current filter. */
+  live = (item: T): void => {
+    this.pending.push(item);
+    this.schedule();
+  };
+
+  /** A batch that may hold rows already shown (events.backfill): each joins at its place
+   * in the order, and one already in the window is skipped. */
+  merge = (items: readonly T[]): void => {
+    this.pending.push(...items);
+    this.schedule();
+  };
+
+  // Batch incoming rows onto a single rAF flush so a burst re-renders once (not once
+  // per row) and the array is rebuilt at most once per frame.
+  private schedule(): void {
+    if (!this.rafId) {
+      this.rafId = requestAnimationFrame(this.flush);
+    }
+  }
+
+  private flush = (): void => {
+    this.rafId = 0;
+    const batch = this.pending;
+    this.pending = [];
+    if (this.inflight === "load") {
+      this.loadBuf.push(...batch);
+      return;
+    }
+    this.release(batch);
+  };
+
+  // Places arrived rows into the window. A row older than the window's oldest is the
+  // host's to page in, unless the host has nothing older; while an older page is in
+  // flight it waits for that page, which may cover it.
+  private release(batch: T[]): void {
+    const { key, compare } = this.config;
+    const oldest = this.rows[0]?.item;
+    const seen = new Set<string>();
+    const accepted: T[] = [];
+    // Rows a detached window does not take: they only count toward `unseen`.
+    const missed: T[] = [];
+    for (const item of batch) {
+      const k = key(item);
+      if (this.keys.has(k) || seen.has(k)) {
+        continue;
+      }
+      seen.add(k);
+      if (oldest !== undefined && compare(item, oldest) < 0 && this.more) {
+        if (this.inflight === "older") {
+          this.heldOld.push(item);
+        }
+        continue;
+      }
+      if (this.detached) {
+        missed.push(item);
+        continue;
+      }
+      accepted.push(item);
+    }
+    if (!this.autoStick) {
+      this.unseen += this.countBelow(missed.concat(accepted));
+    }
+    if (accepted.length === 0) {
+      return;
+    }
+    const added: ItemRow<T>[] = accepted.map((item) => ({ kind: "item", clientKey: ++this.seq, item }));
+    let next = this.rows.concat(added);
+    const lastBefore = this.rows[this.rows.length - 1];
+    if (lastBefore !== undefined && added.some((r) => this.byOrder(r, lastBefore) < 0)) {
+      next.sort(this.byOrder);
+    } else if (added.length > 1) {
+      next = this.rows.concat(added.sort(this.byOrder));
+    }
+    if (this.autoStick && next.length > this.effHigh()) {
+      // Trim back to base. Only an older page in flight is invalidated -- its rows would
+      // land above a gap -- never a load, which rebuilds the window itself.
+      const cut = next.length - this.effBase();
+      for (const r of next.slice(0, cut)) {
+        this.heights.delete(r.clientKey);
+      }
+      next = next.slice(cut);
+      this.more = true;
+      this.guard.claim("older");
+      if (this.inflight === "older") {
+        this.setInflight(null);
+      }
+      this.heldOld = [];
+    }
+    this.setRows(next);
+    this.detachIfOver();
+  }
+
+  // How many of `items` sort after the newest row the viewport shows: the ones the reader
+  // has not seen. A row that joins above the viewport is not one.
+  private countBelow(items: T[]): number {
+    const last = this.lastVisible();
+    const compare = this.config.compare;
+    return last === undefined ? items.length : items.filter((i) => compare(i, last) > 0).length;
+  }
+
+  // The newest item the viewport shows, or undefined when it shows none.
+  private lastVisible(): T | undefined {
+    const rows = this.display;
+    const { tops } = this.layout;
+    const bottom = this.viewTop + this.viewH;
+    let last: T | undefined;
+    for (let i = 0; i < rows.length && tops[i] < bottom; i++) {
+      const row = rows[i];
+      if (row.kind === "item") {
+        last = row.item;
+      }
+    }
+    return last;
+  }
+
+  /** The store was cleared at `epoch`: drop every row. A repeat of an epoch already
+   * applied (the clear call's reply after its push, or a page read after the clear) is
+   * ignored, so it cannot drop rows that arrived since. */
+  reset(epoch: number): void {
+    if (epoch <= this.epoch) {
+      return;
+    }
+    this.guard.supersede();
+    this.epoch = epoch;
+    this.cancelRetry();
+    this.retryMs = LOAD_RETRY_MS;
+    this.retrying = false;
+    this.staleFilter = false;
+    this.restickOnLoad = false;
+    this.dropPending();
+    this.heldOld = [];
+    this.loadBuf = [];
+    this.setInflight(null);
+    this.more = false;
+    this.detached = false;
+    this.unseen = 0;
     this.autoStick = true;
+    this.replaceRows([]);
+  }
+
+  /** Back to the newest row; a detached window is reloaded, since its tail is stale. */
+  jumpToLatest = (): void => {
+    if (this.detached) {
+      this.reloadDetached();
+      return;
+    }
+    this.autoStick = true;
+    this.unseen = 0;
     if (this.scrollEl) {
       this.scrollEl.scrollTop = this.scrollEl.scrollHeight;
     }
   };
 
-  // Called by the consumer whenever it flips the display filter, so the view re-pins
-  // to the newest of the new subset.
-  restick(): void {
-    this.autoStick = true;
+  // A detached window's tail is stale, so the newest row is reached by reloading. It stays
+  // detached, and so unstuck, with its chip and unseen count, until the page lands.
+  private reloadDetached(): void {
+    this.restickOnLoad = true;
+    this.fetchNewest(false);
   }
 
   // Action for the scroll container: tracks the offset/viewport, the stuck flag and the
-  // scroll anchor.
+  // scroll anchor, and asks for older rows as the reader nears the window's top.
   scroll = (node: HTMLDivElement): { destroy(): void } => {
     this.scrollEl = node;
     this.viewH = node.clientHeight;
@@ -352,11 +746,27 @@ export class FeedVirtualizer<T> {
     const onScroll = (): void => {
       this.viewTop = node.scrollTop;
       this.viewH = node.clientHeight;
-      this.autoStick = node.scrollHeight - node.scrollTop - node.clientHeight <= stickPx;
+      const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= stickPx;
       this.anchor = this.mark(node.scrollTop, this.display, this.layout);
+      this.retryBlocked = false;
+      if (this.detached) {
+        // The detached tail is stale, so reaching it reloads rather than sticking to it.
+        if (atBottom && this.inflight !== "load") {
+          this.reloadDetached();
+        }
+        return;
+      }
+      this.autoStick = atBottom;
+      if (atBottom) {
+        this.unseen = 0;
+      }
+      this.maybeFetchOlder();
     };
     node.addEventListener("scroll", onScroll);
-    const ro = new ResizeObserver(() => (this.viewH = node.clientHeight));
+    const ro = new ResizeObserver(() => {
+      this.viewH = node.clientHeight;
+      this.maybeFetchOlder();
+    });
     ro.observe(node);
     return {
       destroy: () => {
@@ -386,13 +796,13 @@ export class FeedVirtualizer<T> {
     return { destroy: () => ro.disconnect() };
   };
 
-  // Cancel any in-flight rAF + drop pending appends (call from the consumer's
-  // teardown). The scroll/measureRow actions clean up their own listeners.
+  // Cancel any in-flight rAF and load retry, drop pending rows, and discard any page still
+  // in flight (call from the consumer's teardown). The scroll/measureRow actions clean up
+  // their own listeners.
   dispose(): void {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-    }
-    this.rafId = 0;
-    this.pending = [];
+    this.dropPending();
+    this.cancelRetry();
+    this.guard.supersede();
+    this.setInflight(null);
   }
 }

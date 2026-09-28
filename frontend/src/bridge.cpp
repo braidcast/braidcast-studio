@@ -156,11 +156,6 @@ std::unordered_map<std::string, AsyncMethodFn> g_asyncMethods;
 // no-op via the AsyncTask alive-guard; this stops the loop body too).
 std::atomic<bool> g_oauthRunning{true};
 
-// Wall-clock epoch ms this process started. Namespace scope, so it is fixed during static
-// initialization, before any window exists; diagnostics.get reports it as the start of the
-// app session.
-const int64_t g_appStartedAtMs = TimeUtil::NowMs();
-
 // Set true at the very top of Shutdown(), before the chat/events hubs are stopped.
 // A detached OAuth connect worker that finished authorize() just as teardown began
 // would otherwise resurrect a just-stopped hub (StartAccount/Start) -- it probes
@@ -12854,8 +12849,7 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 // ---- diagnostics (gated DEBUG channel) -------------------------------------
 
 // The current DEBUG gate + this session's log file path (so the UI can show and
-// open it), when this launch started, plus the CEF remote-debugging port this launch
-// opened -- 0 when none.
+// open it), plus the CEF remote-debugging port this launch opened -- 0 when none.
 // That last one is not a setting the UI may change: it is decided from the
 // environment at boot and drives a mandatory indicator, because a debug port with
 // no visible sign is how someone opts in once, forgets, and streams for months
@@ -12864,8 +12858,7 @@ bool MethodDiagnosticsGet(const json & /*params*/, json &result, std::string & /
 {
 	result = json{{"debug", Log::DebugEnabled()},
 		      {"logPath", SessionLog::CurrentPath()},
-		      {"devToolsPort", DevToolsPort::Active()},
-		      {"appStartedAt", g_appStartedAtMs}};
+		      {"devToolsPort", DevToolsPort::Active()}};
 	return true;
 }
 

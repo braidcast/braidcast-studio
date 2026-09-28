@@ -1,12 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { obs, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
-  import { FEED_PAGE_MAX, fetchAllPages } from "$lib/api/feedPages";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { PLATFORM_COLORS, platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
   import { HEX_COLOR_RE, readableTextColor } from "$lib/utils/hexColor";
-  import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
+  import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
@@ -15,11 +14,13 @@
   import ChatOrigin from "$lib/ui/ChatOrigin.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
+  import FeedMarker, { FEED_TOP_HEIGHT } from "$lib/ui/FeedMarker.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import {
     ALL_DESTINATIONS,
     attribute,
     destinationsByAccount,
+    filterOf,
     matchesSelection,
     reconcileSelection,
     selectionLabel,
@@ -33,7 +34,7 @@
   import type { LivePoll } from "$lib/api/bridge";
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
-  import { CHAT_HISTORY_MAX, ChatIntake, chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
+  import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -50,17 +51,27 @@
     cheer: "Cheer",
   };
 
-  // Merged, ring-capped, virtualized scrollback, as deep as the host's own (so a hydrate
-  // never trims what chat.list sent). Rows render by a client-assigned key; chatKey
-  // (destination + id) is the message's identity across a whole-feed replace. 30px
-  // estimate for an unmeasured row. Filtering feeds it a derived subset rather than
-  // trimming the ring, so a row filtered out keeps its measured height and its place in
-  // the cap.
+  // A paged window over the host's scrollback, in the order the host admitted each
+  // message (`seq`). Rows render by a client-assigned key; chatKey (destination + id) is
+  // the message's identity, which is what dedupes a message arriving both in a page and
+  // live. The host filters the pages by the selection and this dock filters the live
+  // frames with the same predicate, so every row held matches it. 30px estimate for an
+  // unmeasured row.
   const feed = new FeedVirtualizer<ChatMessage>({
-    max: CHAT_HISTORY_MAX,
     estimate: 30,
-    getDisplay: () => filtered,
+    topHeight: FEED_TOP_HEIGHT,
     key: chatKey,
+    compare: (a, b) => a.seq - b.seq,
+    fetch: ({ before, limit }) =>
+      obs.call("chat.list", {
+        before: before && { seq: before.seq },
+        limit,
+        filter: filterOf(selection, destByUuid),
+      }),
+    base: 50,
+    page: 50,
+    highWater: 300,
+    hardMax: 2000,
   });
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
@@ -144,8 +155,8 @@
 
   function select(next: DestinationSelection): void {
     selection = next;
-    // Switching scope changes the visible set; re-pin to the newest of the new subset.
-    feed.restick();
+    // Switching scope changes what the window holds; reload it from the newest message.
+    feed.load();
   }
 
   // Keep the selection valid as destinations come and go.
@@ -164,12 +175,6 @@
   // the composer addresses by accountId.
   let target = $derived(selection.kind === "destination" ? (destByUuid.get(selection.profileUuid) ?? null) : null);
   let targetTransport = $derived(target ? chatTransportFor(target) : null);
-
-  // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay closes
-  // over filtered, which reads feed.rows).
-  let filtered: FeedRow<ChatMessage>[] = $derived(
-    selection.kind === "all" ? feed.rows : feed.rows.filter((r) => matchesSelection(r.item, selection, destByUuid)),
-  );
 
   // --- per-message origin ----------------------------------------------------
   // The tiering is shared with Events (ui/destinationSelection.ts, which documents
@@ -194,16 +199,16 @@
   // More than one place a message can come from: the point at which every row has to
   // say which destination it belongs to. Counted over the ARMED set, because an unarmed
   // destination runs no transport and so originates nothing -- and over the rows held,
-  // because the hydrate brings in scrollback from destinations armed earlier this launch
-  // and perhaps no longer.
+  // because a page brings in scrollback from destinations armed earlier this launch and
+  // perhaps no longer.
   //
   // Latched rather than derived, because `armed` is live configuration while the feed is
-  // history: after its one hydrate this feed only ever appends and is never cleared, so
-  // disabling one of two bindings mid-session would otherwise pull the origin cluster off
-  // rows that were correctly attributed when they arrived, leaving two channels on one
-  // platform separated by nothing but the row's border-left color. Toggling a binding is
-  // routine; losing attribution retroactively must not be. Released only when the feed
-  // holds no rows for it to describe.
+  // history: its rows outlive the binding that produced them, so disabling one of two
+  // bindings mid-session would otherwise pull the origin cluster off rows that were
+  // correctly attributed when they arrived, leaving two channels on one platform separated
+  // by nothing but the row's border-left color. Toggling a binding is routine; losing
+  // attribution retroactively must not be. Released only when the feed holds no rows for
+  // it to describe.
   let multiOrigin = $state(false);
   $effect(() => {
     const rows = feed.rows;
@@ -271,18 +276,11 @@
 
   type EmptyKind = "offline" | "live" | null;
 
-  // feed.rows empty with nothing armed = not live; feed.rows empty with an armed
-  // destination, or a scoped `filtered` empty while the wider feed isn't, are both "live
-  // but quiet" -- the scoped case just names which pane via `sub` rather than getting its
-  // own tone.
+  // An empty window with nothing armed = not live; with an armed destination, or under a
+  // narrower selection, it is "live but quiet" -- the scoped case just names which pane
+  // via `sub` rather than getting its own tone.
   let emptyKind = $derived<EmptyKind>(
-    feed.rows.length === 0
-      ? armed.length > 0
-        ? "live"
-        : "offline"
-      : filtered.length === 0
-        ? "live"
-        : null,
+    feed.rows.length > 0 ? null : armed.length > 0 || selection.kind !== "all" ? "live" : "offline",
   );
 
   let offlineMessage = $state(OFFLINE_MESSAGES[0]);
@@ -575,26 +573,20 @@
   }
 
   // The host dedupes before it emits (its scrollback ring is the dedupe), so a live frame
-  // is new to the host. What can still repeat is the seam between the scrollback and the
-  // live stream: subscribe FIRST so nothing falls between them, then hydrate, and let
-  // ChatIntake (docks/multichat/chatIntake.ts) hold the live frames until the scrollback
-  // lands and admit each message once.
+  // is new to the host. What can still repeat is the seam between a chat.list page and
+  // the live stream: subscribe FIRST so nothing falls between them, then load; the feed
+  // merges the frames that land while the page is in flight into it by chatKey.
   $effect(() => {
-    const intake = new ChatIntake(feed);
-    let disposed = false;
-    const offMsg = obs.on(EV.chatMessage, (m) => intake.live(m));
-    fetchAllPages<ChatMessage>((before) =>
-      obs.call("chat.list", { before: before && { seq: before.seq }, limit: FEED_PAGE_MAX }),
-    )
-      .catch(() => [])
-      .then((list) => {
-        if (!disposed) {
-          intake.hydrate(list);
-        }
-      });
+    const offMsg = obs.on(EV.chatMessage, (m) => {
+      if (matchesSelection(m, selection, destByUuid)) {
+        feed.live(m);
+      }
+    });
+    const offCleared = obs.on(EV.chatCleared, ({ epoch }) => feed.reset(epoch));
+    untrack(() => feed.load());
     return () => {
-      disposed = true;
       offMsg();
+      offCleared();
       feed.dispose();
     };
   });
@@ -608,13 +600,18 @@
          the view scrolls, which a live region would read out as new messages. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="scroll" use:feedScroll tabindex="0" role="region" aria-label="Chat messages">
-      {#if feed.rows.length === 0}
+      {#if feed.rows.length === 0 && feed.top === "retrying"}
+        <EmptyState compact title="Couldn't load chat, retrying." />
+      {:else if feed.rows.length === 0 && selection.kind === "all"}
         <EmptyState compact title={emptyKind === "offline" ? offlineMessage : liveEmptyMessage} />
-      {:else if filtered.length === 0}
+      {:else if feed.rows.length === 0}
         <EmptyState compact title={liveEmptyMessage} sub={scopeLabel || undefined} />
       {:else}
         <div class="sizer" style:height={feed.layout.total + "px"}>
           {#each feed.visible as row (row.clientKey)}
+            {#if row.kind === "top"}
+              <FeedMarker state={row.state} top={row.top} />
+            {:else}
             {@const m = row.item}
             {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
             {@const paid = m.paid}
@@ -669,13 +666,20 @@
                 </span>
               {/if}
             </div>
+            {/if}
           {/each}
         </div>
       {/if}
     </div>
 
-    {#if !feed.autoStick && filtered.length > 0}
-      <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
+    {#if !feed.autoStick && feed.rows.length > 0}
+      <button
+        class="jump"
+        aria-label={feed.unseen > 0 ? `Jump to latest, ${feed.unseen} new` : undefined}
+        onclick={feed.jumpToLatest}
+        ><Icon name="jump-down" size={11} />
+        {feed.unseen > 0 ? `${feed.unseen} new` : "Jump to latest"}</button
+      >
     {/if}
   </div>
 

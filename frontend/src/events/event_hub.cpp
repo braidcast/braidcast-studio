@@ -125,8 +125,8 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		};
 
 		// 1) One-shot REST backfill: dedupe each result into the store, then emit ONE
-		//    events.backfill batch of the events this pass newly added so the dock can
-		//    render history in a single pass (later real-time events dedupe against the
+		//    events.backfill batch of the events this pass newly added so an open dock
+		//    can merge them into its window (later real-time events dedupe against the
 		//    same store -> no doubles).
 		if (!canceled()) {
 			std::vector<NormalizedEvent> seed;
@@ -144,24 +144,18 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			if (!ok && !err.empty()) {
 				HostLog("[events] backfill '" + providerId + "' failed: " + err);
 			}
-			bool addedAny = false;
+			json added = json::array();
 			for (const NormalizedEvent &ev : seed) {
 				if (Store().Add(ev)) {
-					addedAny = true;
+					added.push_back(ev.ToJson());
 				}
 			}
-			// events.backfill REPLACES the whole feed in the dock, so emit the FULL
-			// store snapshot (newest-first), not this account's batch -- a per-account
-			// batch would wipe other accounts' already-shown rows. Build it INSIDE the
-			// UI lambda so two accounts' concurrent backfills converge on the union: the
-			// last-delivered post reads List() live and reflects everything stored.
-			if (addedAny && !canceled()) {
-				AsyncTask::PostToUi([]() {
-					json snapshot = json::array();
-					for (const NormalizedEvent &ev : Store().List()) {
-						snapshot.push_back(ev.ToJson());
-					}
-					Bridge::EmitEvent(EventNames::kEventsBackfill, snapshot);
+			// Only what this pass newly stored: the dock merges each event into its window
+			// at its own place in time, so rows already shown -- this account's or
+			// another's -- are left alone.
+			if (!added.empty() && !canceled()) {
+				AsyncTask::PostToUi([added = std::move(added)]() {
+					Bridge::EmitEvent(EventNames::kEventsBackfill, added);
 				});
 			}
 		}

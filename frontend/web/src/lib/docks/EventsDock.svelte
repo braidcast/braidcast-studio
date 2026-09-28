@@ -1,12 +1,12 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
-  import { FEED_PAGE_MAX, fetchAllPages } from "$lib/api/feedPages";
   import { EV } from "$lib/utils/eventNames";
   import { fmtMoney, fmtTally } from "$lib/utils/format";
   import Button from "$lib/ui/Button.svelte";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
-  import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
+  import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -15,12 +15,14 @@
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
+  import FeedMarker, { FEED_TOP_HEIGHT } from "$lib/ui/FeedMarker.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import { EVENTS_STATE_NOTE, eventsTransportFor } from "$lib/ui/destinationHealth";
   import {
     ALL_DESTINATIONS,
     attribute,
     destinationsByAccount,
+    filterOf,
     matchesSelection,
     reconcileSelection,
     selectionLabel,
@@ -32,9 +34,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
-  import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
-  import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
-  import { byEventTime, eventScope, scopeRows, type ScopeKind } from "$lib/docks/events/eventScope";
+  import { compareEvents } from "$lib/docks/events/eventOrder";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -117,15 +117,14 @@
   // it is an index over the store's own rows rather than a second identity join.
   let destByAccount = $derived(destinationsByAccount(destinations));
 
-  // --- feed (ring-capped + virtualized) -------------------------------------
+  // --- feed (paged + virtualized) --------------------------------------------
   // Three filter levels, all reachable: everything, one platform (both YouTube
   // channels at once, which is the view platform separation always gave), or one
-  // specific stream. Filtering feeds the virtualizer a derived subset -- heights stay
-  // keyed by the stable clientKey, so a filtered-out row keeps its measured height and
-  // re-appears at the right size when re-shown.
+  // specific stream. The host filters the pages (events.list takes the selection as a
+  // FeedFilter) and this dock filters the live pushes with the same predicate, so the
+  // window only ever holds matching rows and a filter switch reloads it.
   //
-  // The subset is also ordered by each event's own time and scoped to the current
-  // broadcast (docks/events/eventScope.ts says why); "Show earlier" lifts the scope.
+  // Rows are ordered by each event's own time (docks/events/eventOrder.ts says why).
   let filter = $state<DestinationSelection>(ALL_DESTINATIONS);
 
   // Chips are gated on what can actually originate an event, not on the fixed platform
@@ -179,58 +178,29 @@
     return { state: row.state, note: parts.join(" — ") };
   }
 
-  // 500 = the host store's cap (EventStore::kCap). Keyed by event id, so a backfill that
-  // re-sends the whole store keeps every surviving row, its height, and the reader's place.
+  // Keyed by event id, so a backfill that re-sends a row already shown is skipped. Window
+  // sizes are in rows; the host store holds at most 500 (EventStore::kCap).
   const feed = new FeedVirtualizer<NormalizedEvent>({
-    max: 500,
     estimate: 38,
-    getDisplay: () => filtered,
+    topHeight: FEED_TOP_HEIGHT,
     key: (e) => e.id,
+    compare: compareEvents,
+    fetch: ({ before, limit }) =>
+      obs.call("events.list", {
+        before: before && { ts: before.ts, id: before.id },
+        limit,
+        filter: filterOf(filter, destByUuid),
+      }),
+    base: 30,
+    page: 30,
+    highWater: 150,
+    hardMax: 1000,
   });
 
-  $effect(() => {
-    sessionsStore.start();
-    diagnosticsStore.start();
-  });
+  function matches(e: NormalizedEvent): boolean {
+    return matchesSelection(e, filter, destByUuid);
+  }
 
-  // This page's own load time stands in until diagnostics.get lands: in the main window
-  // that is moments after the app started.
-  let appStartedAt = $derived(diagnosticsStore.appStartedAt || Math.round(performance.timeOrigin));
-  let scope = $derived(eventScope(sessionsStore.sessions, appStartedAt));
-  let showEarlier = $state(false);
-
-  // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
-  // closes over filtered, which reads feed.rows).
-  let sorted: FeedRow<NormalizedEvent>[] = $derived(byEventTime(feed.rows));
-  let selected: FeedRow<NormalizedEvent>[] = $derived(
-    filter.kind === "all" ? sorted : sorted.filter((r) => matchesSelection(r.item, filter, destByUuid)),
-  );
-  let scoped: { shown: FeedRow<NormalizedEvent>[]; earlier: number } = $derived(
-    scopeRows(selected, scope.since, showEarlier),
-  );
-  let filtered: FeedRow<NormalizedEvent>[] = $derived(scoped.shown);
-
-  // Where the default view starts, in words: the empty state and the toggle's hint say it.
-  const SCOPE_PHRASE: Record<ScopeKind, string> = {
-    live: "during this stream",
-    last: "since your last stream started",
-    launch: "since Braidcast opened",
-  };
-  const SCOPE_BOUNDARY: Record<ScopeKind, string> = {
-    live: "this stream started",
-    last: "your last stream started",
-    launch: "Braidcast opened",
-  };
-
-  let emptyTitle = $derived.by(() => {
-    const target = filterLabel ? " for " + filterLabel : "";
-    return showEarlier ? "No events yet" + target + "." : "No events" + target + " " + SCOPE_PHRASE[scope.kind] + ".";
-  });
-  let emptySub = $derived(
-    !showEarlier && scoped.earlier > 0
-      ? `${scoped.earlier} earlier ${scoped.earlier === 1 ? "event" : "events"} hidden`
-      : undefined,
-  );
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
 
@@ -242,19 +212,20 @@
     }
   });
 
-  // Switching the filter changes the visible set; re-pin to the newest of the new
-  // subset so the user always lands on the latest matching event.
+  // Switching the filter reloads the window from the newest matching event, so the user
+  // always lands on the latest one.
   function setFilter(next: DestinationSelection): void {
     filter = next;
-    feed.restick();
+    feed.load();
   }
 
-  function clear(): void {
-    // The host clears its store then emits events.cleared; setFeed([])
-    // below is a local echo so the feed empties immediately even if the push lags.
-    // The echo makes a rejected clear look like it worked, so surface the failure.
-    void callOrToast("events.clear", undefined, "Clear events failed");
-    feed.setFeed([], true);
+  // The host clears its store and pushes events.cleared; resetting on the reply as well
+  // empties the feed without waiting for the push, and the second reset is a no-op.
+  async function clear(): Promise<void> {
+    const r = await callOrToast("events.clear", undefined, "Clear events failed");
+    if (r) {
+      feed.reset(r.epoch);
+    }
   }
 
   // Re-fires a stored event at every eligible overlay widget (events.replay -> the same
@@ -367,17 +338,18 @@
     }
   }
 
+  // Subscribe first, then load: a push landing while the first page is in flight is
+  // merged into it by key, so nothing falls between the two and nothing shows twice.
   $effect(() => {
-    // events.list pages arrive oldest-first, the enqueue-at-bottom order; events.backfill
-    // carries the whole store newest-first, which setFeed reverses.
-    fetchAllPages<NormalizedEvent>((before) =>
-      obs.call("events.list", { before: before && { ts: before.ts, id: before.id }, limit: FEED_PAGE_MAX }),
-    )
-      .then((list) => feed.setFeed(list))
-      .catch(() => {});
-    const offNew = obs.on(EV.eventsNew, (e) => feed.enqueue(e));
-    const offBackfill = obs.on(EV.eventsBackfill, (batch) => feed.setFeed(batch, true));
-    const offCleared = obs.on(EV.eventsCleared, () => feed.setFeed([]));
+    const offNew = obs.on(EV.eventsNew, (e) => {
+      if (matches(e)) {
+        feed.live(e);
+      }
+    });
+    // Only the events a backfill newly stored; each joins at its place in time.
+    const offBackfill = obs.on(EV.eventsBackfill, (batch) => feed.merge(batch.filter(matches)));
+    const offCleared = obs.on(EV.eventsCleared, ({ epoch }) => feed.reset(epoch));
+    untrack(() => feed.load());
     return () => {
       offNew();
       offBackfill();
@@ -460,13 +432,18 @@
   <div class="scroll" use:feedScroll tabindex="0" role="region" aria-label="Events">
     {#if connectedPlatforms.length === 0}
       <EmptyState compact title="Connect an account to see events." />
-    {:else if feed.rows.length === 0}
+    {:else if feed.rows.length === 0 && feed.top === "retrying"}
+      <EmptyState compact title="Couldn't load events, retrying." />
+    {:else if feed.rows.length === 0 && filter.kind === "all"}
       <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
-    {:else if filtered.length === 0}
-      <EmptyState compact title={emptyTitle} sub={emptySub} />
+    {:else if feed.rows.length === 0}
+      <EmptyState compact title={"No events yet for " + filterLabel + "."} />
     {:else}
       <div class="sizer" style:height={feed.layout.total + "px"}>
         {#each feed.visible as row (row.clientKey)}
+          {#if row.kind === "top"}
+            <FeedMarker state={row.state} top={row.top} />
+          {:else}
           {@const e = row.item}
           {@const actorColor = e.actorColor || PLATFORM_COLOR[e.platform] || "var(--color-muted)"}
           {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
@@ -527,28 +504,26 @@
               />
             </span>
           </div>
+          {/if}
         {/each}
       </div>
     {/if}
   </div>
 
-  {#if !feed.autoStick && filtered.length > 0}
-    <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
+  {#if !feed.autoStick && feed.rows.length > 0}
+    <button
+      class="jump"
+      aria-label={feed.unseen > 0 ? `Jump to latest, ${feed.unseen} new` : undefined}
+      onclick={feed.jumpToLatest}
+      ><Icon name="jump-down" size={11} />
+      {feed.unseen > 0 ? `${feed.unseen} new` : "Jump to latest"}</button
+    >
   {/if}
 
   <div class="footer">
-    <!-- A toggle, so the label stays put and aria-pressed carries the state. Never disabled:
-         with nothing held back it changes nothing, but a control that disables itself while
-         focused drops keyboard focus to <body>. -->
-    <Button
-      size="xs"
-      tone={showEarlier ? "accent" : "default"}
-      aria-pressed={showEarlier}
-      title={"Include events from before " + SCOPE_BOUNDARY[scope.kind]}
-      onclick={() => (showEarlier = !showEarlier)}
-      >Show earlier{scoped.earlier > 0 ? ` (${scoped.earlier})` : ""}</Button
-    >
-    <Button size="xs" disabled={feed.rows.length === 0} onclick={clear}>Clear</Button>
+    <!-- Never disabled: the window holds only the current filter's rows, and an empty one
+         says nothing about the store this empties. -->
+    <Button size="xs" onclick={() => void clear()}>Clear</Button>
   </div>
 </div>
 
@@ -726,7 +701,7 @@
   .footer {
     flex: 0 0 auto;
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 6px;
     padding: 6px 8px;
     border-top: var(--border-weight) solid var(--color-border);

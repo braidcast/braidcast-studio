@@ -14,6 +14,7 @@
 // Chat and Events describe the same fidelity tier in different words on purpose, and a
 // shared string with a surface flag would be one abstraction pretending to be two.
 
+import type { FeedFilter } from "$lib/api/bridge";
 import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
 import { platformKey, platformName } from "$lib/theme/platformColors";
 
@@ -98,6 +99,27 @@ export function matchesSelection(
     return item.profileUuid === sel.profileUuid;
   }
   return item.accountId === destByUuid.get(sel.profileUuid)?.accountId;
+}
+
+/**
+ * The selection as a paged-feed request filter (events.list, chat.list). The host applies
+ * it as matchesSelection does (Feed::Filter, frontend/src/chat/feed_query.hpp), so the
+ * rows a dock pages in and the live rows it appends agree. A destination carries its
+ * profile's account for the channel-wide rows; one not resolved yet carries "", which
+ * matches what matchesSelection matches then -- channel-wide rows with no account.
+ */
+export function filterOf(
+  sel: DestinationSelection,
+  destByUuid: ReadonlyMap<string, DestinationIdentity>,
+): FeedFilter {
+  if (sel.kind === "destination") {
+    return {
+      kind: "destination",
+      profileUuid: sel.profileUuid,
+      accountId: destByUuid.get(sel.profileUuid)?.accountId ?? "",
+    };
+  }
+  return sel;
 }
 
 /**

@@ -9922,6 +9922,30 @@ void ObsBootstrap::RunChatHistorySelfTest()
 			     cleared.epoch == epoch && readmitted && readmit.value("seq", uint64_t(0)) > seqs.back();
 	HostLog(std::string("[selftest] chat-history clear epoch -> ") + (clearOk ? "OK" : "FAIL") + " (epoch " +
 		std::to_string(epoch) + ")");
+
+	// A frame with invalid UTF-8 is held repaired, so a page holding it still serializes,
+	// and the caller forwards the repaired text too.
+	Chat::ChatHistory raw;
+	nlohmann::json bad = framed(twitch, "bad");
+	bad["text"] = std::string("caf\xC3(\xFF");
+	const bool badAdmitted = raw.Add(twitch, bad);
+	bool pageDumps = false;
+	try {
+		const std::string dumped = nlohmann::json(raw.Page(std::nullopt, 10, Feed::Filter{}).items).dump();
+		// U+FFFD, as UTF-8, where each bad sequence was.
+		pageDumps = dumped.find("caf\xEF\xBF\xBD(\xEF\xBF\xBD") != std::string::npos;
+	} catch (const std::exception &) {
+		pageDumps = false;
+	}
+	bool frameDumps = false;
+	try {
+		(void)bad.dump();
+		frameDumps = true;
+	} catch (const std::exception &) {
+		frameDumps = false;
+	}
+	const bool utf8Ok = badAdmitted && pageDumps && frameDumps && bad.value("seq", uint64_t(0)) > 0;
+	HostLog(std::string("[selftest] chat-history bad utf-8 -> ") + (utf8Ok ? "OK" : "FAIL"));
 }
 
 void ObsBootstrap::RunEventsPagingSelfTest()

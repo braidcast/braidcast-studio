@@ -2426,11 +2426,7 @@ export interface ObsMethods {
   // read from CefSettings at CefInitialize, so it is fixed for the session: no event
   // carries it and one read is enough. debug.changed does NOT include it -- the port
   // is env-gated at boot and the persisted debug toggle deliberately cannot open it.
-  //
-  // appStartedAt is the wall-clock epoch ms this app process started -- fixed for the
-  // session, like devToolsPort, and the same in every window (a detached dock's page loads
-  // later than the app did, so its own clock cannot stand in for this).
-  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number; appStartedAt: number };
+  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number };
   "diagnostics.setDebug": { debug: boolean };
   "diagnostics.openLogFolder": { ok: boolean };
 }
@@ -2623,8 +2619,9 @@ export interface ObsEvents {
   // channels.stats poller. Merged with viewers.changed by the store, not carried here.
   "channels.stats": ChannelStats;
   // Cross-platform events feed (Phase 9.2). new = one normalized event appended to
-  // the feed. backfill = the whole stored feed (newest-first), which REPLACES it.
-  // cleared = the store was emptied; drop every row. Events run on the account-connect
+  // the feed. backfill = only the events a connect-time backfill newly stored, in no
+  // particular order; merge each at its place in time. cleared = the store was emptied
+  // (epoch = the store's new epoch); drop every row. Events run on the account-connect
   // lifecycle (always-on for connected accounts) -- they are NOT gated on Go Live and
   // can arrive before or after a broadcast.
   "events.new": NormalizedEvent;

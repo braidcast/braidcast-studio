@@ -1,9 +1,11 @@
 #include "chat_history.hpp"
 
+#include <atomic>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "../log.hpp"
 #include "../util/random_util.hpp"
 #include "../util/time_util.hpp"
 
@@ -20,10 +22,33 @@ const std::string &Field(const json &message, const char *key)
 	return it != message.end() && it->is_string() ? it->get_ref<const std::string &>() : kEmpty;
 }
 
+// Repairs are logged on the first and then every this-many-th, so a source that sends
+// nothing but bad bytes cannot flood the log.
+constexpr uint64_t kRepairLogEvery = 100;
+
+// Text that is not valid UTF-8 (IRC hands over raw bytes) makes dump() throw, and a held
+// message is dumped with every page it falls in -- so each of those pages would fail. The
+// bad sequences are replaced with U+FFFD before the message is held or forwarded.
+void RepairUtf8(json &message)
+{
+	static std::atomic<uint64_t> repaired{0};
+	try {
+		(void)message.dump();
+	} catch (const json::type_error &) {
+		message = json::parse(message.dump(-1, ' ', false, json::error_handler_t::replace));
+		const uint64_t n = repaired.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (n == 1 || n % kRepairLogEvery == 0) {
+			HostLog("[chat] repaired invalid UTF-8 in a " + Field(message, "platform") + " message (" +
+				std::to_string(n) + " this launch)");
+		}
+	}
+}
+
 } // namespace
 
 bool ChatHistory::Add(const OAuth::DestinationId &dest, json &message)
 {
+	RepairUtf8(message);
 	const auto id = message.find("id");
 	const bool keyed = id != message.end() && id->is_string() && !id->get_ref<const std::string &>().empty();
 	const std::string key = keyed ? OAuth::DestinationKey(dest) + ":" + id->get_ref<const std::string &>()
