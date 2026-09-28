@@ -370,6 +370,11 @@ void RunMultistreamArmSelfTest();
 // never Saves, so the user's files are untouched. Gated by the caller to the smoke
 // path.
 void RunCanvasRuntimeSelfTest();
+// A temporary in-memory ADDITIONAL canvas (1280x720 at 30 fps) with a seeded scene on
+// channel 0 and a preview ref, so its mix is built and it renders. Self-tests only;
+// nothing is saved. RemoveSelfTestCanvas takes it down again.
+std::string MakeSelfTestCanvas(const char *name);
+void RemoveSelfTestCanvas(const std::string &uuid);
 // Headless proof for 4.4.5b sub-phase A: bring up a temporary additional canvas,
 // then drive the canvas-scoped scene/source bridge path (scenes.create/list/
 // setCurrent + sources.create with a `canvas` uuid) and assert the new scene is

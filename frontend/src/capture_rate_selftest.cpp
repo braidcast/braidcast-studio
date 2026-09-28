@@ -21,6 +21,7 @@
 #include "bridge.hpp"
 #include "diag/capture_rate_sampler.hpp"
 #include "log.hpp"
+#include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/VideoGate.hpp"
 #include "obs_bootstrap.hpp"
@@ -37,6 +38,10 @@ constexpr const char *kWgcName = "caprate-wgc";
 constexpr const char *kDxgiName = "caprate-dxgi";
 constexpr const char *kDxgi2Name = "caprate-dxgi2";
 constexpr const char *kAsyncName = "caprate-async";
+// On a non-Default canvas, which nothing else reaches: only the canvas walk can
+// find them, as it has to for a Shorts destination.
+constexpr const char *kCanvasDxgiName = "caprate-canvas-dxgi";
+constexpr const char *kGameName = "caprate-game";
 
 // win-capture's display_capture_method values.
 constexpr int kMethodDxgi = 1;
@@ -306,7 +311,8 @@ using Sample = std::map<std::string, json>;
 struct Placed {
 	OBSSource source;
 	obs_sceneitem_t *item = nullptr;
-	bool showing = false; // holds a VideoGate::IncShowing
+	bool holdShowing = true; // false: shown only by the canvas rendering it
+	bool showing = false;    // holds a VideoGate::IncShowing
 };
 
 struct State {
@@ -322,8 +328,11 @@ struct State {
 	RECT monitorRect = {};
 	std::string monitorId;
 	std::string defaultUuid;
+	std::string canvasUuid; // the non-Default test canvas
+	double canvasFps = 0.0;
 
 	OBSScene scene;
+	OBSScene canvasScene;
 	std::map<std::string, Placed> placed; // by name
 	std::unique_ptr<Flicker> flicker;
 	std::unique_ptr<CursorMover> cursor;
@@ -416,7 +425,7 @@ OBSScene MainScene()
 
 void Show(Placed &p)
 {
-	if (!p.showing) {
+	if (p.holdShowing && !p.showing) {
 		VideoGate::IncShowing(p.source);
 		p.showing = true;
 	}
@@ -436,15 +445,38 @@ void Hide(Placed &p)
 	}
 }
 
+void PlaceIn(State &st, const std::string &name, obs_source_t *source, obs_scene_t *scene, bool holdShowing)
+{
+	Placed p;
+	p.source = source;
+	p.holdShowing = holdShowing;
+	p.item = obs_scene_add(scene, source);
+	Show(p);
+	st.placed[name] = std::move(p);
+}
+
 // Adds `source` to the main scene and holds it showing, so the Main root reaches it
 // (which is what gives it a reference rate) and it renders even with Main idle.
 void Place(State &st, const std::string &name, obs_source_t *source)
 {
-	Placed p;
-	p.source = source;
-	p.item = obs_scene_add(st.scene, source);
-	Show(p);
-	st.placed[name] = std::move(p);
+	PlaceIn(st, name, source, st.scene, true);
+}
+
+// Adds `source` to the test canvas's scene with no showing hold, so no showing root
+// reaches it: it shows only because that canvas renders it.
+void PlaceOnCanvas(State &st, const std::string &name, obs_source_t *source)
+{
+	PlaceIn(st, name, source, st.canvasScene, false);
+}
+
+// Declares which canvases are live to the sampler alone; this run must not broadcast.
+void SetLiveCanvases(const State &st, bool canvasLive)
+{
+	const std::string defaultUuid = st.defaultUuid;
+	const std::string canvasUuid = canvasLive ? st.canvasUuid : std::string();
+	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest([defaultUuid, canvasUuid](const std::string &uuid) {
+		return uuid == defaultUuid || (!canvasUuid.empty() && uuid == canvasUuid);
+	});
 }
 
 void Unplace(State &st, const std::string &name)
@@ -460,13 +492,41 @@ void Unplace(State &st, const std::string &name)
 	st.placed.erase(it);
 }
 
+// A game capture pointed at a window that does not exist, so it never hooks
+// anything (least of all the flicker window): showing, with no size, and counting
+// nothing.
+OBSSourceAutoRelease CreateGameCapture(const char *name)
+{
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "capture_mode", "window");
+	obs_data_set_string(settings, "window", "caprate-none:CaprateNone:caprate-none.exe");
+	return obs_source_create_private(CaptureRate::kGameCaptureId, name, settings);
+}
+
+// The test canvas's frame rate and the scene on its channel 0. The rate is its video
+// output's, as the sampler reads it: libobs runs every mix's composite at Main's
+// rate, so obs_canvas_get_video_info reports Main's.
+bool CanvasSetup(State &st)
+{
+	obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(st.canvasUuid);
+	video_t *video = ObsBootstrap::CanvasRuntime().VideoFor(st.canvasUuid);
+	const struct video_output_info *info = video ? video_output_get_info(video) : nullptr;
+	if (!canvas || !info || !info->fps_den) {
+		return false;
+	}
+	st.canvasFps = double(info->fps_num) / info->fps_den;
+	OBSSourceAutoRelease channel = obs_canvas_get_channel(canvas, 0);
+	st.canvasScene = OBSScene(obs_scene_from_source(channel));
+	return st.canvasScene != nullptr;
+}
+
 OBSSourceAutoRelease CreateMonitorCapture(const State &st, const char *name, int method)
 {
 	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, "monitor_id", st.monitorId.c_str());
 	obs_data_set_int(settings, "method", method);
 	obs_data_set_bool(settings, "capture_cursor", false);
-	return obs_source_create_private("monitor_capture", name, settings);
+	return obs_source_create_private(CaptureRate::kMonitorCaptureId, name, settings);
 }
 
 enum obs_frame_count_kind KindOf(const State &st, const std::string &name)
@@ -477,6 +537,19 @@ enum obs_frame_count_kind KindOf(const State &st, const std::string &name)
 		obs_source_get_frame_counts(it->second.source, &counts);
 	}
 	return counts.kind;
+}
+
+// Why a capture never started, per source: not showing (nothing renders it), gated,
+// or showing with a capture that never opened.
+void SayCaptureState(const State &st)
+{
+	for (const auto &[name, p] : st.placed) {
+		struct obs_source_frame_counts counts = {};
+		obs_source_get_frame_counts(p.source, &counts);
+		Say(name + ": showing=" + std::to_string(obs_source_showing(p.source)) +
+		    " gated=" + std::to_string(obs_source_video_gated(p.source)) +
+		    " kind=" + std::to_string(counts.kind) + " liveTicks=" + std::to_string(counts.live_ticks));
+	}
 }
 
 // Keep the lease alive and record each new sampler tick's rows.
@@ -606,11 +679,16 @@ bool Setup(State &st)
 	}
 
 	// The reference rate comes only from live canvases, and this run must not
-	// broadcast, so the Default canvas is declared live to the sampler alone.
+	// broadcast, so the Default canvas is declared live to the sampler alone. The
+	// test canvas goes live after the full-rate phase.
 	st.defaultUuid = ObsBootstrap::Canvases().Default().uuid;
-	const std::string defaultUuid = st.defaultUuid;
-	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest(
-		[defaultUuid](const std::string &uuid) { return uuid == defaultUuid; });
+	st.canvasUuid = ObsBootstrap::MakeSelfTestCanvas("caprate-canvas");
+	if (!CanvasSetup(st)) {
+		st.exitCode = 3;
+		st.failures.push_back("test canvas has no mix or no scene");
+		return false;
+	}
+	SetLiveCanvases(st, false);
 
 	st.displayAwake = os_inhibit_sleep_create("Braidcast capture-rate self-test");
 	os_inhibit_sleep_set_active(st.displayAwake, true);
@@ -628,7 +706,9 @@ bool Setup(State &st)
 	RegisterAsyncTestSource();
 	CheckIdentityAfterFree(st);
 	OBSSourceAutoRelease async = obs_source_create_private(kAsyncId, kAsyncName, nullptr);
-	if (!wgc || !dxgi || !async) {
+	OBSSourceAutoRelease canvasDxgi = CreateMonitorCapture(st, kCanvasDxgiName, kMethodDxgi);
+	OBSSourceAutoRelease game = CreateGameCapture(kGameName);
+	if (!wgc || !dxgi || !async || !canvasDxgi || !game) {
 		st.exitCode = 3;
 		st.failures.push_back("could not create the test sources");
 		return false;
@@ -636,11 +716,13 @@ bool Setup(State &st)
 	Place(st, kWgcName, wgc);
 	Place(st, kDxgiName, dxgi);
 	Place(st, kAsyncName, async);
+	PlaceOnCanvas(st, kCanvasDxgiName, canvasDxgi);
+	PlaceOnCanvas(st, kGameName, game);
 	st.producer = std::make_unique<Producer>();
 	st.producer->Start(async);
 
-	Say("up: mainFps=" + Fmt(st.mainFps) + " refreshHz=" + std::to_string(st.refreshHz) +
-	    " monitor=" + st.monitorId);
+	Say("up: mainFps=" + Fmt(st.mainFps) + " canvasFps=" + Fmt(st.canvasFps) +
+	    " refreshHz=" + std::to_string(st.refreshHz) + " monitor=" + st.monitorId);
 	return true;
 }
 
@@ -662,6 +744,87 @@ void CheckFullRate(State &st)
 	Check(st, !async.empty() && !AnyFlag(async, "below"),
 	      "async steady 30/s: input " + Fmt(Median(Numbers(async, "inputFps"))) + " rendered " +
 		      Fmt(Median(Numbers(async, "renderedFps"))) + ", never below");
+}
+
+bool Near(double a, double b)
+{
+	return std::fabs(a - b) < 0.01;
+}
+
+bool AllStatus(const std::vector<json> &rows, const char *status)
+{
+	return !rows.empty() && std::all_of(rows.begin(), rows.end(),
+					    [status](const json &r) { return r.value("status", "") == status; });
+}
+
+// Whether the test canvas's root is the only one that reaches `name`: not Main, not
+// a showing hold. Its row then exists because the walk visited that canvas.
+bool OnlyTestCanvasReaches(const State &st, const std::string &name)
+{
+	auto it = st.placed.find(name);
+	if (it == st.placed.end()) {
+		return false;
+	}
+	const std::string uuid = obs_source_get_uuid(it->second.source);
+	bool canvas = false;
+	bool other = false;
+	for (const VideoGate::Root &root : VideoGate::WalkRoots()) {
+		if (root.sources.count(uuid)) {
+			const bool mine = root.kind == VideoGate::RootKind::Canvas && root.canvasUuid == st.canvasUuid;
+			(mine ? canvas : other) = true;
+		}
+	}
+	return canvas && !other;
+}
+
+// The test canvas is not live yet: the walk still reaches its sources, but no rule
+// applies to them, whatever Main is doing.
+void CheckCanvasOffAir(State &st)
+{
+	for (const char *name : {kCanvasDxgiName, kGameName}) {
+		Check(st, OnlyTestCanvasReaches(st, name),
+		      std::string("D canvas walk: only the test canvas's root reaches ") + name);
+	}
+	const std::vector<json> disp = RowsOf(st, Phase::FullRate, kCanvasDxgiName, 2);
+	Check(st, !disp.empty() && disp.back().value("status", "") == "ok",
+	      std::string("D canvas walk: ") + kCanvasDxgiName + " measured on the non-Default canvas");
+	Check(st,
+	      !disp.empty() &&
+		      std::all_of(disp.begin(), disp.end(), [](const json &r) { return r["refFps"].is_null(); }),
+	      std::string("D canvas off air: ") + kCanvasDxgiName + " has no reference rate");
+	Check(st, !disp.empty() && !disp.back().value("inGrace", true),
+	      std::string("D canvas off air: ") + kCanvasDxgiName + " past its grace");
+
+	const std::vector<json> game = RowsOf(st, Phase::FullRate, kGameName, 2);
+	// Unhooked, it has no size and nothing to count; hooked, it would read unmeasurable.
+	Check(st, AllStatus(game, "idle") && game.back().value("kind", "") == "none",
+	      std::string("D game capture: unhooked ") + kGameName + " listed as idle");
+}
+
+// The test canvas went live at the start of half cadence: the reference comes from
+// that canvas's rate, not Main's, and going live restarts the grace period.
+void CheckCanvasLive(State &st)
+{
+	const std::vector<json> disp = RowsOf(st, Phase::HalfRate, kCanvasDxgiName);
+	const double ref = Median(Numbers(disp, "refFps"));
+	const double want = std::min(st.canvasFps, st.mainFps);
+	Check(st, Near(ref, want),
+	      std::string("D canvas live: ") + kCanvasDxgiName + " refFps " + Fmt(ref) + " == canvas " + Fmt(want));
+	Check(st, AnyFlag(disp, "inGrace"), std::string("D canvas live: ") + kCanvasDxgiName + " grace ran again");
+	const double mainRef = Median(Numbers(RowsOf(st, Phase::HalfRate, kDxgiName), "refFps"));
+	if (st.canvasFps < st.mainFps) {
+		Check(st, Near(mainRef, st.mainFps),
+		      std::string("D per-canvas ref: ") + kDxgiName + " on Main keeps refFps " + Fmt(mainRef));
+	} else {
+		Inconclusive(st, "D per-canvas ref: the test canvas runs at " + Fmt(st.canvasFps) +
+					 " fps, not below Main's " + Fmt(st.mainFps));
+	}
+
+	const std::vector<json> game = RowsOf(st, Phase::HalfRate, kGameName);
+	Check(st, !game.empty() && Near(Median(Numbers(game, "refFps")), want),
+	      std::string("D game capture: ") + kGameName + " takes the canvas's reference");
+	Check(st, AllStatus(game, "idle") && !AnyFlag(game, "below"),
+	      std::string("D game capture: unhooked ") + kGameName + " stays idle, never below");
 }
 
 void CheckHalfRate(State &st)
@@ -793,6 +956,11 @@ void Teardown(State &st)
 	}
 	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest(nullptr);
 	st.scene = nullptr;
+	st.canvasScene = nullptr;
+	if (!st.canvasUuid.empty()) {
+		ObsBootstrap::RemoveSelfTestCanvas(st.canvasUuid);
+		st.canvasUuid.clear();
+	}
 	if (st.displayAwake) {
 		os_inhibit_sleep_destroy(st.displayAwake);
 		st.displayAwake = nullptr;
@@ -858,17 +1026,28 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 	case Phase::WaitKinds: {
 		const bool wgc = KindOf(st, kWgcName) == OBS_FRAME_COUNT_WGC;
 		const bool dxgi = KindOf(st, kDxgiName) == OBS_FRAME_COUNT_DXGI;
-		if (wgc && dxgi) {
+		// Counting at all means showing, which only the test canvas's render gives it.
+		const bool canvasDxgi = KindOf(st, kCanvasDxgiName) == OBS_FRAME_COUNT_DXGI;
+		if (wgc && dxgi && canvasDxgi) {
 			ObsBootstrap::CaptureRates().SessionBegin();
 			st.sessionOpen = true;
 			st.sessionBegan = Clock::now();
 			st.sessionLinesBefore = SelfTest::CountSessionLogLines("[capture-rate] session ");
 			Enter(st, Phase::FullRate);
 		} else if (InPhase(st) >= kWaitKinds) {
-			st.exitCode = 2;
-			st.failures.push_back(std::string("capture never started: ") +
-					      (dxgi ? "" : "no DXGI duplicator ") + (wgc ? "" : "no WGC capture"));
-			Say("SKIP " + st.failures.back());
+			SayCaptureState(st);
+			if (wgc && dxgi) {
+				// The same duplicator works on Main, so this is the canvas, not the machine.
+				Check(st, false,
+				      std::string("D canvas walk: ") + kCanvasDxgiName +
+					      " never showed on the non-Default canvas");
+			} else {
+				st.exitCode = 2;
+				st.failures.push_back(std::string("capture never started: ") +
+						      (dxgi ? "" : "no DXGI duplicator ") +
+						      (wgc ? "" : "no WGC capture"));
+				Say("SKIP " + st.failures.back());
+			}
 			Enter(st, Phase::Finish);
 		}
 		return false;
@@ -877,6 +1056,8 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 	case Phase::FullRate:
 		if (InPhase(st) >= kFullRate) {
 			CheckFullRate(st);
+			CheckCanvasOffAir(st);
+			SetLiveCanvases(st, true);
 			// A second live edge while the session is open, as coalesced
 			// transitions deliver: the session must carry on untouched.
 			ObsBootstrap::CaptureRates().SessionBegin();
@@ -896,6 +1077,7 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 		}
 		if (InPhase(st) >= kHalfRate) {
 			CheckHalfRate(st);
+			CheckCanvasLive(st);
 			st.flicker->SetEvery(0);
 			st.producer->SetMode(FeedMode::Steady);
 			obs_source_set_deinterlace_mode(st.placed[kAsyncName].source, OBS_DEINTERLACE_MODE_BLEND);
@@ -987,6 +1169,10 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 			      "session line reports the async source");
 			Check(st, SelfTest::CountSessionLogLines("'caprate-dxgi2' DXGI median") >= 1,
 			      "session line reports a DXGI source");
+			Check(st, SelfTest::CountSessionLogLines("'caprate-canvas-dxgi' DXGI median") >= 1,
+			      "session line reports the non-Default canvas's source");
+			Check(st, SelfTest::CountSessionLogLines("'caprate-game' idle (never counted)") >= 1,
+			      "session line names the showing, unhooked game capture");
 		}
 		WriteSummary(st);
 		Enter(st, Phase::Done);

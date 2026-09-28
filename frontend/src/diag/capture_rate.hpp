@@ -53,13 +53,38 @@ struct SourceInput {
 	uint64_t identity = 0;
 	bool showing = false;
 	// False when the capture method delivers frames with no counter behind them
-	// (BitBlt window capture, a deinterlaced async source). Only then does a
-	// showing source that counts nothing read "unmeasurable"; otherwise it is
-	// simply not capturing right now.
+	// (BitBlt window capture, a deinterlaced async source, a hooked game
+	// capture). Only then does a showing source that counts nothing read
+	// "unmeasurable"; otherwise it is simply not capturing right now.
 	bool frameSignal = true;
 	Counts counts;
 	std::vector<Reach> reach;
 };
+
+// The capture source types, by obs_source_get_id.
+inline constexpr const char *kMonitorCaptureId = "monitor_capture";
+inline constexpr const char *kWindowCaptureId = "window_capture";
+inline constexpr const char *kGameCaptureId = "game_capture";
+
+// What the sampler reads off a source that reports no frame-count kind.
+struct SourceTraits {
+	std::string id;            // obs_source_get_id
+	bool async = false;        // OBS_SOURCE_ASYNC_VIDEO
+	bool deinterlaced = false; // async only
+	bool windowWgc = false;    // window capture set to the WGC method
+	// obs_source_get_base_width > 0. Game capture reports no size until it has
+	// hooked a process and is capturing from it.
+	bool hasSize = false;
+};
+
+// Whether a source that reports no kind still gets a row: async video and the
+// capture source types, so a missing number is visible as such rather than the
+// source vanishing from the stats and the session line.
+bool IsListed(const SourceTraits &traits);
+
+// Whether the source's capture method counts its frames at all, for a source
+// that reports no kind. SourceInput::frameSignal.
+bool HasFrameSignal(const SourceTraits &traits);
 
 struct SampleInput {
 	double dtSec = 0.0; // measured time since the previous sample
@@ -69,7 +94,7 @@ struct SampleInput {
 
 enum class Status {
 	Ok,           // measured
-	Unmeasurable, // showing, but its capture method has no frame signal
+	Unmeasurable, // showing, but no frame signal or none this phase measures (the game hook)
 	Idle,         // not capturing now: hidden, or nothing to count (camera stopped, capture failed)
 };
 
@@ -139,6 +164,8 @@ private:
 		Histogram ref;
 		std::map<int, double> lockedSec; // by fraction index
 		double belowSec = 0.0;
+		Kind countedAs = Kind::None; // at the last sample that read ok, live or not
+		bool everShowing = false;
 		bool everUnmeasurable = false;
 	};
 
@@ -163,6 +190,7 @@ private:
 	void Rebaseline(Entry &e, const SourceInput &src, double mainFps);
 	Row Evaluate(Entry &e, const SourceInput &src, double dt, double mainFps);
 	void UpdateLock(Entry &e, std::optional<double> fraction, bool eligible);
+	void NoteSession(Entry &e, const SourceInput &src, Status status);
 	std::string Summarize(const std::string &name, const Entry &e) const;
 
 	std::map<std::string, Entry> entries_;

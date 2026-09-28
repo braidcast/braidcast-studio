@@ -5,18 +5,11 @@
 
 #include <util/platform.h>
 
-#include <cstring>
-#include <set>
+#include <optional>
 
 namespace CaptureRate {
 
 namespace {
-
-// Capture sources that may count nothing right now: a failed duplicator, a BitBlt
-// window capture. They get a row rather than none, so a missing number is visible
-// as such. Sources that report a kind need no listing.
-constexpr const char *kWindowCaptureId = "window_capture";
-const std::set<std::string> kDisplayCaptureIds = {"monitor_capture", kWindowCaptureId};
 
 // window-capture.c's METHOD_WGC; auto and BitBlt settle on BitBlt for most windows.
 constexpr long long kWindowCaptureMethodWgc = 2;
@@ -40,33 +33,20 @@ Kind ToKind(enum obs_frame_count_kind kind)
 	return Kind::None;
 }
 
-bool IsCandidate(obs_source_t *source, Kind kind)
+SourceTraits TraitsOf(obs_source_t *source)
 {
-	if (kind != Kind::None) {
-		return true;
-	}
-	if ((obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
-		return true; // deinterlaced, or not delivering right now
-	}
+	SourceTraits traits;
 	const char *id = obs_source_get_id(source);
-	return id && kDisplayCaptureIds.count(id) != 0;
-}
-
-// Whether the source's capture method counts its frames at all, for a source that
-// reports no kind. Deinterlacing hides an async source's frames from the fold, and
-// BitBlt has no signal; anything else counting nothing is not capturing now.
-// A WGC setting on a system without WGC runs BitBlt and reads idle.
-bool HasFrameSignal(obs_source_t *source)
-{
-	if ((obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
-		return obs_source_get_deinterlace_mode(source) == OBS_DEINTERLACE_MODE_DISABLE;
-	}
-	const char *id = obs_source_get_id(source);
-	if (id && strcmp(id, kWindowCaptureId) == 0) {
+	traits.id = id ? id : "";
+	traits.async = (obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO;
+	traits.hasSize = obs_source_get_base_width(source) > 0;
+	if (traits.async) {
+		traits.deinterlaced = obs_source_get_deinterlace_mode(source) != OBS_DEINTERLACE_MODE_DISABLE;
+	} else if (traits.id == kWindowCaptureId) {
 		OBSDataAutoRelease settings = obs_source_get_settings(source);
-		return obs_data_get_int(settings, "method") == kWindowCaptureMethodWgc;
+		traits.windowWgc = obs_data_get_int(settings, "method") == kWindowCaptureMethodWgc;
 	}
-	return true;
+	return traits;
 }
 
 double FpsOf(video_t *video)
@@ -145,8 +125,12 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		struct obs_source_frame_counts raw = {};
 		obs_source_get_frame_counts(p.source, &raw);
 		const Kind kind = ToKind(raw.kind);
-		if (!IsCandidate(p.source, kind)) {
-			continue;
+		std::optional<SourceTraits> traits;
+		if (kind == Kind::None) {
+			traits = TraitsOf(p.source);
+			if (!IsListed(*traits)) {
+				continue;
+			}
 		}
 
 		// uuids survive recreation, so the uuid alone cannot say these are the same
@@ -166,7 +150,7 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		src.name = name ? name : "";
 		src.identity = held.identity;
 		src.showing = obs_source_showing(p.source);
-		src.frameSignal = kind != Kind::None || HasFrameSignal(p.source);
+		src.frameSignal = !traits || HasFrameSignal(*traits);
 		src.counts = Counts{kind, raw.live_ticks, raw.new_frame_ticks, raw.frames_delivered};
 		src.reach = std::move(p.reach);
 		in.sources.push_back(std::move(src));

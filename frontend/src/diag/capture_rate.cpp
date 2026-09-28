@@ -71,16 +71,52 @@ int MatchFraction(double fraction)
 	return -1;
 }
 
+// Whether a capture type's frames reach the counters.
+enum class Signal {
+	Always,        // counting nothing means not capturing
+	WgcMethodOnly, // BitBlt delivers frames no counter sees
+	NoneOnceSized, // the game hook's frames have no counter; unhooked, it has no size and nothing to count
+};
+
+struct CaptureType {
+	const char *id;
+	Signal signal;
+};
+
+// Capture types that may count nothing right now (a failed duplicator, a BitBlt
+// window capture, a game capture), so they get a row without a kind.
+constexpr CaptureType kCaptureTypes[] = {
+	{kMonitorCaptureId, Signal::Always},
+	{kWindowCaptureId, Signal::WgcMethodOnly},
+	{kGameCaptureId, Signal::NoneOnceSized},
+};
+
+const CaptureType *CaptureTypeOf(const std::string &id)
+{
+	for (const CaptureType &type : kCaptureTypes) {
+		if (id == type.id) {
+			return &type;
+		}
+	}
+	return nullptr;
+}
+
 bool IsDisplayRate(Kind kind)
 {
 	return kind == Kind::Wgc || kind == Kind::Dxgi;
 }
 
-// Phase 1 measures display capture and async sources. Overlay paint counts go to
-// diagnostics only, and the game-capture hook has no counter yet.
+// Phase 1 measures display capture and async sources.
+bool IsMeasured(Kind kind)
+{
+	return IsDisplayRate(kind) || kind == Kind::Async;
+}
+
+// Overlay paint counts go to diagnostics only. The game hook's kind still gets a
+// row, so a game capture never drops out of the stats or the session line.
 bool IsReported(Kind kind)
 {
-	return kind != Kind::BrowserPaint && kind != Kind::GameHook;
+	return kind != Kind::BrowserPaint;
 }
 
 Status StatusOf(const SourceInput &src)
@@ -88,10 +124,25 @@ Status StatusOf(const SourceInput &src)
 	if (!src.showing) {
 		return Status::Idle;
 	}
-	if (src.counts.kind != Kind::None) {
-		return Status::Ok;
+	if (src.counts.kind == Kind::None) {
+		return src.frameSignal ? Status::Idle : Status::Unmeasurable;
 	}
-	return src.frameSignal ? Status::Idle : Status::Unmeasurable;
+	// An unhooked game capture reads idle only while the hook sets GAME_HOOK solely while
+	// capturing, as window-capture.c does for WGC; set from creation, it would read unmeasurable.
+	return IsMeasured(src.counts.kind) ? Status::Ok : Status::Unmeasurable;
+}
+
+// A counted kind as the session line names it.
+const char *LineLabel(Kind kind)
+{
+	switch (kind) {
+	case Kind::Dxgi:
+		return "DXGI";
+	case Kind::Wgc:
+		return "WGC";
+	default:
+		return KindName(kind);
+	}
 }
 
 std::string Format(const char *fmt, double a, double b = 0.0, double c = 0.0)
@@ -133,6 +184,33 @@ const char *StatusName(Status status)
 		break;
 	}
 	return "idle";
+}
+
+bool IsListed(const SourceTraits &traits)
+{
+	return traits.async || CaptureTypeOf(traits.id) != nullptr;
+}
+
+bool HasFrameSignal(const SourceTraits &traits)
+{
+	if (traits.async) {
+		// Deinterlacing hides an async source's frames from the fold.
+		return !traits.deinterlaced;
+	}
+	const CaptureType *type = CaptureTypeOf(traits.id);
+	if (!type) {
+		return true;
+	}
+	switch (type->signal) {
+	case Signal::Always:
+		return true;
+	case Signal::WgcMethodOnly:
+		// A WGC setting on a system without WGC runs BitBlt and reads idle.
+		return traits.windowWgc;
+	case Signal::NoneOnceSized:
+		return !traits.hasSize;
+	}
+	return true;
 }
 
 std::optional<double> RefFps(const std::vector<Reach> &reach, double mainFps)
@@ -195,6 +273,19 @@ void Tracker::UpdateLock(Entry &e, std::optional<double> fraction, bool eligible
 	if (e.lockedFraction < 0 && e.streakFraction >= 0 && e.streakCount >= kEnterSeconds) {
 		e.lockedFraction = e.streakFraction;
 		e.exitCount = 0;
+	}
+}
+
+// What the session line says of a source that never counted a live second.
+void Tracker::NoteSession(Entry &e, const SourceInput &src, Status status)
+{
+	if (!inSession_) {
+		return;
+	}
+	e.session.everShowing = e.session.everShowing || src.showing;
+	e.session.everUnmeasurable = e.session.everUnmeasurable || status == Status::Unmeasurable;
+	if (status == Status::Ok) {
+		e.session.countedAs = src.counts.kind;
 	}
 }
 
@@ -280,9 +371,7 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 			s.belowSec += r.below ? dt : 0.0;
 		}
 	}
-	if (inSession_ && r.status == Status::Unmeasurable) {
-		e.session.everUnmeasurable = true;
-	}
+	NoteSession(e, src, r.status);
 	r.sinceReset = e.window;
 	return r;
 }
@@ -310,9 +399,7 @@ void Tracker::Sample(const SampleInput &in)
 			r.status = StatusOf(src);
 			r.inGrace = IsDisplayRate(r.kind);
 			r.sinceReset = e.window;
-			if (inSession_ && r.status == Status::Unmeasurable) {
-				e.session.everUnmeasurable = true;
-			}
+			NoteSession(e, src, r.status);
 			rows_.push_back(std::move(r));
 			continue;
 		}
@@ -367,7 +454,17 @@ std::string Tracker::Summarize(const std::string &name, const Entry &e) const
 	const Session &s = e.session;
 	const std::string quoted = "'" + name + "'";
 	if (s.liveSec <= 0.0) {
-		return s.everUnmeasurable ? quoted + " unmeasurable" : std::string();
+		if (s.everUnmeasurable) {
+			return quoted + " unmeasurable";
+		}
+		// It counted, but render lag or a session under a second left no second
+		// that could be judged.
+		if (s.countedAs != Kind::None) {
+			return quoted + " " + LineLabel(s.countedAs) + " counted, no second measured";
+		}
+		// A showing capture that never counted is the finding (a stale plugin, a
+		// failed duplicator), not an absence.
+		return s.everShowing ? quoted + " idle (never counted)" : std::string();
 	}
 	if (s.measuredAs == Kind::Async) {
 		const double belowPct = s.belowSec / s.liveSec * 100.0;
@@ -375,8 +472,7 @@ std::string Tracker::Summarize(const std::string &name, const Entry &e) const
 		       Format(" async in %.1f out %.1f, below %.1f%%", Median(s.input), Median(s.rate), belowPct);
 	}
 
-	std::string out =
-		quoted + (s.measuredAs == Kind::Dxgi ? " DXGI" : " WGC") + Format(" median %.1f/s", Median(s.rate));
+	std::string out = quoted + " " + LineLabel(s.measuredAs) + Format(" median %.1f/s", Median(s.rate));
 	if (s.ref.empty()) {
 		out += " (no ref)";
 	} else {

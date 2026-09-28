@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -49,14 +50,22 @@ struct Feed {
 	}
 };
 
-void Step(Tracker &t, Feed &f, uint32_t ticks, uint32_t newTicks, uint32_t delivered, double dt = 1.0)
+// One sample carrying every feed as it stands.
+void SampleAll(Tracker &t, std::initializer_list<const Feed *> feeds, double dt = 1.0)
 {
-	f.Advance(ticks, newTicks, delivered);
 	SampleInput in;
 	in.dtSec = dt;
 	in.mainFps = kMainFps;
-	in.sources.push_back(f.src);
+	for (const Feed *f : feeds) {
+		in.sources.push_back(f->src);
+	}
 	t.Sample(in);
+}
+
+void Step(Tracker &t, Feed &f, uint32_t ticks, uint32_t newTicks, uint32_t delivered, double dt = 1.0)
+{
+	f.Advance(ticks, newTicks, delivered);
+	SampleAll(t, {&f}, dt);
 }
 
 const Row *RowFor(const Tracker &t, const std::string &uuid)
@@ -228,6 +237,8 @@ static void test_ref_from_live_canvases_only(void **)
 	Prime(t, cam);
 	Step(t, cam, 60, 30, 30);
 	const Row *r = RowFor(t, "cam");
+	assert_non_null(r);
+	assert_true(r->refFps.has_value());
 	assert_true(std::fabs(*r->refFps - 30.0) < 0.001);
 	assert_false(r->below);
 }
@@ -303,7 +314,215 @@ static void test_unmeasurable_and_idle(void **)
 	assert_int_equal((int)RowFor(t2, "cam")->status, (int)Status::Idle);
 	t2.SessionBegin(0);
 	Step(t2, cam, 60, 0, 0);
-	assert_true(t2.SessionEnd(1000000000ull).find("unmeasurable") == std::string::npos);
+	const std::string line = t2.SessionEnd(1000000000ull);
+	assert_true(line.find("unmeasurable") == std::string::npos);
+	assert_true(line.find("'cam' idle (never counted)") != std::string::npos);
+}
+
+// Which sources that report no frame-count kind still get a row, and which of
+// those can be measured at all.
+static void test_listing_and_frame_signal(void **)
+{
+	auto traits = [](const char *id) {
+		SourceTraits t;
+		t.id = id;
+		return t;
+	};
+
+	assert_true(IsListed(traits(kMonitorCaptureId)));
+	assert_true(HasFrameSignal(traits(kMonitorCaptureId)));
+
+	// Game capture's hook has no counter until Phase 4: listed, and once hooked
+	// (it has a size) never measured. Unhooked, it has nothing to count.
+	SourceTraits game = traits(kGameCaptureId);
+	assert_true(IsListed(game));
+	assert_true(HasFrameSignal(game));
+	game.hasSize = true;
+	assert_false(HasFrameSignal(game));
+
+	SourceTraits window = traits(kWindowCaptureId);
+	assert_true(IsListed(window));
+	assert_false(HasFrameSignal(window));
+	window.windowWgc = true;
+	assert_true(HasFrameSignal(window));
+
+	SourceTraits async = traits("ffmpeg_source");
+	async.async = true;
+	assert_true(IsListed(async));
+	assert_true(HasFrameSignal(async));
+	async.deinterlaced = true;
+	assert_false(HasFrameSignal(async));
+
+	assert_false(IsListed(traits("image_source")));
+	assert_false(IsListed(traits("browser_source")));
+	assert_false(IsListed(traits("")));
+}
+
+// A Game Capture feed as the sampler builds it for a source reporting no kind.
+static Feed GameCaptureFeed(bool hooked)
+{
+	SourceTraits traits;
+	traits.id = kGameCaptureId;
+	traits.hasSize = hooked;
+	Feed game("Game Capture", Kind::None, 30.0, true);
+	game.src.frameSignal = HasFrameSignal(traits);
+	return game;
+}
+
+// A broadcast that captures only through a hooked Game Capture, on a 30 fps
+// canvas (a vertical Shorts destination): the source is named as unmeasurable,
+// never warns (C2), and the session line no longer claims there were no capture
+// sources.
+static void test_game_capture_reads_unmeasurable(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed game = GameCaptureFeed(true);
+	Prime(t, game);
+	for (int s = 0; s < 20; s++) {
+		Step(t, game, 0, 0, 0);
+		const Row *r = RowFor(t, "Game Capture");
+		assert_non_null(r);
+		assert_int_equal((int)r->status, (int)Status::Unmeasurable);
+		assert_false(r->below);
+		assert_false(r->rate.has_value());
+		assert_null(r->lockedFraction);
+		assert_true(r->refFps.has_value());
+		assert_true(std::fabs(*r->refFps - 30.0) < 0.001);
+	}
+	const std::string line = t.SessionEnd(20ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Game Capture' unmeasurable"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+
+	// Hidden for the whole session: not capturing, so nothing to name.
+	Tracker hidden;
+	hidden.SessionBegin(0);
+	game.src.showing = false;
+	Prime(hidden, game);
+	Step(hidden, game, 0, 0, 0);
+	const Row *r = RowFor(hidden, "Game Capture");
+	assert_non_null(r);
+	assert_int_equal((int)r->status, (int)Status::Idle);
+	assert_non_null(strstr(hidden.SessionEnd(2ull * 1000000000ull).c_str(), "no capture sources"));
+}
+
+// Showing but not hooked into anything: it reports no size and has nothing to
+// count, which is idle rather than unmeasurable. It is still named.
+static void test_unhooked_game_capture_reads_idle(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed game = GameCaptureFeed(false);
+	Prime(t, game);
+	Step(t, game, 0, 0, 0);
+	const Row *r = RowFor(t, "Game Capture");
+	assert_non_null(r);
+	assert_int_equal((int)r->status, (int)Status::Idle);
+	const std::string line = t.SessionEnd(2ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Game Capture' idle (never counted)"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// Once the hook reports its own kind (Phase 4) the game capture keeps its row:
+// unmeasurable until something measures that kind, and never read as a display
+// capture in the session line.
+static void test_game_hook_kind_keeps_its_row(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed game("Game Capture", Kind::GameHook, 30.0, true);
+	Prime(t, game);
+	for (int s = 0; s < 5; s++) {
+		Step(t, game, 60, 60, 60);
+		const Row *r = RowFor(t, "Game Capture");
+		assert_non_null(r);
+		assert_int_equal((int)r->status, (int)Status::Unmeasurable);
+		assert_false(r->rate.has_value());
+		assert_false(r->below);
+	}
+	const std::string line = t.SessionEnd(5ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Game Capture' unmeasurable"));
+	assert_null(strstr(line.c_str(), "median"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// A display capture that showed all session and never counted a frame (a stale
+// plugin, a failed duplicator) is named, not reported as an absence (#28).
+static void test_display_capture_that_never_counted_is_named(void **)
+{
+	SourceTraits traits;
+	traits.id = kMonitorCaptureId;
+	Tracker t;
+	t.SessionBegin(0);
+	Feed disp("Display", Kind::None);
+	disp.src.frameSignal = HasFrameSignal(traits);
+	Prime(t, disp);
+	for (int s = 0; s < 10; s++) {
+		Step(t, disp, 0, 0, 0);
+		const Row *r = RowFor(t, "Display");
+		assert_non_null(r);
+		assert_int_equal((int)r->status, (int)Status::Idle);
+	}
+	const std::string line = t.SessionEnd(10ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Display' idle (never counted)"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// Render lag above half: the display capture counts frames every second, but no
+// second is mostly live, so none is judged. It counted, which "idle (never
+// counted)" would deny.
+static void test_counted_under_heavy_lag_is_not_idle(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed disp("Display", Kind::Dxgi);
+	Prime(t, disp);
+	for (int s = 0; s < 10; s++) {
+		Step(t, disp, 20, 20, 20);
+		const Row *r = RowFor(t, "Display");
+		assert_non_null(r);
+		assert_int_equal((int)r->status, (int)Status::Ok);
+	}
+	const std::string line = t.SessionEnd(10ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Display' DXGI counted, no second measured"));
+	assert_null(strstr(line.c_str(), "never counted"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// A session that only ever takes the restart sample (a go-live that fails within
+// a second): the source reported its kind, and the line says so.
+static void test_restart_only_session_is_not_idle(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed disp("Display", Kind::Wgc);
+	Prime(t, disp);
+	const std::string line = t.SessionEnd(1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Display' WGC counted, no second measured"));
+	assert_null(strstr(line.c_str(), "never counted"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// A DXGI display capture and a hooked game capture live together: one line names
+// both.
+static void test_display_and_game_capture_share_the_line(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed disp("Display", Kind::Dxgi);
+	Feed game = GameCaptureFeed(true);
+	auto second = [&](uint32_t frames) {
+		disp.Advance(60, frames, frames);
+		SampleAll(t, {&disp, &game});
+	};
+	second(0);
+	for (int s = 0; s < 10; s++) {
+		second(60);
+	}
+	const std::string line = t.SessionEnd(10ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Display' DXGI median 60.0/s"));
+	assert_non_null(strstr(line.c_str(), "'Game Capture' unmeasurable"));
+	assert_null(strstr(line.c_str(), "no capture sources"));
 }
 
 // The session line names each source with its median and lock; stats.reset
@@ -317,11 +536,7 @@ static void test_session_summary_and_reset(void **)
 	auto both = [&](uint32_t dispFrames, uint32_t camIn, uint32_t camOut) {
 		disp.Advance(60, dispFrames, dispFrames);
 		cam.Advance(60, camOut, camIn);
-		SampleInput in;
-		in.dtSec = 1.0;
-		in.mainFps = kMainFps;
-		in.sources = {disp.src, cam.src};
-		t.Sample(in);
+		SampleAll(t, {&disp, &cam});
 	};
 	both(0, 0, 0);
 	for (int s = 0; s < 40; s++) {
@@ -463,6 +678,14 @@ int main(void)
 		cmocka_unit_test(test_uint32_wrap_delta),
 		cmocka_unit_test(test_kind_change_rebaselines),
 		cmocka_unit_test(test_unmeasurable_and_idle),
+		cmocka_unit_test(test_listing_and_frame_signal),
+		cmocka_unit_test(test_game_capture_reads_unmeasurable),
+		cmocka_unit_test(test_unhooked_game_capture_reads_idle),
+		cmocka_unit_test(test_game_hook_kind_keeps_its_row),
+		cmocka_unit_test(test_display_capture_that_never_counted_is_named),
+		cmocka_unit_test(test_display_and_game_capture_share_the_line),
+		cmocka_unit_test(test_counted_under_heavy_lag_is_not_idle),
+		cmocka_unit_test(test_restart_only_session_is_not_idle),
 		cmocka_unit_test(test_session_summary_and_reset),
 		cmocka_unit_test(test_removed_source_keeps_its_sums),
 		cmocka_unit_test(test_repeated_session_begin_keeps_the_session),

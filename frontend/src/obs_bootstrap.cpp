@@ -3366,8 +3366,6 @@ void ObsBootstrap::RunMultistreamEngineSelfTest()
 		std::to_string(bindingsBefore) + ")");
 }
 
-namespace {
-
 // Bring up a temporary ADDITIONAL canvas for a self-test, the way the product
 // does it. canvas.create (bridge.cpp) calls EnsureCanvas and then EnsureScenes,
 // because seeding a default scene was deliberately decoupled from EnsureCanvas --
@@ -3385,8 +3383,9 @@ namespace {
 // bounds item reported a 0x0 box. The app never edits in that state either, since
 // the preview surface a user drags on takes this same ref before it renders.
 //
-// In-memory only: the caller never Saves, and removes the canvas at the end.
-std::string MakeSelfTestCanvas(const char *name)
+// In-memory only: the caller never Saves, and removes the canvas at the end with
+// RemoveSelfTestCanvas.
+std::string ObsBootstrap::MakeSelfTestCanvas(const char *name)
 {
 	CanvasDefinition def;
 	def.name = name;
@@ -3403,6 +3402,15 @@ std::string MakeSelfTestCanvas(const char *name)
 	g_canvasRuntime->AddPreview(uuid);
 	return uuid;
 }
+
+void ObsBootstrap::RemoveSelfTestCanvas(const std::string &uuid)
+{
+	g_multistream->InvalidateCanvasEncoders(uuid);
+	g_canvasRuntime->RemoveCanvas(uuid);
+	g_canvases.Remove(uuid);
+}
+
+namespace {
 
 // The status row multistream.changed would carry for one binding, or nullopt where the
 // report has none -- Statuses() enumerates only ENABLED bindings, so an absent row and a
