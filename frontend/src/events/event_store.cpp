@@ -2,6 +2,7 @@
 
 #include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
+#include "../util/time_util.hpp"
 
 #include <obs.hpp>
 #include <util/platform.h>
@@ -145,6 +146,61 @@ uint64_t EventStore::Clear()
 	}
 	WriteToDisk(snapshot, writeSeq);
 	return writeSeq;
+}
+
+template<typename Pred> size_t EventStore::RemoveIf(Pred drop)
+{
+	json snapshot;
+	uint64_t writeSeq = 0;
+	size_t removed = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const NormalizedEvent &ev : events_) {
+			if (drop(ev)) {
+				ids_.erase(ev.id);
+				++removed;
+			}
+		}
+		if (removed == 0) {
+			return 0;
+		}
+		events_.erase(std::remove_if(events_.begin(), events_.end(), drop), events_.end());
+		writeSeq = ++seq_;
+		snapshot = BuildJsonLocked();
+		dirty_ = false;
+		lastSaveNs_ = os_gettime_ns();
+	}
+	WriteToDisk(snapshot, writeSeq);
+	return removed;
+}
+
+size_t EventStore::PurgeAccount(const std::string &accountId)
+{
+	if (accountId.empty()) {
+		return 0;
+	}
+	return RemoveIf([&](const NormalizedEvent &ev) { return ev.accountId == accountId; });
+}
+
+size_t EventStore::PruneOlderThan(const std::string &platform, int64_t cutoffMs)
+{
+	return RemoveIf([&](const NormalizedEvent &ev) {
+		return ev.ts < cutoffMs && Feed::NormalizePlatform(ev.platform) == platform;
+	});
+}
+
+size_t EventStore::PruneExpired()
+{
+	const int64_t now = TimeUtil::NowMs();
+	size_t removed = 0;
+	for (const MaxAge &limit : kMaxAge) {
+		removed += PruneOlderThan(limit.platform, now - limit.ms);
+	}
+	if (removed > 0) {
+		HostLog("[events] dropped " + std::to_string(removed) +
+			" stored event(s) past their platform's storage limit");
+	}
+	return removed;
 }
 
 void EventStore::Flush()

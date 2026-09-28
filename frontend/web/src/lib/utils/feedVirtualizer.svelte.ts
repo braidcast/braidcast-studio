@@ -2,9 +2,11 @@
 // bottom-sticky, absolutely-positioned virtual list measured row by row over a window of
 // the host's history: the dock opens on the newest few screens, older pages load on their
 // own as the reader scrolls up (no "show earlier" control), and the window is trimmed back
-// while the reader sits at the bottom. The machinery -- rAF-batched appends, the paged
-// window, per-row measurement, visible-range windowing, auto-stick-to-bottom and scroll
-// anchoring -- lives here once.
+// while the reader sits at the bottom. Scrolled up, it is capped to hardMax rows: older
+// pages still load, and the newest end is let go instead, like a messenger unloading the
+// far end of a long conversation, never a row the reader can see. The machinery --
+// rAF-batched appends, the paged window, per-row measurement, visible-range windowing,
+// auto-stick-to-bottom and scroll anchoring -- lives here once.
 //
 // The docks diverge only in configuration: row-height estimate, order (config.compare,
 // which must equal the host's page order), item identity (config.key), window sizes, and
@@ -26,9 +28,10 @@ import { untrack } from "svelte";
 import type { FeedPage } from "$lib/api/bridge";
 import { RequestGuard } from "$lib/utils/requestGuard";
 
-// A failed load is asked again after this long, doubling per failure up to the cap.
-const LOAD_RETRY_MS = 1000;
-const LOAD_RETRY_MAX_MS = 30_000;
+// A failed load or older page is asked again after this long, doubling per failure up to
+// the cap.
+const RETRY_MS = 1000;
+const RETRY_MAX_MS = 30_000;
 
 /** What the top row says: a page is loading, older rows are there to load, the window
  * reaches the oldest row the host holds, or the newest page failed and is being asked
@@ -81,7 +84,11 @@ export interface FeedConfig<T> {
   page: number;
   /** Rows past which a window stuck to the bottom is trimmed back to base. */
   highWater: number;
-  /** Rows past which a window the reader has scrolled up in stops taking live rows. */
+  /** The rows a window the reader has scrolled up in is capped to. Past it rows are let go
+   * from the newest end first, and the window detaches: a live row newer than its last is
+   * only counted as unseen, and reaching its bottom again reloads the newest page. What that
+   * end cannot cover goes from the oldest end. A row the viewport shows is never let go, so
+   * a window whose visible rows leave too few outside them stays over the cap. */
   hardMax: number;
   /** An older page loads once the viewport top is within this many screens of the window's
    * top (default 1.5). */
@@ -128,7 +135,8 @@ export class FeedVirtualizer<T> {
   fetching = $state(false);
   // An older page is in flight: what the top row's spinner shows.
   private fetchingOlder = $state(false);
-  // Scrolled up past hardMax rows: live rows no longer join the window, only `unseen`.
+  // The window's newest end was let go to keep to hardMax rows, so rows newer than its last
+  // exist on the host: live rows past it only count toward `unseen`.
   detached = $state(false);
   // Rows that arrived below the viewport while the reader was scrolled up.
   unseen = $state(0);
@@ -169,12 +177,10 @@ export class FeedVirtualizer<T> {
   private heldOld: T[] = [];
   // Rows that arrived while a load was in flight, merged into the page it returns.
   private loadBuf: T[] = [];
-  // An older page failed: wait for the reader to scroll before trying again, rather than
-  // retrying from every effect run.
-  private retryBlocked = false;
-  // A load failed: the timer that asks again, and how long the next one waits.
+  // A load or an older page failed: the timer that asks again, and how long the next one
+  // waits. While it runs nothing else asks, so a host that keeps failing is never polled.
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
-  private retryMs = LOAD_RETRY_MS;
+  private retryMs = RETRY_MS;
   // The window still holds a previous filter's rows: load() was called and no page has
   // replaced them yet.
   private staleFilter = false;
@@ -496,7 +502,6 @@ export class FeedVirtualizer<T> {
       this.setInflight("load");
       this.heldOld = [];
       this.loadBuf = [];
-      this.retryBlocked = false;
       if (restick) {
         this.autoStick = true;
         this.unseen = 0;
@@ -533,11 +538,15 @@ export class FeedVirtualizer<T> {
     }
     this.release(buffered);
     this.retrying = true;
+    this.retryAfterPause(() => this.fetchNewest(false));
+  }
+
+  private retryAfterPause(run: () => void): void {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
-      this.fetchNewest(false);
+      run();
     }, this.retryMs);
-    this.retryMs = Math.min(this.retryMs * 2, LOAD_RETRY_MAX_MS);
+    this.retryMs = Math.min(this.retryMs * 2, RETRY_MAX_MS);
   }
 
   // The new window is the page plus whatever arrived while it was in flight and sorts
@@ -548,7 +557,7 @@ export class FeedVirtualizer<T> {
     this.loadBuf = [];
     this.heldOld = [];
     this.setInflight(null);
-    this.retryMs = LOAD_RETRY_MS;
+    this.retryMs = RETRY_MS;
     this.retrying = false;
     this.staleFilter = false;
     const restick = this.restickOnLoad;
@@ -589,8 +598,6 @@ export class FeedVirtualizer<T> {
       this.inflight !== null ||
       this.retryTimer !== undefined ||
       !this.more ||
-      this.detached ||
-      this.retryBlocked ||
       this.rows.length === 0
     ) {
       return;
@@ -609,10 +616,12 @@ export class FeedVirtualizer<T> {
         }
       },
       () => {
+        // The host could not answer yet (chat history still opening, say): the older rows
+        // are still there, so the top stays open and the page is asked for again.
         if (ok()) {
           this.setInflight(null);
           this.heldOld = [];
-          this.retryBlocked = true;
+          this.retryAfterPause(() => this.maybeFetchOlder());
         }
       },
     );
@@ -624,6 +633,7 @@ export class FeedVirtualizer<T> {
     const held = this.heldOld;
     this.heldOld = [];
     this.setInflight(null);
+    this.retryMs = RETRY_MS;
     const { key, compare } = this.config;
     if (page.epoch < this.epoch || this.rows.length === 0 || key(this.rows[0].item) !== cursorKey) {
       return;
@@ -655,14 +665,57 @@ export class FeedVirtualizer<T> {
       next.sort(this.byOrder);
     }
     this.more = page.more;
-    this.setRows(next);
-    this.detachIfOver();
+    this.setRows(this.capWindow(next));
   }
 
-  private detachIfOver(): void {
-    if (!this.autoStick && this.rows.length > this.config.hardMax) {
+  // Scrolled up, the window is capped to hardMax rows. The excess goes from the newest end
+  // first, below the reader, and the window detaches; whatever that cannot cover goes from
+  // the oldest end, above the reader. A row the viewport shows is never let go, so the rows
+  // the reader sees keep their place, and the window stays over the cap when they leave too
+  // few rows outside them. An older page or a live row lands at an end, so the newest end
+  // covers it; a backfill that sorts into the middle of a full window may need both.
+  private capWindow(next: ItemRow<T>[]): ItemRow<T>[] {
+    const max = this.config.hardMax;
+    if (this.autoStick || next.length <= max) {
+      return next;
+    }
+    const seen = new Set(this.visibleRows().map((r) => r.clientKey));
+    let first = -1;
+    let last = -1;
+    next.forEach((r, i) => {
+      if (seen.has(r.clientKey)) {
+        first = first < 0 ? i : first;
+        last = i;
+      }
+    });
+    const excess = next.length - max;
+    const fromNewest = Math.min(excess, last < 0 ? excess : next.length - 1 - last);
+    const fromOldest = Math.min(excess - fromNewest, first < 0 ? 0 : first);
+    let out = next;
+    if (fromNewest > 0) {
+      for (const r of out.slice(out.length - fromNewest)) {
+        this.heights.delete(r.clientKey);
+      }
+      out = out.slice(0, out.length - fromNewest);
       this.detached = true;
     }
+    return fromOldest > 0 ? this.trimOldest(out, fromOldest) : out;
+  }
+
+  // Let the window's `cut` oldest rows go. The host still holds them, so there is more to
+  // page again; an older page in flight would land above the gap they leave, so it is
+  // discarded.
+  private trimOldest(rows: ItemRow<T>[], cut: number): ItemRow<T>[] {
+    for (const r of rows.slice(0, cut)) {
+      this.heights.delete(r.clientKey);
+    }
+    this.more = true;
+    this.guard.claim("older");
+    if (this.inflight === "older") {
+      this.setInflight(null);
+    }
+    this.heldOld = [];
+    return rows.slice(cut);
   }
 
   /** A live row (events.new, chat.message) that matches the current filter. */
@@ -703,9 +756,11 @@ export class FeedVirtualizer<T> {
   private release(batch: T[]): void {
     const { key, compare } = this.config;
     const oldest = this.rows[0]?.item;
+    const newest = this.rows[this.rows.length - 1]?.item;
     const seen = new Set<string>();
     const accepted: T[] = [];
-    // Rows a detached window does not take: they only count toward `unseen`.
+    // Rows past a detached window's newest end, which it let go of: they only count toward
+    // `unseen`. One that sorts inside the window still joins it.
     const missed: T[] = [];
     for (const item of batch) {
       const k = key(item);
@@ -719,7 +774,7 @@ export class FeedVirtualizer<T> {
         }
         continue;
       }
-      if (this.detached) {
+      if (this.detached && newest !== undefined && compare(item, newest) > 0) {
         missed.push(item);
         continue;
       }
@@ -740,22 +795,11 @@ export class FeedVirtualizer<T> {
       next = this.rows.concat(added.sort(this.byOrder));
     }
     if (this.autoStick && next.length > this.effHigh()) {
-      // Trim back to base. Only an older page in flight is invalidated -- its rows would
-      // land above a gap -- never a load, which rebuilds the window itself.
-      const cut = next.length - this.effBase();
-      for (const r of next.slice(0, cut)) {
-        this.heights.delete(r.clientKey);
-      }
-      next = next.slice(cut);
-      this.more = true;
-      this.guard.claim("older");
-      if (this.inflight === "older") {
-        this.setInflight(null);
-      }
-      this.heldOld = [];
+      // Trim back to base. Only an older page in flight is invalidated, never a load, which
+      // rebuilds the window itself.
+      next = this.trimOldest(next, next.length - this.effBase());
     }
-    this.setRows(next);
-    this.detachIfOver();
+    this.setRows(this.capWindow(next));
   }
 
   // How many of `items` sort after the newest row the viewport shows: the ones the reader
@@ -764,6 +808,22 @@ export class FeedVirtualizer<T> {
     const last = this.lastVisible();
     const compare = this.config.compare;
     return last === undefined ? items.length : items.filter((i) => compare(i, last) > 0).length;
+  }
+
+  // The item rows the viewport shows, oldest first.
+  private visibleRows(): ItemRow<T>[] {
+    const rows = this.display;
+    const { tops, total } = this.layout;
+    const bottom = this.viewTop + this.viewH;
+    const out: ItemRow<T>[] = [];
+    for (let i = 0; i < rows.length && tops[i] < bottom; i++) {
+      const row = rows[i];
+      const end = i + 1 < rows.length ? tops[i + 1] : total;
+      if (row.kind === "item" && end > this.viewTop) {
+        out.push(row);
+      }
+    }
+    return out;
   }
 
   // The newest item the viewport shows, or undefined when it shows none.
@@ -791,7 +851,7 @@ export class FeedVirtualizer<T> {
     this.guard.supersede();
     this.epoch = epoch;
     this.cancelRetry();
-    this.retryMs = LOAD_RETRY_MS;
+    this.retryMs = RETRY_MS;
     this.retrying = false;
     this.staleFilter = false;
     this.restickOnLoad = false;
@@ -837,11 +897,13 @@ export class FeedVirtualizer<T> {
       this.viewH = node.clientHeight;
       const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= stickPx;
       this.anchor = this.mark(node.scrollTop, this.display, this.layout);
-      this.retryBlocked = false;
       if (this.detached) {
-        // The detached tail is stale, so reaching it reloads rather than sticking to it.
+        // The detached tail is stale, so reaching it reloads rather than sticking to it;
+        // the older end pages on as ever.
         if (atBottom && this.inflight !== "load") {
           this.reloadDetached();
+        } else {
+          this.maybeFetchOlder();
         }
         return;
       }

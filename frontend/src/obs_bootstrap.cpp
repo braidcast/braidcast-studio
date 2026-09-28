@@ -1437,7 +1437,7 @@ bool ObsBootstrap::Start()
 	// directory for the JSON stores, and nothing on this path goes through it, so a
 	// first run with no basic/ yet would fail to open.
 	os_mkdirs(std::filesystem::path(historyPath).parent_path().u8string().c_str());
-	if (!g_historyDb.Open(historyPath)) {
+	if (!g_historyDb.Open(historyPath, History::kHistoryLadder)) {
 		HostLog("[history] database unavailable: " + g_historyDb.LastError());
 	} else if (!g_sessions.Attach(historyPath) || !g_recorder.Attach(historyPath) ||
 		   !g_schedule.Attach(historyPath)) {
@@ -1467,6 +1467,13 @@ bool ObsBootstrap::Start()
 				" entr(ies) missed while the app was closed");
 		}
 	}
+
+	// Chat history on disk opens beside it, in its own file, before any chat transport can
+	// admit a message: the scrollback is seeded from what the archive kept, and a
+	// re-delivered message after a restart is then recognized. With retention Off (the
+	// default until the setting exists) nothing is created, and what an earlier launch
+	// stored is removed.
+	Chat::History().OpenArchive(Chat::ChatArchive::DefaultOptions(MultistreamBasicPath("chat.db")));
 
 	g_scheduledSetup.log = [](const std::string &line) {
 		HostLog(line);
@@ -9420,7 +9427,7 @@ void ObsBootstrap::RunScheduleSelfTest()
 	// cancel and revert state machine is covered by test_history against an injected
 	// clock, where there is no real configuration to damage.
 	json params = json::object();
-	params["startsAt"] = TimeUtil::NowMs() + 365LL * 24 * 60 * 60 * 1000;
+	params["startsAt"] = TimeUtil::NowMs() + 365 * TimeUtil::kDayMs;
 	params["title"] = "braidcast self-test";
 
 	json created;
@@ -10072,6 +10079,29 @@ void ObsBootstrap::RunEventsPagingSelfTest()
 	const bool hostileOk = refused({{"ts", 1e300}, {"id", "x"}}) && refused({{"ts", 1.5}, {"id", "x"}}) &&
 			       refused({{"ts", UINT64_MAX}, {"id", "x"}}) && limitOk;
 	HostLog(std::string("[selftest] events-paging hostile params -> ") + (hostileOk ? "OK" : "FAIL"));
+
+	// A removed account's events go, and only its; YouTube's are kept no longer than 30 days,
+	// and no other platform's age out.
+	Events::EventStore kept{Events::EventStore::InMemory{}};
+	const int64_t now = TimeUtil::NowMs();
+	const int64_t day = TimeUtil::kDayMs;
+	auto on = [&event](const std::string &id, const std::string &platform, int64_t ts,
+			   const std::string &accountId) {
+		Events::NormalizedEvent ev = event(id, ts, accountId);
+		ev.platform = platform;
+		return ev;
+	};
+	kept.Add(on("gone", "twitch", now, "acct-1"));
+	kept.Add(on("stays", "twitch", now, "acct-2"));
+	kept.Add(on("yt-old", " YouTube ", now - 31 * day, "acct-3"));
+	kept.Add(on("yt-new", "youtube", now - 29 * day, "acct-3"));
+	kept.Add(on("tw-old", "twitch", now - 90 * day, "acct-3"));
+	const size_t purged = kept.PurgeAccount("acct-1");
+	const size_t pruned = kept.PruneExpired();
+	const bool retentionOk = purged == 1 && pruned == 1 &&
+				 ids(kept.Page(std::nullopt, 30, Feed::Filter{})) == "tw-old,yt-new,stays";
+	HostLog(std::string("[selftest] events-paging purge + youtube 30-day prune -> ") +
+		(retentionOk ? "OK" : "FAIL"));
 }
 
 void ObsBootstrap::Stop(void (*drainCefTasks)())

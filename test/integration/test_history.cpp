@@ -7,6 +7,7 @@
 #include "history/Schema.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
+#include "util/time_util.hpp"
 
 #include <map>
 #include <string>
@@ -51,7 +52,7 @@ static void test_open_creates_database(void **state)
 	(void)state;
 	History::Db db;
 	const std::string path = TempDbPath("open_creates.db");
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(db.IsOpen());
 	db.Close();
 	assert_false(db.IsOpen());
@@ -61,7 +62,7 @@ static void test_open_sets_wal_and_version(void **state)
 {
 	(void)state;
 	History::Db db;
-	assert_true(db.Open(TempDbPath("wal_and_version.db")));
+	assert_true(db.Open(TempDbPath("wal_and_version.db"), History::kHistoryLadder));
 	assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
 	assert_string_equal(db.JournalMode().c_str(), "wal");
 	db.Close();
@@ -73,13 +74,13 @@ static void test_migration_is_idempotent(void **state)
 	const std::string path = TempDbPath("idempotent.db");
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		assert_true(SeedSession(db));
 		db.Close();
 	}
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
 		assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions"), 1);
 		db.Close();
@@ -117,7 +118,7 @@ static void test_v1_upgrades_to_current_preserving_rows(void **state)
 	const std::string path = TempDbPath("upgrade_from_v1.db");
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		assert_true(SeedSession(db));
 		assert_true(SeedDestination(db));
 		assert_true(WindBackToV1(db));
@@ -125,7 +126,7 @@ static void test_v1_upgrades_to_current_preserving_rows(void **state)
 		db.Close();
 	}
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions"), 1);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_destinations"), 1);
@@ -142,7 +143,7 @@ static void test_v2_upgrades_to_v3_preserving_rows(void **state)
 	const std::string path = TempDbPath("upgrade_v2_v3.db");
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, title) "
 				    "VALUES ('e1', 1, 1, 1000, 'Friday')"));
 		assert_true(db.Exec("INSERT INTO schedule_destinations "
@@ -155,7 +156,7 @@ static void test_v2_upgrades_to_v3_preserving_rows(void **state)
 		db.Close();
 	}
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 1);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations"), 1);
@@ -173,7 +174,7 @@ static void test_schedule_state_is_constrained(void **state)
 {
 	(void)state;
 	History::Db db;
-	assert_true(db.Open(TempDbPath("schedule_state.db")));
+	assert_true(db.Open(TempDbPath("schedule_state.db"), History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, state) "
 			    "VALUES ('e1', 1, 1, 1000, 'planned')"));
 	assert_false(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, state) "
@@ -186,7 +187,7 @@ static void test_schedule_delete_cascades_to_destinations(void **state)
 {
 	(void)state;
 	History::Db db;
-	assert_true(db.Open(TempDbPath("schedule_cascade.db")));
+	assert_true(db.Open(TempDbPath("schedule_cascade.db"), History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at) VALUES ('e1', 1, 1, 1000)"));
 	assert_true(db.Exec("INSERT INTO schedule_destinations (id, created_at, updated_at, schedule_id, profile_id) "
 			    "VALUES ('sd1', 1, 1, 'e1', 'p1')"));
@@ -211,7 +212,7 @@ static void test_schedule_create_round_trips(void **state)
 	(void)state;
 	const std::string path = TempDbPath("schedule_create.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	db.Close();
 
 	History::ScheduleStore store;
@@ -247,7 +248,7 @@ static void test_schedule_update_replaces_destinations(void **state)
 	(void)state;
 	const std::string path = TempDbPath("schedule_update.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	db.Close();
 
 	History::ScheduleStore store;
@@ -281,7 +282,7 @@ static void test_schedule_range_is_half_open_and_ordered(void **state)
 	(void)state;
 	const std::string path = TempDbPath("schedule_range.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	db.Close();
 
 	History::ScheduleStore store;
@@ -307,7 +308,7 @@ static void test_schedule_remove_keeps_the_session_it_planned(void **state)
 	(void)state;
 	const std::string path = TempDbPath("schedule_remove.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(SeedSession(db));
 
 	History::ScheduleStore store;
@@ -333,7 +334,7 @@ static void test_schedule_sweep_marks_only_unsettled_entries(void **state)
 	(void)state;
 	const std::string path = TempDbPath("schedule_sweep.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	db.Close();
 
 	History::ScheduleStore store;
@@ -371,12 +372,12 @@ static void test_newer_database_is_refused(void **state)
 	const std::string path = TempDbPath("newer.db");
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		assert_true(db.Exec("PRAGMA user_version = 999"));
 		db.Close();
 	}
 	History::Db db;
-	assert_false(db.Open(path));
+	assert_false(db.Open(path, History::kHistoryLadder));
 	assert_false(db.IsOpen());
 	assert_string_equal(db.LastError().c_str(), "history database is newer than this build");
 }
@@ -387,7 +388,7 @@ static void test_updated_at_trigger_fires(void **state)
 {
 	(void)state;
 	History::Db db;
-	assert_true(db.Open(TempDbPath("trigger.db")));
+	assert_true(db.Open(TempDbPath("trigger.db"), History::kHistoryLadder));
 	assert_true(SeedSession(db));
 	assert_true(SeedDestination(db));
 	assert_true(db.Exec("UPDATE sessions SET title = 'renamed' WHERE id = 's1'"));
@@ -400,7 +401,7 @@ static void test_delete_cascades_to_children(void **state)
 {
 	(void)state;
 	History::Db db;
-	assert_true(db.Open(TempDbPath("cascade.db")));
+	assert_true(db.Open(TempDbPath("cascade.db"), History::kHistoryLadder));
 	assert_true(SeedSession(db));
 	assert_true(SeedDestination(db));
 	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
@@ -426,7 +427,7 @@ static void test_orm_schema_matches_migrated_schema(void **state)
 	const std::string path = TempDbPath("orm_match.db");
 	{
 		History::Db db;
-		assert_true(db.Open(path));
+		assert_true(db.Open(path, History::kHistoryLadder));
 		db.Close();
 	}
 	auto storage = History::MakeStorage(path);
@@ -442,7 +443,7 @@ static void test_recovery_marks_unended_session_crashed(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recovery.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
 			    "VALUES ('s1', 1, 1, 1000, 'died', '[]')"));
 	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
@@ -468,7 +469,7 @@ static void test_recovery_without_health_falls_back_to_start(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recovery_nohealth.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
 			    "VALUES ('s1', 1, 1, 1000, 'died fast', '[]')"));
 
@@ -485,7 +486,7 @@ static void test_recovery_leaves_clean_sessions_alone(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recovery_clean.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, ended_at, end_reason, "
 			    "title, canvas_uuids) VALUES ('s1', 1, 1, 1000, 4000, 'ended', 'fine', '[]')"));
 
@@ -500,7 +501,7 @@ static void test_list_is_newest_first_and_paged(void **state)
 	(void)state;
 	const std::string path = TempDbPath("list_paged.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	for (int i = 1; i <= 5; i++) {
 		char sql[256];
 		snprintf(sql, sizeof sql,
@@ -522,7 +523,7 @@ static void test_remove_takes_children_with_it(void **state)
 	(void)state;
 	const std::string path = TempDbPath("remove.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
 			    "VALUES ('s1', 1, 1, 1000, 'doomed', '[]')"));
 	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
@@ -543,7 +544,7 @@ static void test_recorder_opens_and_closes_a_session(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recorder_basic.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 
 	History::SessionRecorder rec;
 	assert_true(rec.Attach(path));
@@ -585,7 +586,7 @@ static void test_recorder_downsamples_to_ten_seconds(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recorder_downsample.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	History::SessionRecorder rec;
 	assert_true(rec.Attach(path));
 
@@ -623,7 +624,7 @@ static void test_recorder_survives_a_counter_reset(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recorder_reset.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	History::SessionRecorder rec;
 	assert_true(rec.Attach(path));
 	History::SessionStart start;
@@ -653,7 +654,7 @@ static void test_recorder_ignores_samples_when_not_recording(void **state)
 	(void)state;
 	const std::string path = TempDbPath("recorder_idle.db");
 	History::Db db;
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	History::SessionRecorder rec;
 	assert_true(rec.Attach(path));
 	History::HealthSample s;
@@ -693,7 +694,7 @@ struct RunnerFixture {
 static void OpenRunner(RunnerFixture &f, const char *name)
 {
 	const std::string path = TempDbPath(name);
-	assert_true(f.db.Open(path));
+	assert_true(f.db.Open(path, History::kHistoryLadder));
 	assert_true(f.store.Attach(path));
 	f.runner.Attach(&f.store);
 	f.runner.nowMs = [&f] {
@@ -1542,7 +1543,7 @@ static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 
 	History::ScheduleEntry moved = *f.store.Get(id);
-	moved.startsAt = startsAt + 24 * 60 * 60 * 1000;
+	moved.startsAt = startsAt + TimeUtil::kDayMs;
 	History::ScheduleDestination d;
 	d.profileId = "p1";
 	assert_true(f.store.Update(moved, {d}));
@@ -1573,7 +1574,7 @@ static void test_runner_disarms_on_an_edit_without_waiting_for_a_tick(void **sta
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 
 	History::ScheduleEntry moved = *f.store.Get(id);
-	moved.startsAt = startsAt + 24 * 60 * 60 * 1000;
+	moved.startsAt = startsAt + TimeUtil::kDayMs;
 	assert_true(f.store.Update(moved, {}));
 	f.runner.NoteEntryChanged(id);
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
@@ -3251,7 +3252,7 @@ static void test_schedule_recovers_interrupted_rows(void **state)
 	History::Db db;
 	History::ScheduleStore store;
 	const std::string path = TempDbPath("schedule_recover.db");
-	assert_true(db.Open(path));
+	assert_true(db.Open(path, History::kHistoryLadder));
 	assert_true(store.Attach(path));
 
 	History::ScheduleEntry armed = MakeEntry(10'000'000, "armed one");

@@ -618,10 +618,23 @@ void RunEventSelfTest();
 // `more`, the destination filter, the clear epoch). Touches no config and not the live
 // Chat::History(). Gated by the caller to the smoke path.
 void RunChatHistorySelfTest();
+// Headless proof for the chat archive (chat/chat_archive.hpp) on private archives in a
+// scratch directory: paging on past the ring into chat.db with no gap, redaction both
+// queued and committed, a Clear ordered against queued rows, a retention sweep under a
+// continuous reader, the relaunch rules per mode, a corrupt file set aside byte for byte,
+// a newer build's file left untouched, Shutdown draining a full queue, the one-writer
+// lock, activation mid-session (reporting "not known yet" until chat.db is readable),
+// quarantined copies under retention and per mode, the account purge, Off removing what
+// was stored but never a file whose version it cannot read (and trying again once it can),
+// no writer thread while Off, Degraded holding across Off and on, a writer that cannot be
+// started taking its store with it, and Session deleting a corrupt file outright. Touches
+// neither Chat::Archive() nor the user's chat.db. Gated by the caller to the smoke path.
+void RunChatArchiveSelfTest();
 // Headless proof for events.list paging on a private in-memory EventStore: (ts, id) order
 // with a UTF-8 byte tie-break, a cursor past evicted rows returning an empty last page,
 // accountId/profileUuid surviving the events.json shape, the destination filter, the
-// clear epoch, and the filter-parity table the webview's test shares. Touches no config.
+// clear epoch, the filter-parity table the webview's test shares, the account purge, and
+// YouTube's 30-day storage limit. Touches no config.
 // Gated by the caller to the smoke path.
 void RunEventsPagingSelfTest();
 // Overlay-server smoke: bind an ephemeral port, GET an assembled document for an

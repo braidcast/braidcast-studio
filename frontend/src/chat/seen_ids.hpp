@@ -11,7 +11,7 @@
 // continuation, and Facebook's live-comment stream carries no resume, so each reconnect
 // gap-fills over a window the stream may also have covered. Dedupe is by platform message
 // id and eviction is oldest-first, so the set cannot grow with uptime on a day-long
-// broadcast. The hub's scrollback ring (chat_history.hpp) indexes itself with one too.
+// broadcast.
 namespace Chat {
 
 class SeenIds {

@@ -38,6 +38,7 @@
 
 #include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
+#include "chat/chat_archive.hpp"
 #include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp"
 #include "chat/chat_transport.hpp"
@@ -8779,6 +8780,19 @@ json BuildStatsSnapshot()
 // dock whose timer stopped kept rendering its last snapshot with no cue -- and
 // concurrent pollers split the CPU/bitrate deltas between them, understating both.
 constexpr int64_t kStatsSampleIntervalMs = 1000;
+constexpr int64_t kEventsPruneIntervalMs = 60LL * 60 * 1000;
+
+// Hourly: drop stored events past their platform's storage limit (the at-load pass is in
+// the store's constructor). The store writes events.json only when something was dropped.
+void PruneEventsTick()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (g_bridgeShutdown.load(std::memory_order_acquire)) {
+		return;
+	}
+	Events::Store().PruneExpired();
+	CefPostDelayedTask(TID_UI, base::BindOnce(&PruneEventsTick), kEventsPruneIntervalMs);
+}
 
 void SampleStatsTick()
 {
@@ -13240,6 +13254,10 @@ void TeardownAccount(const std::string &accountId)
 		}
 	}
 	Events::Hub().StopAccount(accountId);
+	// A removed account's stored data goes with it (YouTube's policy requires deleting it
+	// within 7 days of a revocation). Both only drop rows; chat's is queued to its writer.
+	Events::Store().PurgeAccount(accountId);
+	Chat::Archive().PurgeAccount(accountId);
 	// Chat is live-only, so re-resolve it only while streaming: a mid-stream disconnect
 	// drops the removed account's transport (Start() enumerates only still-connected
 	// accounts); off-air the hub is stopped and must stay down.
@@ -14010,6 +14028,11 @@ bool MethodChatList(const json &params, json &result, std::string &error)
 		return false;
 	}
 	Chat::ChatPage page = Chat::History().Page(before, limit, filter);
+	if (page.unreadable) {
+		// Not an empty page: that would tell the dock it has reached the start of history.
+		error = "chat.list: chat history is still opening; try again";
+		return false;
+	}
 	result = Feed::PageJson(std::move(page.items), page.more, page.epoch);
 	return true;
 }
@@ -15467,6 +15490,7 @@ void Init()
 	// Arm the host-side stats sampler. Posted rather than called inline so the first
 	// sample lands on the CEF UI thread once the message loop is running.
 	CefPostDelayedTask(TID_UI, base::BindOnce(&SampleStatsTick), 0);
+	CefPostDelayedTask(TID_UI, base::BindOnce(&PruneEventsTick), kEventsPruneIntervalMs);
 
 	HostLog("[bridge] init: " + std::to_string(g_methods.size()) + " methods, " +
 		std::to_string(g_asyncMethods.size()) + " async methods");
@@ -15513,6 +15537,10 @@ void Shutdown()
 	// Persist any debounced trailing event now that the workers are stopped and no
 	// further Add can race the write (the store coalesces writes; this is the flush).
 	Events::Store().Flush();
+	// Commit the queued chat and stop the archive's writer: the transports are stopped, so
+	// nothing more is admitted. A chat.list still running on a worker the drain gave up on
+	// finds the read connection closed and serves the in-memory ring alone.
+	Chat::Archive().Shutdown();
 	// Phase 9.3: stop the overlay loopback server (closes every SSE socket + joins its
 	// threads) after the event transports are down, so no in-flight Broadcast races the
 	// teardown, and before CEF shutdown so no dangling send hits a torn-down host.

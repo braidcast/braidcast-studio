@@ -12,6 +12,7 @@
 
 #include "event_model.hpp"
 #include "../chat/feed_query.hpp"
+#include "../util/time_util.hpp"
 
 // The persisted, de-duplicated event history (Phase 9.2a). A single global file
 // (<config>/braidcast/basic/events.json -- the same dir as streams.json,
@@ -41,7 +42,11 @@ struct EventPage {
 
 class EventStore {
 public:
-	EventStore() { Load(); }
+	EventStore()
+	{
+		Load();
+		PruneExpired();
+	}
 
 	// A store that neither reads nor writes events.json, for self-tests that must not
 	// touch the user's file.
@@ -64,6 +69,25 @@ public:
 	// Drop all history + persist the empty file, for events.clear. Returns the new epoch.
 	uint64_t Clear();
 
+	// Drop every stored event of `accountId` and persist, for an account's removal (a
+	// revoked grant's data must go). Returns how many were dropped.
+	size_t PurgeAccount(const std::string &accountId);
+
+	// Drop the events of `platform` (as platformKey() normalizes it) older than
+	// `cutoffMs` and persist. Returns how many were dropped.
+	size_t PruneOlderThan(const std::string &platform, int64_t cutoffMs);
+
+	// Apply every platform's storage limit (kMaxAge) as of now. Runs at load and hourly.
+	size_t PruneExpired();
+
+	// How long a platform's events may be kept: YouTube's API policy caps stored API data
+	// at 30 days.
+	struct MaxAge {
+		const char *platform;
+		int64_t ms;
+	};
+	static constexpr MaxAge kMaxAge[] = {{"youtube", 30 * TimeUtil::kDayMs}};
+
 	// Persist any coalesced pending write immediately. Called on clean shutdown so a
 	// debounced trailing event isn't lost. No-op when nothing is dirty.
 	void Flush();
@@ -75,6 +99,11 @@ public:
 
 private:
 	void Load(); // read events.json into events_/ids_ (called from the ctor)
+
+	// Drop every event `drop` selects and persist the rest. Opens a new write epoch, as
+	// Clear does, so an in-flight snapshot that still holds a dropped event cannot be
+	// written after this and bring it back.
+	template<typename Pred> size_t RemoveIf(Pred drop);
 
 	// Serialize events_ into the on-disk shape. Caller must hold mutex_.
 	json BuildJsonLocked() const;
@@ -94,8 +123,8 @@ private:
 	bool dirty_ = false;                  // unpersisted change pending (guarded by mutex_)
 	uint64_t lastSaveNs_ = 0;             // last WriteToDisk time (guarded by mutex_)
 
-	// Monotonic write-epoch counter, bumped by Clear() (a content discontinuity) under
-	// mutex_. Add/Clear/Flush capture its value with their snapshot; WriteToDisk drops any
+	// Monotonic write-epoch counter, bumped by Clear() and by every removal (content
+	// discontinuities) under mutex_. Add/Clear/Flush capture its value with their snapshot; WriteToDisk drops any
 	// snapshot older than the last written epoch, so a stale in-flight Add that built its
 	// snapshot before a Clear can't win writeMutex_ afterward and resurrect the wiped feed.
 	// It is also the epoch a Page reports, which is how a dock tells a pre-Clear page apart.

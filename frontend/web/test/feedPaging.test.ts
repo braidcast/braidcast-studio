@@ -36,7 +36,7 @@ function screenTop<T>(h: Harness<T>, item: T): number {
 
 // NUMBERS: viewport 100px, rows 20px, top row 10px. A load asks for three screens (15
 // rows), an older page for 5, a window stuck to the bottom trims past 60 rows, and one the
-// reader is scrolled up in detaches past 40.
+// reader is scrolled up in holds at most 40, letting its newest end go past that.
 
 describe("paged window: loading", () => {
   test("load fills three screens by chaining pages, stops on more:false, and shows the start", async () => {
@@ -105,6 +105,26 @@ describe("paged window: loading", () => {
     await h.host.fail();
     frame();
     expect(items(h)).toEqual([7]);
+    h.stop();
+  });
+
+  test("a failed older page is asked for again after a pause, never straight away", async () => {
+    const h = harness<number>(NUMBERS);
+    h.host.store = range(1, 100);
+    h.v.load();
+    await h.host.reply(); // 86..100
+    h.el.userScroll(100);
+    expect(h.host.calls.length).toBe(1);
+    await h.host.fail(); // the host could not read its history yet
+    expect(h.v.top).toBe("idle"); // older rows are still there: not the start
+    h.el.userScroll(90);
+    frame();
+    expect(h.host.calls.length).toBe(0); // nothing asked until the pause is over
+    expect(timer()).toBe(true);
+    expect(h.host.calls.length).toBe(1);
+    expect(h.host.calls[0].before).toBe(86);
+    await h.host.reply();
+    expect(items(h)[0]).toBe(81);
     h.stop();
   });
 });
@@ -412,6 +432,116 @@ describe("paged window: scrolled up", () => {
     await h.host.reply();
     expect(h.v.detached).toBe(false);
     expect(items(h)).toContain(500);
+    h.stop();
+  });
+});
+
+describe("paged window: detached", () => {
+  // Scrolled up with 55 rows arrived: the window keeps its oldest 40 and lets 226..240 go.
+  async function detachedAt160(): Promise<Harness<number>> {
+    const h = harness<number>(NUMBERS);
+    h.host.store = range(1, 240);
+    h.host.store.length = 200; // the host has 1..200 when the dock opens
+    h.v.load();
+    await h.host.reply(); // 186..200
+    h.el.userScroll(160); // 1.6 screens down: no older page yet
+    h.host.store = range(1, 240);
+    for (const n of range(201, 240)) {
+      h.v.live(n);
+    }
+    frame();
+    return h;
+  }
+
+  test("the newest end goes past hardMax, and the rows the reader sees keep their place", async () => {
+    const h = await detachedAt160();
+    expect(h.v.detached).toBe(true);
+    expect(items(h)).toEqual(range(186, 225));
+    expect(underEye(h)).toEqual({ item: 193, offset: 10 });
+    expect(h.v.unseen).toBe(40); // every live row arrived below the viewport
+    h.stop();
+  });
+
+  test("older pages still load, all the way to the start, and the window never passes hardMax", async () => {
+    const h = await detachedAt160();
+    h.el.userScroll(100); // within 1.5 screens of the top
+    let pages = 0;
+    while (h.host.calls.length > 0 && pages < 100) {
+      const eye = underEye(h);
+      const before = h.host.calls[0].before;
+      await h.host.reply();
+      pages++;
+      expect(h.v.rows.length).toBeLessThanOrEqual(NUMBERS.hardMax);
+      // The page opened above the reader and the newest end went below: neither moved them.
+      expect(underEye(h)).toEqual(eye);
+      expect(items(h)[0]).toBeLessThan(before!);
+      if (h.host.calls.length === 0 && h.v.more) {
+        h.el.userScroll(100);
+      }
+    }
+    expect(items(h)[0]).toBe(1);
+    expect(h.v.more).toBe(false);
+    expect(h.v.top).toBe("start");
+    expect(h.v.detached).toBe(true);
+    expect(items(h)).toEqual(range(1, 40));
+    h.stop();
+  });
+
+  test("live rows past the window only count as unseen; jumping to latest reloads the newest page", async () => {
+    const h = await detachedAt160();
+    h.el.userScroll(100);
+    await h.host.reply(); // 181..185 above; 221..225 let go below
+    const unseen = h.v.unseen;
+    h.v.live(241);
+    h.v.merge([185.5]); // sorts inside the window: it joins, above the reader
+    frame();
+    expect(items(h)).not.toContain(241);
+    expect(items(h)).toContain(185.5);
+    expect(h.v.rows.length).toBeLessThanOrEqual(NUMBERS.hardMax);
+    expect(h.v.unseen).toBe(unseen + 1);
+
+    h.host.store = [...range(1, 241)];
+    while (h.host.calls.length > 0) {
+      await h.host.reply(); // any older page the settle asked for
+    }
+    h.v.jumpToLatest();
+    expect(h.host.calls.at(-1)!.before).toBeUndefined();
+    await h.host.reply();
+    expect(h.v.detached).toBe(false);
+    expect(h.v.autoStick).toBe(true);
+    expect(h.v.unseen).toBe(0);
+    expect(items(h).at(-1)).toBe(241);
+    h.stop();
+  });
+});
+
+describe("paged window: full and scrolled up", () => {
+  test("a backfill into a full window never lets go of a row the reader can see", async () => {
+    const h = harness<number>(NUMBERS);
+    h.host.store = range(10, 400, 10);
+    h.v.load();
+    await h.host.reply(); // 260..400
+    for (const n of range(410, 650, 10)) {
+      h.v.live(n);
+    }
+    frame(); // stuck to the bottom: 260..650, exactly hardMax
+    expect(h.v.rows.length).toBe(NUMBERS.hardMax);
+    h.el.userScroll(h.el.scrollTop - 30); // just past stickPx: the newest rows still show
+    expect(h.v.autoStick).toBe(false);
+    const shown = items(h).filter((n) => screenTop(h, n) + NUMBERS.estimate > 0 && screenTop(h, n) < 100);
+    expect(shown).toEqual(range(590, 640, 10));
+    const at = shown.map((n) => screenTop(h, n));
+
+    h.v.merge([265, 275, 285]); // backfilled above the reader, into a window already full
+    frame();
+    expect(h.v.rows.length).toBe(NUMBERS.hardMax);
+    expect(shown.map((n) => screenTop(h, n))).toEqual(at);
+    // 650, below the viewport, went first; the rest came off the oldest end.
+    expect(items(h)).not.toContain(650);
+    expect(items(h).slice(0, 4)).toEqual([270, 275, 280, 285]);
+    expect(h.v.detached).toBe(true);
+    expect(h.v.more).toBe(true);
+    expect(h.v.unseen).toBe(0);
     h.stop();
   });
 });

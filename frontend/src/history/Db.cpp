@@ -26,13 +26,16 @@ Db::~Db()
 	Close();
 }
 
-bool Db::Open(const std::string &path)
+bool Db::Open(const std::string &path, const Ladder &ladder)
 {
 	Close();
+	newerSchema_ = false;
+	lastErrorCode_ = 0;
 	const int rc = sqlite3_open_v2(path.c_str(), &handle_,
 				       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
 	if (rc != SQLITE_OK) {
 		lastError_ = handle_ ? sqlite3_errmsg(handle_) : "out of memory opening the database";
+		lastErrorCode_ = rc;
 		Close();
 		return false;
 	}
@@ -43,12 +46,30 @@ bool Db::Open(const std::string &path)
 	// gives the amalgamation. The duplication is deliberate: losing that build
 	// definition would stop every ON DELETE CASCADE from firing, and the symptom
 	// is orphan rows accumulating silently rather than anything failing.
-	if (!Exec("PRAGMA journal_mode = WAL") || !Exec("PRAGMA foreign_keys = ON") ||
-	    !Exec("PRAGMA busy_timeout = 3000")) {
+	if (!Exec("PRAGMA foreign_keys = ON") || !Exec("PRAGMA busy_timeout = 3000")) {
 		Close();
 		return false;
 	}
-	if (!Migrate()) {
+	// A newer build's file is refused before the journal-mode switch below, which
+	// rewrites the header of a file not already in WAL: a downgrade must leave the
+	// file exactly as the newer build wrote it. Migrate re-checks inside its
+	// transaction, where the answer cannot go stale.
+	int version = 0;
+	if (!ReadVersion(version)) {
+		Close();
+		return false;
+	}
+	if (version > ladder.Current()) {
+		newerSchema_ = true;
+		lastError_ = std::string(ladder.name) + " database is newer than this build";
+		Close();
+		return false;
+	}
+	if (!Exec("PRAGMA journal_mode = WAL")) {
+		Close();
+		return false;
+	}
+	if (!Migrate(ladder)) {
 		Close();
 		return false;
 	}
@@ -73,6 +94,29 @@ int Db::Version() const
 	return static_cast<int>(version);
 }
 
+bool Db::ReadVersion(int &version)
+{
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(handle_, "PRAGMA user_version", -1, &stmt, nullptr) != SQLITE_OK) {
+		RecordError();
+		return false;
+	}
+	const int rc = sqlite3_step(stmt);
+	version = rc == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0;
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+		RecordError();
+		return false;
+	}
+	return true;
+}
+
+void Db::RecordError()
+{
+	lastError_ = sqlite3_errmsg(handle_);
+	lastErrorCode_ = sqlite3_errcode(handle_);
+}
+
 bool Db::RequireOpen()
 {
 	if (handle_) {
@@ -89,6 +133,7 @@ bool Db::Exec(const char *sql)
 	}
 	char *err = nullptr;
 	if (sqlite3_exec(handle_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+		lastErrorCode_ = sqlite3_errcode(handle_);
 		lastError_ = err ? err : sqlite3_errmsg(handle_);
 		sqlite3_free(err);
 		return false;

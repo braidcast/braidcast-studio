@@ -19,6 +19,14 @@ namespace JsonUtil {
 
 using json = nlohmann::json;
 
+// Serialize without ever throwing: text that is not valid UTF-8 (raw IRC bytes, a
+// response body embedded in a diagnostic) is written as U+FFFD instead of making dump()
+// throw.
+inline std::string DumpLossy(const json &j)
+{
+	return j.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 // Parse a response body into JSON, tolerating garbage (returns a null json on
 // failure rather than throwing).
 inline json ParseJson(const std::string &body)

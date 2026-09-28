@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "json_util.hpp"
+
 namespace Err {
 
 namespace {
@@ -11,13 +13,6 @@ using json = nlohmann::json;
 // The envelope discriminator. Decode REQUIRES it, so a legitimate plain error
 // that merely happens to start with '{' can never be misread as an envelope.
 constexpr const char *kTag = "__err";
-
-// dump() must never throw into CEF or a detached worker: diagnostics embed raw
-// response bodies that may hold invalid UTF-8, so encode with lossy replacement.
-std::string Dump(const json &j)
-{
-	return j.dump(-1, ' ', false, json::error_handler_t::replace);
-}
 
 // True (filling d/u) only for a well-formed envelope: an object carrying the
 // discriminator and a string "d". Anything else -- plain string, foreign JSON,
@@ -50,7 +45,8 @@ bool Decode(const std::string &err, std::string &d, std::string &u)
 
 std::string User(const std::string &diagnostic, const std::string &userMessage)
 {
-	return Dump(json{{kTag, 1}, {"d", diagnostic}, {"u", userMessage}});
+	// Never throws into CEF or a detached worker: diagnostics embed raw response bodies.
+	return JsonUtil::DumpLossy(json{{kTag, 1}, {"d", diagnostic}, {"u", userMessage}});
 }
 
 std::string Wrap(const std::string &prefix, const std::string &err)
@@ -58,7 +54,7 @@ std::string Wrap(const std::string &prefix, const std::string &err)
 	std::string d;
 	std::string u;
 	if (Decode(err, d, u)) {
-		return Dump(json{{kTag, 1}, {"d", prefix + d}, {"u", u}});
+		return JsonUtil::DumpLossy(json{{kTag, 1}, {"d", prefix + d}, {"u", u}});
 	}
 	return prefix + err;
 }

@@ -379,6 +379,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunDevToolsPortSelfTest();
 				ObsBootstrap::RunEventSelfTest();
 				ObsBootstrap::RunChatHistorySelfTest();
+				ObsBootstrap::RunChatArchiveSelfTest();
 				ObsBootstrap::RunEventsPagingSelfTest();
 				ObsBootstrap::RunOverlaySelfTest();
 				ObsBootstrap::RunNativeThemeSelfTest();

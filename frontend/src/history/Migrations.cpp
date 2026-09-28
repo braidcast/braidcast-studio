@@ -1,6 +1,7 @@
 #include "Db.hpp"
 
 #include <cstdio>
+#include <string>
 #include <iterator>
 #include <utility>
 
@@ -164,11 +165,6 @@ constexpr const char *kMigration3 = R"SQL(
 ALTER TABLE schedule_destinations ADD COLUMN category_id TEXT NOT NULL DEFAULT '';
 )SQL";
 
-struct Migration {
-	int version;
-	const char *sql;
-};
-
 // Appending a migration is one entry here plus a bump of kCurrentSchemaVersion.
 constexpr Migration kMigrations[] = {
 	{1, kMigration1},
@@ -182,6 +178,8 @@ static_assert(kMigrations[std::size(kMigrations) - 1].version == kCurrentSchemaV
 	      "bump kCurrentSchemaVersion when appending a migration");
 
 } // namespace
+
+const Ladder kHistoryLadder{"history", kMigrations};
 
 bool Db::RollbackWith(std::string reason)
 {
@@ -200,19 +198,22 @@ bool Db::RollbackWith(std::string reason)
 // version read outside the transaction lets both processes decide to migrate.
 // BEGIN IMMEDIATE plus the connection's busy timeout serialises them, and the
 // loser then sees the winner's version and commits an empty transaction.
-bool Db::Migrate()
+bool Db::Migrate(const Ladder &ladder)
 {
 	if (!Exec("BEGIN IMMEDIATE")) {
 		return false;
 	}
+	const int current = ladder.Current();
 	const int from = Version();
-	if (from > kCurrentSchemaVersion) {
-		return RollbackWith("history database is newer than this build");
+	if (from > current) {
+		newerSchema_ = true;
+		return RollbackWith(std::string(ladder.name) + " database is newer than this build");
 	}
-	if (from == kCurrentSchemaVersion) {
+	if (from == current) {
 		return Exec("COMMIT");
 	}
-	for (const Migration &m : kMigrations) {
+	for (size_t i = 0; i < ladder.count; ++i) {
+		const Migration &m = ladder.steps[i];
 		if (m.version <= from) {
 			continue;
 		}
@@ -221,9 +222,9 @@ bool Db::Migrate()
 		}
 	}
 	// `PRAGMA user_version` accepts no bound parameter, so the value is
-	// formatted in. It is a compile-time constant, never input.
+	// formatted in. It is the ladder's own constant, never input.
 	char pragma[64];
-	snprintf(pragma, sizeof pragma, "PRAGMA user_version = %d", kCurrentSchemaVersion);
+	snprintf(pragma, sizeof pragma, "PRAGMA user_version = %d", current);
 	if (!Exec(pragma)) {
 		return RollbackWith(lastError_);
 	}

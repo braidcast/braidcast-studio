@@ -25,10 +25,17 @@ constexpr size_t kMaxLimit = 200;
 constexpr size_t kChatPageDefault = 50;
 constexpr size_t kEventPageDefault = 30;
 
+// A platform name as filters and stored rows compare it: trimmed and lowercased, as the
+// webview's platformKey() spells it.
+inline std::string NormalizePlatform(const std::string &platform)
+{
+	return StringUtil::ToLower(StringUtil::Trim(platform));
+}
+
 struct Filter {
 	enum class Kind { All, Platform, Destination };
 	Kind kind = Kind::All;
-	std::string platform;    // Platform: trimmed + lowercased, as the webview's platformKey()
+	std::string platform;    // Platform: NormalizePlatform'd
 	std::string profileUuid; // Destination: the selected stream profile, never empty
 	std::string accountId;   // Destination: that profile's account ("" when the dock has none)
 
@@ -41,7 +48,7 @@ struct Filter {
 		case Kind::All:
 			return true;
 		case Kind::Platform:
-			return StringUtil::ToLower(StringUtil::Trim(itemPlatform)) == platform;
+			return NormalizePlatform(itemPlatform) == platform;
 		case Kind::Destination:
 			return itemProfileUuid == profileUuid ||
 			       (itemProfileUuid.empty() && itemAccountId == accountId);
@@ -76,7 +83,7 @@ inline bool ParseFilter(const json &params, Filter &out, std::string &error)
 	}
 	if (kind == "platform") {
 		out.kind = Filter::Kind::Platform;
-		out.platform = StringUtil::ToLower(StringUtil::Trim(str("platform")));
+		out.platform = NormalizePlatform(str("platform"));
 		if (out.platform.empty()) {
 			error = "a platform filter needs a platform";
 			return false;

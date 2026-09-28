@@ -208,9 +208,14 @@ target_sources(
     src/chat/chat_transport.hpp
     src/chat/chat_hub.cpp
     src/chat/chat_hub.hpp
-    # The in-memory multichat scrollback chat.list pages from, and the hub's dedupe.
+    # The multichat scrollback chat.list pages from, and the hub's dedupe.
     src/chat/chat_history.cpp
     src/chat/chat_history.hpp
+    # chat.db: the scrollback on disk past the ring, its writer thread and schema ladder.
+    src/chat/chat_archive.cpp
+    src/chat/chat_archive.hpp
+    src/chat/chat_archive_schema.cpp
+    src/chat/chat_archive_selftest.cpp
     # The destination filter, page bounds and page shape events.list and chat.list share.
     src/chat/feed_query.hpp
     # Phase 9.0 Task 3: Twitch IRC-over-WebSocket chat transport (read + send),

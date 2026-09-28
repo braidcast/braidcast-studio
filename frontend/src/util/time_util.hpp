@@ -13,6 +13,9 @@
 // / `long long` NowMs / Rfc3339ToEpochMs alongside the int64_t copies).
 namespace TimeUtil {
 
+// One day in milliseconds, the unit NowMs() counts in.
+inline constexpr int64_t kDayMs = 24LL * 60 * 60 * 1000;
+
 // Current wall-clock time in epoch milliseconds.
 inline int64_t NowMs()
 {
