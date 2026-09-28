@@ -1200,9 +1200,9 @@ bool ChatArchive::AcquireLock()
 	if (lock_) {
 		return true;
 	}
-	// Opened without sharing, so a second instance on the same data directory -- reached
-	// through a different path, which the single-instance guard cannot see -- fails here.
-	// The file goes with the handle, a crash included.
+	// Opened without sharing, so a second instance on the same data directory that got
+	// past the single-instance guard (another logon session, an older build, a dangling
+	// junction) fails here. The file goes with the handle, a crash included.
 	const std::wstring path = Encoding::Utf8ToWide(options_.path + kLockSuffix);
 	HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
 				    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);

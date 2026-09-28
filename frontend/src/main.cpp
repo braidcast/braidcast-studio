@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -45,6 +46,7 @@
 #include "util/fnv1a.hpp"
 #include "util/paths.hpp"
 #include "util/session_log.hpp"
+#include "util/text_encoding.hpp"
 #include "util/win_dll_blocklist.h"
 #include "windowing/tray.hpp"
 #include "windowing/window_chrome.hpp"
@@ -126,10 +128,10 @@ std::unique_ptr<FilterPreview> g_filterPreview;
 std::unique_ptr<TrayIcon> g_tray;
 
 // Process-lifetime single-instance guard. Held from startup to a clean exit; the
-// OS releases it if the process dies. Keyed on the resolved config dir so a
-// portable dev build and an installed release (different config bases) never block
-// each other -- only "same config launched twice", the real state-corruption
-// hazard, is refused.
+// OS releases it if the process dies. Keyed on the config dir's final path, so a
+// portable dev build and an installed release block each other only when they share
+// one data dir (a junctioned portable config) -- "same config launched twice", the
+// real state-corruption hazard, is what gets refused.
 HANDLE g_instance_mutex = nullptr;
 
 // Init-stage guards for the two Teardown() steps that are only valid once their
@@ -198,14 +200,21 @@ void AddObsBinDirToSearchPath()
 	AddDllDirectory(dir.c_str());
 }
 
-// FNV-1a of the config dir, ASCII-case-folded so path-casing variance can't split
-// one install into two instances. Yields a mutex-name-safe hex token: a raw path
-// can't name a mutex (backslash is the object-namespace separator).
+// FNV-1a of the config dir's final path, ASCII-case-folded so path-casing variance
+// can't split one install into two instances. Yields a mutex-name-safe hex token: a
+// raw path can't name a mutex (backslash is the object-namespace separator).
 std::wstring ConfigInstanceToken(const std::string &configDir)
 {
-	// Case-folded first: the same directory reached through differently-cased paths is
+	// Resolved first: the dev rundir's config is a junction to %APPDATA%/braidcast, and
+	// two builds writing one data dir through different spellings must still collide.
+	// weakly_canonical so a first launch, before the dir exists, hashes the same path
+	// the later launches will.
+	std::error_code ec;
+	const std::filesystem::path resolved =
+		std::filesystem::weakly_canonical(std::filesystem::path(Encoding::Utf8ToWide(configDir)), ec);
+	// Case-folded next: the same directory reached through differently-cased paths is
 	// one install, and Windows paths are case-insensitive.
-	std::string folded = configDir;
+	std::string folded = ec ? configDir : Encoding::WideToUtf8(resolved.c_str());
 	for (char &c : folded) {
 		if (c >= 'A' && c <= 'Z') {
 			c = static_cast<char>(c - 'A' + 'a');
@@ -726,9 +735,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	// Single-instance guard, before any CEF/libobs/window bring-up so a rejected
 	// second launch exits cleanly with no partial state. Keyed on the resolved
-	// config dir (BraidcastConfigDir, shared with every store) so only a launch
-	// against the SAME config is refused -- a portable dev build and an installed
-	// release keep their own single instances without blocking each other.
+	// config dir (BraidcastConfigDir, shared with every store, junctions followed) so
+	// only a launch against the SAME config is refused -- a portable dev build and an
+	// installed release keep their own single instances unless the portable config
+	// is a junction to the installed one's data dir.
 	if (!AcquireSingleInstance(BraidcastConfigDir())) {
 		HostLog("[host] another instance already owns this config -- exiting");
 		// RtwqStartup() already ran; route through Teardown() to shut it down and
