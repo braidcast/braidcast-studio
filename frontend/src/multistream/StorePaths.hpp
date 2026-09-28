@@ -82,6 +82,13 @@ struct KeptStoreCopy {
 // instead. nullopt only when the copy could not be written.
 std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, const std::string &prefix);
 
+// For a load that got nothing usable from `absPath`. False on a first run (neither the
+// file nor its ".bak" is on disk): the caller saves its defaults. Otherwise the file is
+// kept through KeepUnusableStoreFile, the outcome is logged under `tag`, and the caller
+// runs on defaults without saving until the user changes something. Not for a store
+// under a retention or purge rule (events, chat): the copy would outlive both.
+bool KeepUnusableStore(const std::string &absPath, const std::string &prefix, const std::string &tag);
+
 // Wrap `arr` as the sole `key` member of a JSON object -- the envelope shape every
 // array-backed store file on disk holds. Does not take ownership of `arr`.
 nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr);

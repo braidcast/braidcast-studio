@@ -6,7 +6,6 @@
 
 #include <array>
 #include <chrono>
-#include <filesystem>
 #include <future>
 #include <memory>
 #include <set>
@@ -401,27 +400,15 @@ void McpServer::Load()
 	if (!root) {
 		config_ = Config{};
 		config_.token = GenerateToken();
-		std::error_code ec;
-		const bool found = !path.empty() &&
-				   (std::filesystem::exists(std::filesystem::u8path(path), ec) ||
-				    std::filesystem::exists(std::filesystem::u8path(path + ".bak"), ec));
-		if (!found) {
-			// First run: nothing on disk, so the defaults and a fresh token are saved.
-			Save();
-			return;
-		}
 		// A file that is there but unusable is copied aside, and nothing is written until
 		// the user changes a setting or regenerates the token: saving the defaults would
 		// rotate it into the .bak and the next save would lose it, along with the token
 		// paired clients hold. When the .bak was bad too, libobs has already moved it over
 		// mcp.json, so the copy holds the .bak's bytes. The server stays off meanwhile,
-		// since the defaults have it disabled.
-		const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(path, "mcp.failed-");
-		const std::string outcome = !kept                ? "a copy could not be written"
-					    : kept->name.empty() ? "nothing in it could be read to keep"
-					    : kept->fresh        ? "kept as " + kept->name
-								 : "already kept as " + kept->name;
-		HostLog("[mcp] mcp.json could not be read; running on defaults (" + outcome + ")");
+		// since the defaults have it disabled. Only a first run saves.
+		if (!KeepUnusableStore(path, "mcp.failed-", "[mcp]")) {
+			Save();
+		}
 		return;
 	}
 

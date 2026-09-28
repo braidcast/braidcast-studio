@@ -134,33 +134,41 @@ void GlobalAudioChannels::SeedOrRestore()
 {
 	// Read the saved per-channel map from audio_devices.json (key "state"), matching
 	// the legacy ReadJsonString envelope.
+	const std::string path = MultistreamBasicPath("audio_devices.json");
 	std::string state;
 	{
-		OBSDataAutoRelease root =
-			obs_data_create_from_json_file_safe(MultistreamBasicPath("audio_devices.json").c_str(), "bak");
+		OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 		if (root) {
 			const char *v = obs_data_get_string(root, "state");
 			state = v ? v : "";
 		}
 	}
 
-	auto firstRunSeed = [this]() {
+	// Desktop Audio and Mic/Aux on the default devices. Saved only on a first run: over a
+	// file that is there but unusable the seed stays in memory and the file is kept, so a
+	// launch can't replace the user's devices and filters with defaults unasked. Their
+	// first global-audio change saves.
+	auto seedDefaults = [this, &path]() {
 		std::string err;
 		const bool desktop = ApplyDevice(1, "default", err);
 		if (!desktop) {
-			HostLog("[audio] global audio: first-run seed ch1 (Desktop Audio) failed: " + err);
+			HostLog("[audio] global audio: default seed ch1 (Desktop Audio) failed: " + err);
 		}
 		const bool mic = ApplyDevice(3, "default", err);
 		if (!mic) {
-			HostLog("[audio] global audio: first-run seed ch3 (Mic/Aux) failed: " + err);
+			HostLog("[audio] global audio: default seed ch3 (Mic/Aux) failed: " + err);
 		}
-		Persist();
-		HostLog(std::string("[audio] global audio: first-run seed -> Desktop Audio ") +
-			(desktop ? "ok" : "FAILED") + ", Mic/Aux " + (mic ? "ok" : "FAILED"));
+		const bool kept = KeepUnusableStore(path, "audio_devices.failed-", "[audio] global audio:");
+		if (!kept) {
+			Persist();
+		}
+		HostLog(std::string("[audio] global audio: default seed -> Desktop Audio ") +
+			(desktop ? "ok" : "FAILED") + ", Mic/Aux " + (mic ? "ok" : "FAILED") +
+			(kept ? " (not saved)" : " (first run, saved)"));
 	};
 
 	if (state.empty()) {
-		firstRunSeed();
+		seedDefaults();
 		return;
 	}
 
@@ -168,12 +176,12 @@ void GlobalAudioChannels::SeedOrRestore()
 	try {
 		parsed = json::parse(state);
 	} catch (...) {
-		HostLog("[audio] global audio: state parse failed; falling back to first-run seed");
-		firstRunSeed();
+		HostLog("[audio] global audio: state parse failed; falling back to the default seed");
+		seedDefaults();
 		return;
 	}
 	if (!parsed.is_object()) {
-		firstRunSeed();
+		seedDefaults();
 		return;
 	}
 

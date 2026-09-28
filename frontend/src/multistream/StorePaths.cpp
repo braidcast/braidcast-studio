@@ -171,6 +171,24 @@ std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, c
 	return KeptStoreCopy{name, true};
 }
 
+bool KeepUnusableStore(const std::string &absPath, const std::string &prefix, const std::string &tag)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	if (absPath.empty() ||
+	    (!fs::exists(fs::u8path(absPath), ec) && !fs::exists(fs::u8path(absPath + ".bak"), ec))) {
+		return false;
+	}
+	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(absPath, prefix);
+	const std::string outcome = !kept                ? "a copy could not be written"
+				    : kept->name.empty() ? "nothing in it could be read to keep"
+				    : kept->fresh        ? "kept as " + kept->name
+							 : "already kept as " + kept->name;
+	HostLog(tag + " " + fs::u8path(absPath).filename().u8string() + " could not be read; running on defaults (" +
+		outcome + ")");
+	return true;
+}
+
 nlohmann::json LoadStoreJson(const std::string &absPath)
 {
 	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(absPath.c_str(), "bak");
