@@ -29,6 +29,7 @@
 #include "windowing/interact_window.hpp"
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
+#include "multistream/StreamInfoPresetStore.hpp"
 #include "obs_bootstrap.hpp"
 #include "capture_rate_selftest.hpp"
 #include "loopback_silence_selftest.hpp"
@@ -375,6 +376,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunStatsSelfTest();
 				ObsBootstrap::RunCalendarSelfTest();
 				ObsBootstrap::RunScheduleSelfTest();
+				StreamInfoPresetStore::RunIdentitySelfTest();
 				ObsBootstrap::RunMcpSelfTest();
 				ObsBootstrap::RunDevToolsPortSelfTest();
 				ObsBootstrap::RunEventSelfTest();

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,8 @@
 // second (both are wanted: title variants are experimented with on purpose and each must
 // stay separately selectable). Fields outside that comparison -- thumbnail, latency, dvr
 // -- do not fork a preset; they simply take their latest value on the one they matched.
+// Nor does a value at rest (an empty list, a flag that is off) against its absence: a sheet
+// saved before a field travelled in presets must stay the same preset as one saved after.
 //
 // UI-thread-only and unguarded, like the sibling multistream stores. Trivial ctor; Load()
 // runs explicitly from the bootstrap, after obs_startup and after portable config is
@@ -47,13 +51,26 @@ public:
 	// Every preset as JSON, most recently used first.
 	nlohmann::json List() const;
 
+	// Per provider, the fields a row written before the preset format marker could never
+	// hold: the channel-scoped ones, which did not travel in presets then.
+	using LegacyUnheldFields = std::map<std::string, std::set<std::string>>;
+
+	// Read from the provider descriptors, so only once the registry is booted -- which every
+	// Remember caller is and Load() is not.
+	static LegacyUnheldFields FieldsLegacyRowsNeverHeld();
+
 	// Upsert `shared`/`byProvider`. A bag set whose identity matches one already held
 	// keeps that preset's id, its creation stamp and the name the user gave it, takes the
 	// incoming payload, and is marked used now; anything else becomes a new, unnamed
-	// preset. `created` reports which happened, and is answered by the store rather than
-	// by the attempt -- a new preset the cap did not keep reports false. Returns the
-	// preset's id, or an empty string when no row was kept to name.
-	std::string Remember(const nlohmann::json &shared, const nlohmann::json &byProvider, bool &created);
+	// preset. Against a row written before the format marker, the row and the incoming sheet
+	// are both compared without the `legacyUnheld` fields, which such a row could not have
+	// held -- so re-saving it with the same visible values upgrades it rather than forking
+	// it. An exact match anywhere wins over such a legacy match. `created` reports
+	// which happened, and is answered by the store rather than by the attempt -- a new
+	// preset the cap did not keep reports false. Returns the preset's id, or an empty string
+	// when no row was kept to name.
+	std::string Remember(const nlohmann::json &shared, const nlohmann::json &byProvider,
+			     const LegacyUnheldFields &legacyUnheld, bool &created);
 
 	// Mark `id` used now, for applying a preset outside a go-live. False when unknown.
 	bool Touch(const std::string &id);
@@ -63,6 +80,16 @@ public:
 	// Set `id`'s user-facing name. An empty name is valid -- it returns the row to the
 	// UI's title fallback. False when unknown.
 	bool Rename(const std::string &id, const std::string &name);
+
+	// Headless smoke check of the identity rule, on throwaway stores that are never loaded
+	// or saved: a sheet saved before channel fields travelled in presets and one saved after,
+	// with the same visible values, must upsert one row -- for YouTube's made for kids,
+	// Facebook's privacy and Twitch's language, read from the live descriptors -- as must one
+	// that adds a provider bag holding nothing identifying, while a real difference forks one;
+	// a legacy row holding a channel field is compared under the sheet's projection, and a
+	// save equal to a current row lands on it rather than on a look-alike legacy row.
+	// Logs "[selftest] stream info preset identity OK" or a FAILED line naming the case.
+	static void RunIdentitySelfTest();
 
 private:
 	struct Preset {

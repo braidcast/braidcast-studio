@@ -679,6 +679,15 @@ json YouTubeProvider::capabilityJson() const
 	json scopes = json::array();
 	scopes.push_back(kYouTubeScope);
 
+	// `clearable` marks a field whose reset value, pushed at Go Live, leaves the new broadcast
+	// holding what the blank form shows. Every Go Live inserts a new broadcast, so: the
+	// description is written as given (an empty one included, YouTubeSnippet::Merge), a stated
+	// tag list is assigned whatever it holds, every flag and required choice is sent as a value,
+	// and an empty thumbnail is not uploaded, which leaves the new video with YouTube's own
+	// frame. Title (replaced by kDefaultTitle), category (kept from the video) and language (the
+	// display language) are not: a reset of them would send the platform something else. A
+	// mid-stream edit updates the running broadcast in place and skips contentDetails and an
+	// empty thumbnail, so a reset made then shows in the form only.
 	json fields = json::array();
 	fields.push_back(json{{"key", "title"},
 			      {"label", "Title"},
@@ -699,6 +708,7 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
+			      {"clearable", true},
 			      {"maxTotalChars", kMaxTagTotalChars}});
 	// Unset means the Windows display language (see applyMetadata), which is right for most
 	// people, so this sits with the advanced fields. It exists because YouTube guesses when a
@@ -719,6 +729,7 @@ json YouTubeProvider::capabilityJson() const
 	// Only YouTube takes a thumbnail, and its 2 MB/aspect rules are its own -- so one image
 	// serves every YouTube channel the user runs and is picked once for all of them.
 	fields.push_back(json{{"key", "thumbnail"},
+			      {"clearable", true},
 			      {"label", "Thumbnail"},
 			      {"type", "image"},
 			      {"tier", "simple"},
@@ -727,7 +738,8 @@ json YouTubeProvider::capabilityJson() const
 			      {"label", "Description"},
 			      {"type", "textarea"},
 			      {"tier", "simple"},
-			      {"scope", "all"}});
+			      {"scope", "all"},
+			      {"clearable", true}});
 	// Privacy defaults to "private": broadcasting publicly must be an explicit
 	// choice, never the result of leaving the field untouched. `required` says the
 	// field has no valid empty state, so the UI offers no unset option and shows the
@@ -743,6 +755,7 @@ json YouTubeProvider::capabilityJson() const
 		     {"type", "enum"},
 		     {"tier", "simple"},
 		     {"scope", "provider"},
+		     {"clearable", true},
 		     {"required", true},
 		     {"default", "private"},
 		     {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
@@ -756,13 +769,18 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "enum"},
 			      {"tier", "advanced"},
 			      {"scope", "channel"},
+			      {"clearable", true},
 			      {"required", true},
 			      {"default", "normal"},
 			      {"options", json::array({json{{"value", "normal"}, {"label", "Normal"}},
 						       json{{"value", "low"}, {"label", "Low latency"}},
 						       json{{"value", "ultraLow"}, {"label", "Ultra-low latency"}}})}});
-	fields.push_back(
-		json{{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"scope", "channel"}});
+	fields.push_back(json{{"key", "dvr"},
+			      {"label", "DVR"},
+			      {"type", "bool"},
+			      {"tier", "advanced"},
+			      {"scope", "channel"},
+			      {"clearable", true}});
 	// The default is declared because applyMetadata always sends this flag, defaulting it to
 	// false: without the declaration the read-back has nothing to compare an unset bag against,
 	// and a safety field would go unchecked on exactly the destinations that never touched it.
@@ -771,18 +789,21 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "bool"},
 			      {"tier", "advanced"},
 			      {"scope", "channel"},
+			      {"clearable", true},
 			      {"default", false}});
 	fields.push_back(json{{"key", "autoStop"},
 			      {"label", "Auto-stop when stream ends"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
 			      {"scope", "channel"},
+			      {"clearable", true},
 			      {"default", true}});
 	fields.push_back(json{{"key", "projection"},
 			      {"label", "360\xC2\xB0"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"scope", "channel"}});
+			      {"scope", "channel"},
+			      {"clearable", true}});
 
 	return json{
 		{"id", id()},

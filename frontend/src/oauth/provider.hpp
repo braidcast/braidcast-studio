@@ -260,6 +260,10 @@ struct DestinationReadback {
 // a go-live.
 std::vector<MetadataDivergence> SafetyDivergences(const std::vector<MetadataDivergence> &divergences);
 
+// Is `key` a safety field -- one whose mismatch refuses a go-live? Read off the same table the
+// read-back refuses by, so what the dialog is told is safety can never be a second list of it.
+bool IsSafetyField(const std::string &key);
+
 // The one JSON rendering of a divergence list (the bridge event payload).
 json DivergencesJson(const std::vector<MetadataDivergence> &divergences);
 

@@ -181,6 +181,10 @@ json TwitchProvider::capabilityJson() const
 		langOptions.push_back(json{{"value", l.value}, {"label", l.label}});
 	}
 
+	// `clearable` marks a field whose empty (or resting) value applyMetadata acts on rather than
+	// skips, so a dialog that resets it changes the channel too: a stated tag or label list is
+	// assigned whatever it holds, and a flag is sent as it is. Title, category and language are
+	// skipped when empty (Twitch rejects the clear), so a reset of them would only blank the form.
 	json fields = json::array();
 	fields.push_back(json{{"key", "title"},
 			      {"label", "Title"},
@@ -204,6 +208,7 @@ json TwitchProvider::capabilityJson() const
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
+			      {"clearable", true},
 			      {"maxTags", kMaxTags},
 			      {"maxTagChars", kMaxTagChars},
 			      {"tagCharset", "lowercase-alnum"}});
@@ -218,12 +223,14 @@ json TwitchProvider::capabilityJson() const
 			      {"type", "labelset"},
 			      {"tier", "advanced"},
 			      {"scope", "channel"},
+			      {"clearable", true},
 			      {"options", labelOptions}});
 	fields.push_back(json{{"key", "brandedContent"},
 			      {"label", "Branded Content"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"scope", "channel"}});
+			      {"scope", "channel"},
+			      {"clearable", true}});
 
 	return json{
 		{"id", id()},

@@ -636,6 +636,20 @@ export interface OAuthProviderField {
    * choice rather than discovered mid-broadcast. Only values that HAVE a consequence
    * carry an entry; the rest are absent. */
   optionNotes?: Record<string, string>;
+  /** A Go Live push of this field's reset value (empty, an empty list, a flag or required
+   * choice at its default) leaves the broadcast holding exactly what the blank form shows --
+   * because the push acts on the value (an empty tag list is assigned, a flag is sent), or
+   * because it creates a new broadcast that starts without one (a description or thumbnail
+   * left out). Judged at Go Live, the push a loaded preset is for; a mid-stream edit may
+   * still skip the value and leave the running broadcast as it was. A field without it
+   * would reach the platform as something else (a substituted title, a kept category), so
+   * nothing may blank it on the user's behalf. Declared per field by the provider, beside
+   * the push code it describes. */
+  clearable?: boolean;
+  /** A safety field -- who can see the broadcast (privacy, made for kids) -- whose mismatch
+   * refuses a go-live. Stamped by oauth.providers from the read-back's own table. Nothing but
+   * the user's own choice, or a value they saved, may set one. */
+  safety?: boolean;
 }
 
 /** A streaming platform that supports account connection (oauth.providers). The
@@ -725,11 +739,12 @@ export interface StreamMeta {
  * the preset then reads by its title. Both timestamps are epoch ms; `lastUsedAtMs`
  * is what the list is ordered by (most recent first).
  *
- * The two bags mirror the Go Live inherit layers exactly: `shared` holds the fields a
- * value may legitimately cross providers on, `byProvider` (keyed by provider id) the
- * ones scoped to one platform. A field belongs in neither bag unless
- * `inheritLayers(field, providerId)` names a bucket for it — which is what keeps a
- * channel-scoped field, and a per-destination ADDRESS, out of a preset. */
+ * Every declared field travels except a per-destination ADDRESS. `shared` holds a
+ * cross-provider field every armed provider agreed on; `byProvider` (keyed by provider id)
+ * holds each provider's provider- and channel-scoped values, and its own value of a
+ * cross-provider field when providers differed. A bag written by the current format carries
+ * a version marker, which is what tells a provider the sheet covered from one it predates.
+ * The rules live in streamInfoPresets/applyPreset.ts. */
 export interface StreamInfoPreset {
   id: string;
   name: string;

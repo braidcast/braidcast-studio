@@ -313,6 +313,16 @@ std::string MetadataIdentity(const json &bag)
 	return identity;
 }
 
+bool IsSafetyField(const std::string &key)
+{
+	for (const FieldRule &rule : kFieldRules) {
+		if (rule.safety && key == rule.key) {
+			return true;
+		}
+	}
+	return false;
+}
+
 std::vector<MetadataDivergence> SafetyDivergences(const std::vector<MetadataDivergence> &divergences)
 {
 	std::vector<MetadataDivergence> out;

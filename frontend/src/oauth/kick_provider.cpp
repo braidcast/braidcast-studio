@@ -139,11 +139,14 @@ json KickProvider::capabilityJson() const
 			      {"scope", "provider"}});
 	// Kick takes arbitrary tag strings, but Twitch does not: a value reaching across
 	// providers would be governed by the strictest of them, so it stays on this side.
+	// `clearable`: applyMetadata assigns a stated list whatever it holds, so an empty one
+	// clears the channel's tags. Title and category are skipped when empty, so they are not.
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
+			      {"clearable", true},
 			      {"maxTags", kMaxTags}});
 
 	return json{

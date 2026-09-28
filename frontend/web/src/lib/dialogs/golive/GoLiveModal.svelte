@@ -17,18 +17,23 @@ import { EV } from "$lib/utils/eventNames";
     inheritLayers,
     isBlankVal,
     isEmptyVal,
+    isListType,
     isPerDestination,
     normOpt,
     resolveRequiredEnum,
+    slotKey,
     valuesEqual,
   } from "$lib/dialogs/golive/fieldValue";
   import {
+    applyPresetTo,
     carriesIntent,
     collectPreset,
-    presetClearSites,
+    presetDecided,
     presetLabel,
-    presetLayerWrites,
+    putBagValue,
     uncarriedFields,
+    withoutPresetDecided,
+    type PresetChannel,
   } from "$lib/dialogs/streamInfoPresets/applyPreset";
   import PresetPicker from "$lib/dialogs/streamInfoPresets/PresetPicker.svelte";
   import type { ModalSecondaryAction } from "$lib/ui/Modal.svelte";
@@ -292,19 +297,23 @@ import { EV } from "$lib/utils/eventNames";
   // the same field key lives in as many buckets as there are providers. Prefill must never
   // seed or diverge a key the user owns, otherwise an edit made while the (fired-not-awaited)
   // get/getSaved are in flight would be silently overridden by a stale live value.
+  // A loaded preset adds the buckets it wrote here too.
   const touchedLayers = new Set<string>();
-  function touchedKey(bucket: string, key: string): string {
-    return bucket + "::" + key;
-  }
+  // Channel keys a loaded preset set or reset, as slotKey(accountId, key). The channel's own
+  // counterpart of touchedLayers, and it guards two prefill paths: the final channel fill,
+  // which would otherwise put a remembered value back into a key the preset had just reset,
+  // and the restore of a stream's remembered overrides, which outrank the channel and would
+  // otherwise bury the preset's value under an older one.
+  const touchedChannels = new Set<string>();
   function writeLayer(bucket: string, key: string, val: unknown): void {
-    layerValues[bucket] = { ...(layerValues[bucket] ?? {}), [key]: val };
+    putBagValue(layerValues, bucket, key, val);
   }
   function setLayerField(bucket: string, key: string, val: unknown): void {
-    touchedLayers.add(touchedKey(bucket, key));
+    touchedLayers.add(slotKey(bucket, key));
     writeLayer(bucket, key, val);
   }
   function setField(id: string, key: string, val: unknown): void {
-    channelValues[id] = { ...(channelValues[id] ?? {}), [key]: val };
+    putBagValue(channelValues, id, key, val);
   }
   function getVal(id: string, key: string): unknown {
     return channelValues[id]?.[key];
@@ -456,7 +465,7 @@ import { EV } from "$lib/utils/eventNames";
   // descriptor default goes out on Go Live.
   function inheritedGhostText(f: OAuthProviderField, providerId: string): string {
     const held = inheritedShownValue(f, providerId);
-    if (f.type === "tags" || f.type === "labelset") {
+    if (isListType(f.type)) {
       return Array.isArray(held) ? joinTags(held) : "";
     }
     if (f.type === "category") {
@@ -1162,22 +1171,33 @@ import { EV } from "$lib/utils/eventNames";
   // modal is open. Deriving the sentence means arming or disarming a channel re-answers it
   // instead of leaving a stale one on screen naming a platform no longer in the go-live.
   let appliedPreset = $state<StreamInfoPreset | null>(null);
+  // What the last load reset, named at apply time. Latched rather than derived, unlike the
+  // rest of the note: it reports what the fields held BEFORE the load, which no longer
+  // exists to derive from once the load has landed.
+  let appliedPresetResets = $state<string[]>([]);
 
-  // One channel as the shared preset rules take it.
-  function presetTarget(c: Channel, provider: OAuthProvider) {
-    return { provider, accountId: c.accountId, profileUuids: c.streams.map((s) => s.profileUuid) };
+  // Every channel this modal renders, armed or not, as a load takes it. Deliberately
+  // `channels` rather than the armed or connected subsets: the inherit buckets a load writes
+  // are read by every channel, and a channel can be disarmed, re-armed, or go stale-token
+  // and back while the modal is open -- each has to end at the preset's value for its
+  // provider, not at whatever a cleared key left behind. A channel with no resolved provider
+  // declares no carriable field and so takes no part.
+  function presetChannels(): PresetChannel[] {
+    const armed = new Set(armedConnectedChannels.map((c) => c.accountId));
+    return channels.flatMap((c) =>
+      c.provider
+        ? [
+            {
+              provider: c.provider,
+              accountId: c.accountId,
+              profileUuids: c.streams.map((s) => s.profileUuid),
+              armed: armed.has(c.accountId),
+              resolved: effectiveFields(c, undefined),
+            },
+          ]
+        : [],
+    );
   }
-  // The armed channels a preset is APPLIED to -- the ones this go-live will push.
-  const presetTargets = $derived(
-    armedConnectedChannels.flatMap((c) => (c.provider ? [presetTarget(c, c.provider)] : [])),
-  );
-  // The wider scope the CLEAR reaches: every channel this modal renders, armed or not.
-  // Deliberately `channels` rather than the armed or connected subsets -- the hazard is a
-  // channelValues entry surviving a state change, and a channel can be disarmed, re-armed,
-  // or go stale-token and back while the modal is open. Predicting which states a channel
-  // will pass through is not something the clear should have to get right; a channel with
-  // no resolved provider declares no carriable field and so contributes nothing anyway.
-  const presetClearScope = $derived(channels.flatMap((c) => (c.provider ? [presetTarget(c, c.provider)] : [])));
 
   // Every armed channel's resolved values, which is both what a preset would be collected
   // from and what tells whether two channels disagree. Derived rather than computed at
@@ -1199,10 +1219,18 @@ import { EV } from "$lib/utils/eventNames";
     const preset = appliedPreset;
     if (preset) {
       parts.push(`Loaded "${presetLabel(preset)}".`);
+      const resets = appliedPresetResets;
+      if (resets.length > 0) {
+        parts.push(
+          `${joinNames(resets)} ${resets.length === 1 ? "was" : "were"} reset — this preset has no value saved for ${
+            resets.length === 1 ? "it" : "them"
+          }.`,
+        );
+      }
       // Named from the descriptors, never from a provider id: a field a preset cannot
-      // carry is one whose value belongs to a single channel or addresses a single
-      // destination, and which fields those are is the provider's own declaration.
-      const missed = uncarriedFields(presetTargets.map((t) => t.provider));
+      // carry is one that addresses a single destination, and which fields those are is
+      // the provider's own declaration, so this says nothing when no armed one declares any.
+      const missed = uncarriedFields(presetSources.map((s) => s.provider));
       if (missed.length > 0) {
         const names = missed.map((m) => `${m.label} (${m.providerName})`);
         parts.push(
@@ -1222,38 +1250,33 @@ import { EV } from "$lib/utils/eventNames";
       // off, where the save it warns about is the footer's Save and naming the toggle would
       // read as a restatement of the state the user just chose.
       parts.push(
-        `Saving won't keep ${joinNames(labels)} — your destinations hold different ${
+        `Saving won't keep ${joinNames(labels)} — channels on the same platform hold different ${
           labels.length === 1 ? "values for it" : "values for them"
-        }, and only one value per field can be kept. A save keeps the rest of what they agree on.`,
+        }, and a preset keeps one value per platform. A save keeps everything else.`,
       );
     }
     return parts.join(" ");
   });
 
-  // Load one saved sheet into the layers, per key and never wholesale. A key the preset
-  // states is written to the bucket its scope names AND cleared from the two layers that
-  // outrank it -- the inherit layer is the LOWEST priority in effectiveFields, so writing
-  // it under a channel value that is still there would look like the load did nothing. A
-  // key the preset is silent about is left alone at all three layers: silence is not an
-  // instruction to blank a field.
-  //
-  // streamOverrideOn is deliberately not touched. Clearing is key-scoped, so a stream that
-  // was overriding {title, privacy} ends up overriding {privacy} -- which is exactly "the
-  // sheet set the title everywhere" and leaves the deliberate privacy override standing.
+  // Load one saved sheet. What each field becomes -- the preset's value, a reset, or left
+  // as it is -- and which layer it lands in are the shared rules in applyPresetTo; this
+  // hands them the modal's layers and records what prefill must now leave alone.
   function applyPreset(preset: StreamInfoPreset): void {
-    const writes = presetLayerWrites(preset, presetTargets);
-    for (const w of writes) {
-      setLayerField(w.bucket, w.key, w.value);
+    const result = applyPresetTo(
+      { layerValues, channelValues, streamOverrides, streamOverrideOn },
+      preset,
+      presetChannels(),
+      providers,
+      hasOverrides,
+    );
+    for (const k of result.touchedLayers) {
+      touchedLayers.add(k);
     }
-    // Clearing reaches wider than the write: the buckets written above are global, so every
-    // channel that reads one has to stop outranking it, not just the armed ones.
-    for (const site of presetClearSites(writes, presetClearScope)) {
-      delete channelValues[site.accountId]?.[site.key];
-      for (const uuid of site.profileUuids) {
-        delete streamOverrides[uuid]?.[site.key];
-      }
+    for (const k of result.touchedChannels) {
+      touchedChannels.add(k);
     }
     appliedPreset = preset;
+    appliedPresetResets = result.resets;
   }
 
   // Resolve effective values through the layers and push them: a stream override wins over
@@ -1379,9 +1402,14 @@ import { EV } from "$lib/utils/eventNames";
         // override SWITCH follows the bag's content, not its mere presence: a bag holding
         // only this stream's address is not a divergence from the channel, and flipping
         // the switch for it would report overrides the user never made.
-        for (const [uuid, bag] of Object.entries(saved.streams)) {
-          if (bag && Object.keys(bag).length && !streamOverrideOn[uuid] && !streamOverrides[uuid]) {
-            streamOverrides[uuid] = { ...bag };
+        //
+        // A key a loaded preset decided for this channel is left out: a stream override
+        // outranks the channel, so restoring one would bury the preset's value under the
+        // remembered one it replaced.
+        for (const [uuid, remembered] of Object.entries(saved.streams)) {
+          const bag = withoutPresetDecided(remembered, c.accountId, touchedChannels);
+          if (Object.keys(bag).length && !streamOverrideOn[uuid] && !streamOverrides[uuid]) {
+            streamOverrides[uuid] = bag;
             streamOverrideOn[uuid] = hasOverrides(c.provider, bag);
           }
         }
@@ -1412,7 +1440,7 @@ import { EV } from "$lib/utils/eventNames";
             // Hoisted above both bucket paths below: a layer the user has edited by hand is
             // theirs, and prefill neither seeds it NOR routes around it by writing the same
             // key one layer up, which would shadow what they just typed.
-          } else if (bucket && touchedLayers.has(touchedKey(bucket, key))) {
+          } else if (bucket && touchedLayers.has(slotKey(bucket, key))) {
             continue;
             // An absence does not generalize. Seeding a bucket is "first channel wins", which
             // is right for a title two channels really do share -- but a stated empty tag list
@@ -1433,7 +1461,10 @@ import { EV } from "$lib/utils/eventNames";
             } else if (!valuesEqual(type, held, val) && isEmptyVal(type, getVal(c.accountId, key))) {
               setField(c.accountId, key, val);
             }
-          } else if (isEmptyVal(type, getVal(c.accountId, key))) {
+          } else if (
+            !presetDecided(touchedChannels, c.accountId, key) &&
+            isEmptyVal(type, getVal(c.accountId, key))
+          ) {
             setField(c.accountId, key, val);
           }
         }

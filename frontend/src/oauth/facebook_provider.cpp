@@ -270,11 +270,18 @@ json FacebookProvider::capabilityJson() const
 			      {"tier", "simple"},
 			      {"scope", "all"},
 			      {"max", kMaxTitleLength}});
+	// `clearable`: every Go Live creates a new live video, and AppendMetadataFields leaves an
+	// empty description out of it, so a reset one goes out as a video with no description --
+	// what the blank form shows. The title is not marked: an empty one is left out as well,
+	// and what Facebook then titles the video has not been established, so a reset of it is
+	// not claimed to match the blank form. A mid-stream edit omits the empty
+	// description too, so a reset made then leaves the running video's description as it was.
 	fields.push_back(json{{"key", "description"},
 			      {"label", "Description"},
 			      {"type", "textarea"},
 			      {"tier", "simple"},
-			      {"scope", "all"}});
+			      {"scope", "all"},
+			      {"clearable", true}});
 	// Required: Facebook rejects an empty status, and the value decides whether the
 	// broadcast is visible to the Page's audience at all -- so the control must show the
 	// value that will actually be sent rather than an unset dash.
@@ -296,11 +303,17 @@ json FacebookProvider::capabilityJson() const
 	// What a broadcast is about is the same on every channel of this account, but an
 	// adinterest id is Meta's own -- no other platform's category picker can resolve one --
 	// so the value it holds is shared no further than Facebook.
+	//
+	// `clearable` for the description's reason: AppendMetadataFields leaves an empty category
+	// out of the new live video every Go Live creates, so a reset one goes out as a video with
+	// no content_tags. A mid-stream edit omits the empty category too, so a reset made then
+	// leaves the running video's content_tags as they were.
 	fields.push_back(json{{"key", "category"},
 			      {"label", "Category"},
 			      {"type", "category"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
+			      {"clearable", true},
 			      {"browsable", false},
 			      {"placeholder", "Search interests\xE2\x80\xA6"}});
 	return json{

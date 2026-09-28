@@ -5,6 +5,7 @@
 
 #include "log.hpp"
 #include "oauth/provider.hpp"
+#include "oauth/registry.hpp"
 #include "util/json_util.hpp"
 #include "util/string_util.hpp"
 #include "util/time_util.hpp"
@@ -70,25 +71,73 @@ bool ReadBag(const json &item, const char *key, json &out)
 // bag, and here for the same reason: a provider id and a bag identity are both free to hold
 // any byte, so joining them on a delimiter would let one of them forge a provider boundary
 // and make a one-provider sheet read alike to a two-provider one.
-// A bag with every empty list dropped. MetadataIdentity deliberately tells an ABSENT key
-// from one carrying an empty list: there, an empty list is the assertion "no tags" while an
+// A bag with every value at rest dropped: an empty list, and a flag that is off.
+// MetadataIdentity deliberately tells an ABSENT key from one carrying such a value: there, an
+// empty list is the assertion "no tags" and `false` the assertion "not made for kids", while an
 // absent key means the provider could not read the field at all, and the difference decides
-// whether a go-live is reported as diverging. A SAVED SHEET has no such distinction to make
-// -- both say the streamer set no tags -- and keeping it forked one stream into two presets
-// whose every visible field matched, because one go-live sent no `tags` key and the next
-// sent `tags: []`. Applied here rather than inside MetadataIdentity so the divergence check
-// keeps the distinction it needs.
-json WithoutEmptyLists(const json &bag)
+// whether a go-live is reported as diverging. A SAVED SHEET has no such distinction to make --
+// both say the streamer set nothing -- and keeping it forks one stream into two presets whose
+// every visible field matches: one go-live sent no `tags` key and the next sent `tags: []`, and
+// a sheet saved before made-for-kids travelled in presets holds no `madeForKids` where every
+// later one holds the `false` the dialog seeds. Applied here rather than inside MetadataIdentity
+// so the divergence check keeps the distinction it needs.
+//
+// Off is the resting value of EVERY flag the identity reads: made for kids declares false as
+// its default (youtube_provider.cpp) and branded content declares none, which the dialog shows
+// as off. A flag whose default is on would have to be read against its descriptor instead --
+// and the descriptors cannot be consulted here, because Load() runs before the provider
+// registry is populated (obs_bootstrap.cpp) and an identity must not change between the load
+// that merges rows and the go-live that upserts one.
+json WithoutRestingValues(const json &bag)
 {
 	if (!bag.is_object()) {
 		return bag;
 	}
 	json out = json::object();
 	for (const auto &entry : bag.items()) {
-		if (entry.value().is_array() && entry.value().empty()) {
+		const json &value = entry.value();
+		if ((value.is_array() && value.empty()) || (value.is_boolean() && !value.get<bool>())) {
 			continue;
 		}
-		out[entry.key()] = entry.value();
+		out[entry.key()] = value;
+	}
+	return out;
+}
+
+// The provider-bag key the frontend writes its preset format under (PRESET_FORMAT_KEY in
+// applyPreset.ts). A row none of whose bags carries it was written before channel-scoped
+// fields travelled in presets.
+constexpr const char *kPresetFormatKey = "__v";
+
+bool IsLegacyRow(const json &byProvider)
+{
+	if (!byProvider.is_object()) {
+		return true;
+	}
+	for (const auto &entry : byProvider.items()) {
+		if (entry.value().is_object() && entry.value().contains(kPresetFormatKey)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// `byProvider` as a legacy row could have held it: every field such a row never carried taken
+// out, so a value it could not have stated cannot make it look different.
+json AsLegacyRowWouldHold(const json &byProvider, const StreamInfoPresetStore::LegacyUnheldFields &legacyUnheld)
+{
+	json out = byProvider;
+	if (!out.is_object()) {
+		return out;
+	}
+	for (auto &entry : out.items()) {
+		const auto unheld = legacyUnheld.find(entry.key());
+		if (unheld == legacyUnheld.end() || !entry.value().is_object()) {
+			continue;
+		}
+		for (const std::string &key : unheld->second) {
+			entry.value().erase(key);
+		}
 	}
 	return out;
 }
@@ -96,7 +145,7 @@ json WithoutEmptyLists(const json &bag)
 std::string PresetIdentity(const json &shared, const json &byProvider)
 {
 	std::string identity;
-	StringUtil::AppendLengthPrefixed(identity, OAuth::MetadataIdentity(WithoutEmptyLists(shared)));
+	StringUtil::AppendLengthPrefixed(identity, OAuth::MetadataIdentity(WithoutRestingValues(shared)));
 	if (!byProvider.is_object()) {
 		return identity;
 	}
@@ -107,9 +156,15 @@ std::string PresetIdentity(const json &shared, const json &byProvider)
 	}
 	std::sort(providerIds.begin(), providerIds.end());
 	for (const std::string &providerId : providerIds) {
+		// A bag with nothing identifying left -- the format marker alone, or only values at
+		// rest -- is a provider that was armed and said nothing, which must not fork the sheet.
+		const std::string bagIdentity =
+			OAuth::MetadataIdentity(WithoutRestingValues(byProvider.at(providerId)));
+		if (bagIdentity.empty()) {
+			continue;
+		}
 		StringUtil::AppendLengthPrefixed(identity, providerId);
-		StringUtil::AppendLengthPrefixed(identity,
-						 OAuth::MetadataIdentity(WithoutEmptyLists(byProvider.at(providerId))));
+		StringUtil::AppendLengthPrefixed(identity, bagIdentity);
 	}
 	return identity;
 }
@@ -205,18 +260,55 @@ json StreamInfoPresetStore::List() const
 	return out;
 }
 
-std::string StreamInfoPresetStore::Remember(const json &shared, const json &byProvider, bool &created)
+auto StreamInfoPresetStore::FieldsLegacyRowsNeverHeld() -> LegacyUnheldFields
+{
+	LegacyUnheldFields out;
+	for (OAuth::StreamProvider *provider : OAuth::Registry().All()) {
+		try {
+			const json cap = provider->capabilityJson();
+			const json fields = cap.value("fields", json::array());
+			for (const json &field : fields) {
+				// Channel scope read exactly as the dialog reads it (fieldScope in
+				// fieldValue.ts): anything but "all" or "provider", a missing scope included.
+				const std::string scope = JsonUtil::Str(field, "scope");
+				if (field.is_object() && scope != "all" && scope != "provider") {
+					out[provider->id()].insert(JsonUtil::Str(field, "key"));
+				}
+			}
+		} catch (const std::exception &e) {
+			HostLog(std::string("[storage] stream info preset: capabilityJson failed: ") + e.what());
+		}
+	}
+	return out;
+}
+
+std::string StreamInfoPresetStore::Remember(const json &shared, const json &byProvider,
+					    const LegacyUnheldFields &legacyUnheld, bool &created)
 {
 	const std::string incoming = PresetIdentity(shared, byProvider);
+	const std::string incomingAsLegacy = PresetIdentity(shared, AsLegacyRowWouldHold(byProvider, legacyUnheld));
 	const int64_t usedNow = MruRows::UsedNowMs(presets_);
 
-	for (Preset &preset : presets_) {
-		if (PresetIdentity(preset.shared, preset.byProvider) != incoming) {
-			continue;
-		}
+	// An exact match wins over a legacy one wherever the two sit in MRU order: otherwise a
+	// save equal to a current row would overwrite an older legacy row that merely looks like
+	// it, leaving two rows holding the same sheet. A legacy row is compared under the same
+	// projection as the sheet, with the fields such a row never carried taken out of both.
+	auto hit = std::find_if(presets_.begin(), presets_.end(), [&](const Preset &preset) {
+		return PresetIdentity(preset.shared, preset.byProvider) == incoming;
+	});
+	if (hit == presets_.end()) {
+		hit = std::find_if(presets_.begin(), presets_.end(), [&](const Preset &preset) {
+			return IsLegacyRow(preset.byProvider) &&
+			       PresetIdentity(preset.shared, AsLegacyRowWouldHold(preset.byProvider, legacyUnheld)) ==
+				       incomingAsLegacy;
+		});
+	}
+	if (hit != presets_.end()) {
+		Preset &preset = *hit;
 		// The identity fields already agree, so this overwrite can only move the fields
-		// identity ignores -- thumbnail, latency, dvr, autoStop, projection -- to their
-		// latest value. That is the point: those must not fork a second sheet.
+		// identity ignores -- thumbnail, latency, dvr, autoStop, projection, a value at rest
+		// -- to their latest value, or give a legacy row the channel fields it never held.
+		// That is the point: those must not fork a second sheet.
 		preset.shared = shared;
 		preset.byProvider = byProvider;
 		preset.lastUsedAtMs = usedNow;
@@ -315,10 +407,153 @@ void StreamInfoPresetStore::MergeDuplicates()
 	}
 	HostLog("[storage] merged " + std::to_string(merged) +
 		" duplicate stream info preset(s): same sheet, saved twice because one go-live "
-		"omitted a list field the other sent empty");
+		"omitted a value the other sent at rest");
 }
 
 void StreamInfoPresetStore::Normalize()
 {
 	MruRows::Normalize(presets_, kMaxPresets);
+}
+
+void StreamInfoPresetStore::RunIdentitySelfTest()
+{
+	// The live descriptors, as the bridge reads them for every save: the cases below depend on
+	// them marking these fields channel-scoped, so a descriptor change fails here first.
+	const LegacyUnheldFields legacyUnheld = FieldsLegacyRowsNeverHeld();
+	const auto unheld = [&](const char *provider, const char *key) {
+		const auto it = legacyUnheld.find(provider);
+		return it != legacyUnheld.end() && it->second.count(key) != 0;
+	};
+
+	// The shape every preset saved before this change has: YouTube only, no made-for-kids key.
+	const json shared = json{{"title", "Spider-Man 2"}, {"description", "Max graphics"}};
+	const json oldYouTube = json{{"category", json{{"id", "20"}, {"name", "Gaming"}}},
+				     {"privacy", "public"},
+				     {"tags", json::array()},
+				     {"thumbnail", "C:/thumb.png"}};
+	// The same visible sheet saved now: the format marker, and the channel fields at rest.
+	json newYouTube = oldYouTube;
+	newYouTube[kPresetFormatKey] = 2;
+	newYouTube["madeForKids"] = false;
+	newYouTube["autoStop"] = true;
+	newYouTube["latency"] = "normal";
+	json kidsYouTube = newYouTube;
+	kidsYouTube["madeForKids"] = true;
+	// A provider that was armed and said nothing: the marker, and values at rest.
+	const json silentTwitch = json{{kPresetFormatKey, 2}, {"tags", json::array()}, {"brandedContent", false}};
+
+	StreamInfoPresetStore store;
+	bool created = false;
+	std::string failure;
+	if (!unheld("youtube", "madeForKids") || !unheld("facebook", "privacy") || !unheld("twitch", "language")) {
+		failure =
+			"the descriptors do not mark made for kids, Facebook privacy and Twitch language channel-scoped";
+	}
+	if (failure.empty()) {
+		store.Remember(shared, json{{"youtube", oldYouTube}}, legacyUnheld, created);
+		if (!created) {
+			failure = "the first sheet was not kept as a new preset";
+		}
+	}
+	if (failure.empty()) {
+		store.Remember(shared, json{{"youtube", newYouTube}}, legacyUnheld, created);
+		if (created || store.presets_.size() != 1) {
+			failure = "an old sheet and the same sheet saved now made two presets";
+		}
+	}
+	if (failure.empty()) {
+		store.Remember(shared, json{{"youtube", kidsYouTube}}, legacyUnheld, created);
+		if (!created || store.presets_.size() != 2) {
+			failure = "made for kids on did not make a preset of its own";
+		}
+	}
+	if (failure.empty()) {
+		store.Remember(shared, json{{"youtube", newYouTube}, {"twitch", silentTwitch}}, legacyUnheld, created);
+		if (created || store.presets_.size() != 2) {
+			failure = "a provider bag holding nothing identifying made a preset of its own";
+		}
+	}
+
+	// Facebook armed at a legacy save held nothing of its own, so the row has no bag for it;
+	// every save now carries its privacy, which rests at public.
+	const json facebookNow = json{{kPresetFormatKey, 2}, {"privacy", "public"}};
+	json facebookCategory = facebookNow;
+	facebookCategory["category"] = json{{"id", "6003"}, {"name", "Video games"}};
+	StreamInfoPresetStore facebookStore;
+	if (failure.empty()) {
+		facebookStore.Remember(shared, json{{"youtube", oldYouTube}}, legacyUnheld, created);
+		facebookStore.Remember(shared, json{{"youtube", newYouTube}, {"facebook", facebookNow}}, legacyUnheld,
+				       created);
+		if (created || facebookStore.presets_.size() != 1) {
+			failure = "a legacy sheet re-saved with Facebook's privacy made two presets";
+		}
+	}
+	if (failure.empty()) {
+		facebookStore.Remember(shared, json{{"youtube", newYouTube}, {"facebook", facebookCategory}},
+				       legacyUnheld, created);
+		if (!created || facebookStore.presets_.size() != 2) {
+			failure = "a Facebook category did not make a preset of its own";
+		}
+	}
+
+	// Twitch's language is prefilled from the channel, so every save now carries one.
+	const json oldTwitch = json{{"category", json{{"id", "509658"}, {"name", "Just Chatting"}}}};
+	json twitchNow = oldTwitch;
+	twitchNow[kPresetFormatKey] = 2;
+	twitchNow["language"] = "en";
+	twitchNow["tags"] = json::array();
+	twitchNow["brandedContent"] = false;
+	json twitchOtherCategory = twitchNow;
+	twitchOtherCategory["category"] = json{{"id", "33214"}, {"name", "Fortnite"}};
+	StreamInfoPresetStore twitchStore;
+	if (failure.empty()) {
+		twitchStore.Remember(shared, json{{"twitch", oldTwitch}}, legacyUnheld, created);
+		twitchStore.Remember(shared, json{{"twitch", twitchNow}}, legacyUnheld, created);
+		if (created || twitchStore.presets_.size() != 1) {
+			failure = "a legacy sheet re-saved with Twitch's language made two presets";
+		}
+	}
+	// Against a legacy row too, not only the upgraded one: leaving the channel fields out of
+	// the comparison must not let a real difference through.
+	StreamInfoPresetStore twitchLegacyStore;
+	if (failure.empty()) {
+		twitchLegacyStore.Remember(shared, json{{"twitch", oldTwitch}}, legacyUnheld, created);
+		twitchLegacyStore.Remember(shared, json{{"twitch", twitchOtherCategory}}, legacyUnheld, created);
+		if (!created || twitchLegacyStore.presets_.size() != 2) {
+			failure = "a different Twitch category merged into a legacy preset";
+		}
+	}
+
+	// A legacy row holding a channel field anyway (hand-edited, or written by a foreign
+	// build) is compared under the same projection as the sheet, so the field cannot keep
+	// the two apart on one side only.
+	json legacyWithKids = oldYouTube;
+	legacyWithKids["madeForKids"] = true;
+	StreamInfoPresetStore projectionStore;
+	if (failure.empty()) {
+		projectionStore.Remember(shared, json{{"youtube", legacyWithKids}}, legacyUnheld, created);
+		projectionStore.Remember(shared, json{{"youtube", newYouTube}}, legacyUnheld, created);
+		if (created || projectionStore.presets_.size() != 1) {
+			failure = "a legacy row holding a channel field was compared with it on one side only";
+		}
+	}
+
+	// A current row N and a more recently used legacy row L that look alike: a save equal to N
+	// must land on N, not overwrite L into a second copy of it.
+	StreamInfoPresetStore exactFirstStore;
+	const json currentSheet = json{{"youtube", newYouTube}, {"facebook", facebookNow}};
+	if (failure.empty()) {
+		const std::string current = exactFirstStore.Remember(shared, currentSheet, legacyUnheld, created);
+		exactFirstStore.Remember(shared, json{{"youtube", oldYouTube}}, legacyUnheld, created);
+		const bool legacyAhead = exactFirstStore.presets_.size() == 2 &&
+					 IsLegacyRow(exactFirstStore.presets_.front().byProvider);
+		const std::string landed = exactFirstStore.Remember(shared, currentSheet, legacyUnheld, created);
+		if (!legacyAhead || created || landed != current || exactFirstStore.presets_.size() != 2 ||
+		    exactFirstStore.presets_.front().id != current ||
+		    !IsLegacyRow(exactFirstStore.presets_.back().byProvider)) {
+			failure = "a save equal to a current row overwrote a legacy row that looked like it";
+		}
+	}
+	HostLog(failure.empty() ? std::string("[selftest] stream info preset identity OK")
+				: "[selftest] stream info preset identity FAILED: " + failure);
 }

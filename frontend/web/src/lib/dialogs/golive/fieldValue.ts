@@ -24,19 +24,19 @@ export function isPerDestination(field: OAuthProviderField): boolean {
 // anything", never "is there anything in it". A bool that has been set (even to false)
 // counts as present; everything else is empty when blank/missing.
 //
-// A tags value is the one place those two questions come apart, and the backend already
+// A list value is the one place those two questions come apart, and the backend already
 // keeps them apart — provider.cpp's readback comparison states the rule outright: an empty
 // list is a real assertion ("no tags") and an absent key is the absence of one. Every
-// provider applies it that way, acting on the `tags` key when it is present and assigning
-// whatever it holds. So an array is a stated value whatever its length, and only a missing
-// one is unset — otherwise clearing an inheriting channel's tags reads as "inherit" and
-// every inherited tag springs straight back.
+// provider applies it that way, acting on the key when it is present and assigning whatever
+// it holds (Twitch's content labels are sent as the full set, each one on or off). So an
+// array is a stated value whatever its length, and only a missing one is unset — otherwise
+// clearing an inheriting channel's tags reads as "inherit" and every inherited tag springs
+// straight back, and unticking a channel's last label is never sent at all.
 export function isEmptyVal(type: string, v: unknown): boolean {
+  if (isListType(type)) {
+    return !Array.isArray(v);
+  }
   switch (type) {
-    case "tags":
-      return !Array.isArray(v);
-    case "labelset":
-      return !Array.isArray(v) || v.length === 0;
     // A provider that always reports a category has no null to report an unset one with, so
     // it sends a blank id instead (Kick's id is a wire integer). A blank id is that unset
     // state: counting it as held would block the layer below, suppress the inherit cue, and
@@ -53,14 +53,28 @@ export function isEmptyVal(type: string, v: unknown): boolean {
 }
 
 // "Nothing IN it", as opposed to isEmptyVal's "nothing stated here". The two differ for
-// exactly one type — a tags value of [] states an empty list while carrying nothing — and
+// exactly the list types — a value of [] states an empty list while carrying nothing — and
 // this one is built on the other so no further type can drift between them.
 //
 // For a value ARRIVING from outside: a platform reporting an empty tag list is reporting
 // that it holds none, which is an observation, not an instruction to send one. Only a value
 // the user put in this dialog is an instruction, and that path reads isEmptyVal.
 export function isBlankVal(type: string, v: unknown): boolean {
-  return isEmptyVal(type, v) || (type === "tags" && Array.isArray(v) && v.length === 0);
+  return isEmptyVal(type, v) || (isListType(type) && Array.isArray(v) && v.length === 0);
+}
+
+// The field types whose value is a list of strings: free tags, and a fixed label set.
+export function isListType(type: string): boolean {
+  return type === "tags" || type === "labelset";
+}
+
+// One key for a (scope, key) pair -- an inherit bucket and a field key, or an account and a
+// field key -- wherever such pairs are kept in a Set or Map. The scope half may hold colons
+// (an account id is "provider:user"), but the key half never does: it is a descriptor field
+// key, a developer-owned identifier. So the last colon always marks where the key starts,
+// and two different pairs can never join to the same string.
+export function slotKey(scope: string, key: string): string {
+  return scope + "::" + key;
 }
 
 // Type-aware value equality, used to tell a genuine per-channel divergence from a value
@@ -73,7 +87,7 @@ export function valuesEqual(type: string, a: unknown, b: unknown): boolean {
     const bi = b && typeof b === "object" ? (b as { id?: string }).id : undefined;
     return ai === bi;
   }
-  if (type === "tags" || type === "labelset") {
+  if (isListType(type)) {
     const aa = Array.isArray(a) ? [...(a as unknown[])].sort() : [];
     const bb = Array.isArray(b) ? [...(b as unknown[])].sort() : [];
     return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
@@ -98,7 +112,9 @@ function providerLayer(providerId: string): string {
 }
 
 // A descriptor that names no scope keeps its value to the channel: of the three, that is
-// the only reading that cannot push a value to a provider whose rules forbid it.
+// the only reading that cannot push a value to a provider whose rules forbid it. The host
+// reads channel scope the same way when it decides which fields an older preset could not
+// hold (StreamInfoPresetStore::FieldsLegacyRowsNeverHeld).
 export function fieldScope(field: OAuthProviderField): FieldScope {
   return field.scope === "all" || field.scope === "provider" ? field.scope : "channel";
 }

@@ -13194,6 +13194,16 @@ bool MethodOAuthProviders(const json & /*params*/, json &result, std::string & /
 			if (!targetKey.empty()) {
 				cap["targetFieldKey"] = targetKey;
 			}
+			// Stamped here for the same reason: whether a field is a safety field is the
+			// read-back's table (OAuth::IsSafetyField), not something each descriptor restates.
+			// The dialog reads it to keep a preset load from ever resetting one.
+			if (cap.contains("fields") && cap["fields"].is_array()) {
+				for (json &field : cap["fields"]) {
+					if (field.is_object() && OAuth::IsSafetyField(JsonUtil::Str(field, "key"))) {
+						field["safety"] = true;
+					}
+				}
+			}
 			arr.push_back(std::move(cap));
 		} catch (const std::exception &e) {
 			HostLog(std::string("[oauth] capabilityJson failed: ") + e.what());
@@ -13860,7 +13870,8 @@ bool MethodStreamInfoPresetsRemember(const json &params, json &result, std::stri
 	// asserted" -- which is an empty bag. Refusing the call would cost the user a preset
 	// over a provider section they never filled in.
 	const std::string id = store.Remember(JsonUtil::ObjOrEmpty(params, "shared"),
-					      JsonUtil::ObjOrEmpty(params, "byProvider"), created);
+					      JsonUtil::ObjOrEmpty(params, "byProvider"),
+					      StreamInfoPresetStore::FieldsLegacyRowsNeverHeld(), created);
 	const bool saved = store.Save();
 	result = json{{"id", id}, {"created", created}};
 	EmitEvent(EventNames::kStreamInfoPresetsChanged, json::object());
