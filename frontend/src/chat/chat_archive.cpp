@@ -59,6 +59,10 @@ constexpr const char *kQuarantineInfix = ".corrupt-";
 constexpr const char *kLockSuffix = ".lock";
 constexpr const char *kSideFiles[] = {"-wal", "-shm"};
 
+// Why stored chat is removed, as logged.
+constexpr const char *kOffReason = "chat history is off";
+constexpr const char *kAbandonedReason = "it cannot be kept current this launch";
+
 constexpr int kBusyTimeoutMs = 3000;
 
 const char *StatusName(ArchiveStatus status)
@@ -279,7 +283,7 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 	}
 	if (retention_ == Retention::Off) {
 		SetStatus(ArchiveStatus::Off, {});
-		SetRemovalOwed(RemoveStoreFiles());
+		RemoveOrOwe(kOffReason);
 	} else if (OpenStore()) {
 		Sweep();
 		BuildSeed(seed);
@@ -298,10 +302,11 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 	}
 	if (!writing) {
 		LogDegraded(StatusDetail());
-		// Nothing would ever apply a Clear, a purge or Off to the store opened above, so it
-		// goes now rather than outlive them. The ring keeps what was seeded from it.
+		// A Clear, a purge or Off may never reach the store opened above, so it goes now,
+		// with its quarantined copies, rather than outlive them; the lock is still held.
+		// The ring keeps what was seeded from it.
 		CloseStore();
-		RemoveOwnStore("it cannot be kept current this launch");
+		RemoveOrOwe(kAbandonedReason);
 		ReleaseLock();
 	}
 	const auto ms =
@@ -463,15 +468,39 @@ bool ChatArchive::StartWriterLocked()
 
 bool ChatArchive::NothingToReachLocked() const
 {
-	// Open removed everything this build may touch, bar a file whose version it could not
-	// read, which is owed another try.
-	return mode_ == Retention::Off && !writer_.joinable() && !removalOwed_;
+	// Open removed everything this build may touch, bar a file it could not, which is owed
+	// another try.
+	return mode_ == Retention::Off && !writer_.joinable() && owedRemoval_.empty();
 }
 
-void ChatArchive::SetRemovalOwed(bool owed)
+void ChatArchive::RemoveOrOwe(const std::string &why)
+{
+	SetOwedRemoval(RemoveStoreFiles(why) ? why : std::string());
+}
+
+bool ChatArchive::RemoveWhatIsOwed()
+{
+	if (db_.IsOpen()) {
+		return false;
+	}
+	const std::string why = retention_ == Retention::Off ? std::string(kOffReason) : OwedRemoval();
+	if (why.empty()) {
+		return false;
+	}
+	RemoveOrOwe(why);
+	return true;
+}
+
+std::string ChatArchive::OwedRemoval() const
 {
 	std::lock_guard<std::mutex> lock(queueMutex_);
-	removalOwed_ = owed;
+	return owedRemoval_;
+}
+
+void ChatArchive::SetOwedRemoval(std::string why)
+{
+	std::lock_guard<std::mutex> lock(queueMutex_);
+	owedRemoval_ = std::move(why);
 }
 
 void ChatArchive::FailWriterStart(bool fail)
@@ -803,11 +832,10 @@ void ChatArchive::Commit(std::vector<Op> &ops)
 			DegradeFromWriter("chat.db write failed: " + writeError_);
 		}
 	}
-	if (retention_ == Retention::Off && !db_.IsOpen()) {
-		// Off: everything this build may remove goes, a file an earlier try could not read
-		// included, and the quarantined copies with it.
-		SetRemovalOwed(RemoveStoreFiles());
-	} else if (dropsHistory) {
+	// Off: everything this build may remove goes, the quarantined copies with it, and so,
+	// whatever the mode, does a store an earlier try left owing. Otherwise a Clear or a
+	// purge still takes the quarantined copies.
+	if (!RemoveWhatIsOwed() && dropsHistory) {
 		WithStoreLock([this] { DeleteQuarantined(true); });
 	}
 	if (pendingCount > 0) {
@@ -962,18 +990,22 @@ void ChatArchive::ApplyMode(Retention retention)
 			CloseStore();
 		}
 		SetStatus(ArchiveStatus::Off, {});
-		SetRemovalOwed(RemoveStoreFiles());
+		RemoveOrOwe(kOffReason);
 		ReleaseLock();
 		return;
 	}
 	if (!db_.IsOpen()) {
 		if (IsDegraded()) {
-			return; // nothing is written again this launch, so nothing is opened to write to
+			// Nothing is written again this launch, so nothing is opened to write to; a
+			// store a failed writer left behind is still owed its removal.
+			RemoveWhatIsOwed();
+			return;
 		}
 		if (!OpenStore()) {
 			StopPersisting();
 			return;
 		}
+		SetOwedRemoval({}); // the file an Off could not remove is the live store again
 		// Off leaves no rows behind, so any found here are ones an Off failed to remove.
 		// They predate this launch's seqs, which would collide with them on the key.
 		if (count_ > 0) {
@@ -1289,7 +1321,7 @@ std::string ChatArchive::Quarantine()
 	return name;
 }
 
-bool ChatArchive::RemoveStoreFiles()
+bool ChatArchive::RemoveStoreFiles(const std::string &why)
 {
 	const fs::path db = fs::u8path(options_.path);
 	std::error_code ec;
@@ -1305,7 +1337,7 @@ bool ChatArchive::RemoveStoreFiles()
 	bool left = false;
 	const bool locked = WithStoreLock([&] {
 		if (anyStore) {
-			left = RemoveOwnStore("chat history is off");
+			left = RemoveOwnStore(why);
 		}
 		DeleteQuarantined(true);
 	});

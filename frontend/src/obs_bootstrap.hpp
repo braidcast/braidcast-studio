@@ -632,8 +632,9 @@ void RunChatHistorySelfTest();
 // quarantined copies under retention and per mode, the account purge, Off removing what
 // was stored but never a file whose version it cannot read (and trying again once it can),
 // no writer thread while Off, Degraded holding across Off and on, a writer that cannot be
-// started taking its store with it, and Session deleting a corrupt file outright. Touches
-// neither Chat::Archive() nor the user's chat.db. Gated by the caller to the smoke path.
+// started taking its store and quarantined copies with it (and the next writer retrying a
+// delete that failed), and Session deleting a corrupt file outright. Touches neither
+// Chat::Archive() nor the user's chat.db. Gated by the caller to the smoke path.
 void RunChatArchiveSelfTest();
 // Headless proof for events.list paging on a private in-memory EventStore: (ts, id) order
 // with a UTF-8 byte tie-break, a cursor past evicted rows returning an empty last page,

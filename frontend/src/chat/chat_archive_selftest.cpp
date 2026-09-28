@@ -706,21 +706,28 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		Report("corrupt file this session", ok, detail);
 	}
 
-	// A writer thread that cannot be started takes the store it opened with it, so no
-	// later purge, Clear or Off is owed to a file nothing will ever write again. The ring
-	// keeps what was seeded, and the control ops that follow neither throw nor reach disk.
+	// A writer thread that cannot be started takes the store it opened with it, and the
+	// quarantined copies, since a purge, Clear or Off may never reach them. The ring keeps
+	// what was seeded, and the control ops that follow neither throw nor reach disk.
 	{
 		const std::string path = dbPath("spawnfail");
 		{
 			Launch first(path, Chat::Retention::SevenDays, "L1");
 			Add(first.history, kKickA, "k0", "kick");
 		}
+		{
+			// Stamped now, so that retention does not age it out first.
+			std::ofstream out(fs::u8path(path + ".corrupt-" + TimeUtil::LocalFileStamp()),
+					  std::ios::binary);
+			out << Garbage();
+		}
 		Chat::ChatArchive archive;
 		Chat::ChatHistory history{&archive};
 		archive.FailWriterStart(true);
 		history.OpenArchive(TestOptions(path, Chat::Retention::SevenDays, "L2"));
 		const bool degraded = archive.Status() == Chat::ArchiveStatus::Degraded && !archive.Active();
-		const bool removed = !Exists(path) && !Exists(path + "-wal") && !Exists(path + ".lock");
+		const bool removed = !Exists(path) && !Exists(path + "-wal") && !Exists(path + ".lock") &&
+				     !AnyQuarantined(path);
 		const bool seeded = WalkAll(history).ids == std::vector<std::string>{"k0"};
 		archive.PurgeAccount(kKickA.accountId);
 		history.Clear();
@@ -728,6 +735,33 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		const bool quiet = !archive.WriterStarted() && !Exists(path);
 		archive.Shutdown();
 		Report("spawn failure removes the store", degraded && removed && seeded && quiet);
+	}
+
+	// A store the failed writer could not delete is owed its removal: the next control op
+	// that does start a writer makes it, although chat history is still on.
+	{
+		const std::string path = dbPath("spawnretry");
+		{
+			Launch first(path, Chat::Retention::SevenDays, "L1");
+			Add(first.history, kKickA, "k0", "kick");
+		}
+		Chat::ChatArchive archive;
+		Chat::ChatHistory history{&archive};
+		archive.FailWriterStart(true);
+		bool leftAtOpen = false;
+		{
+			// Held open without delete sharing, chat.db cannot be deleted.
+			std::ifstream hold(fs::u8path(path), std::ios::binary);
+			history.OpenArchive(TestOptions(path, Chat::Retention::SevenDays, "L2"));
+			leftAtOpen = hold.is_open() && Exists(path) &&
+				     archive.Status() == Chat::ArchiveStatus::Degraded;
+		}
+		archive.FailWriterStart(false);
+		history.Clear();
+		archive.WaitIdle(kIdleWait);
+		const bool removed = archive.WriterStarted() && !Exists(path) && !Exists(path + "-wal");
+		archive.Shutdown();
+		Report("spawn failure retries a failed delete", leftAtOpen && removed);
 	}
 
 	// Off that could not read a file's version owes it another try: once the file can be

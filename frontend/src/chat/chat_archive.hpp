@@ -48,8 +48,9 @@ struct sqlite3_stmt;
 //     write or remove: never while retention has been Off since Open, when nothing is on
 //     disk, unless Off left a file whose version it could not read, which the next control
 //     op tries again. A failure to start it degrades the archive rather than throwing to
-//     the caller, and Open then removes the store it opened, since nothing would ever apply
-//     a Clear, a purge or Off to it.
+//     the caller, and Open then removes the store it opened and its quarantined copies,
+//     since a Clear, a purge or Off may never reach them. What stays is owed: the next
+//     control op that does start the writer removes it, whatever the mode.
 //   - ReadOlder runs on the bridge's async lane. It copies the pending ops under
 //     queueMutex_, releases it, then reads under readMutex_. The two are never held
 //     together, and neither is ever held with the ring lock.
@@ -250,7 +251,14 @@ private:
 	// Off since Open, with nothing left on disk that this build may remove: no writer runs,
 	// and a control op has nothing to reach.
 	bool NothingToReachLocked() const;
-	void SetRemovalOwed(bool owed);
+	// RemoveStoreFiles for `why`; when a file stays, the removal is owed another try
+	// (RemoveWhatIsOwed).
+	void RemoveOrOwe(const std::string &why);
+	// With the store closed: under Off, everything this build may remove; otherwise a
+	// removal an earlier try owes. False when there was nothing to try.
+	bool RemoveWhatIsOwed();
+	std::string OwedRemoval() const;
+	void SetOwedRemoval(std::string why);
 	void WriterLoop();
 	void Apply(std::vector<Op> &batch);
 	// Write `ops` (no SetMode) as one transaction, retrying a failed commit.
@@ -265,9 +273,9 @@ private:
 	bool AcquireLock();
 	void ReleaseLock();
 	// Remove chat.db and its -wal/-shm (RemoveOwnStore) and every quarantined copy, holding
-	// the lock file for it; nothing while another instance holds that. True when a file this
-	// build may remove is still there, to be tried again.
-	bool RemoveStoreFiles();
+	// the lock file for it; nothing while another instance holds that. `why` is logged. True
+	// when a file this build may remove is still there, to be tried again.
+	bool RemoveStoreFiles(const std::string &why);
 	// Remove chat.db and its -wal/-shm, unless it is, or may be, a newer build's; `why` is
 	// logged. True when it stays although it is not known to be a newer build's.
 	bool RemoveOwnStore(const std::string &why);
@@ -315,9 +323,9 @@ private:
 	std::chrono::steady_clock::time_point firstQueuedAt_{};
 	// The mode last asked for (Open, SetRetention).
 	Retention mode_ = Retention::Off;
-	// Off left a file this build may remove but could not read; the next control op tries
-	// again.
-	bool removalOwed_ = false;
+	// Why a removal that left a file this build may remove was made, or "" when none is
+	// owed; the next control op tries again.
+	std::string owedRemoval_;
 	bool failWriterStart_ = false;
 	bool urgent_ = false;  // a control op is queued: write it without the batching delay
 	bool writing_ = false; // a batch is off the queue and not yet applied
