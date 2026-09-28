@@ -19,6 +19,7 @@
 // off-screen rather than ask this store to know about DOM layout.
 
 import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
+import { startOfDay } from "$lib/utils/format";
 
 // Coarser than a 1s clock is fine: every consumer today buckets the age to whole
 // minutes, so nothing finer than "the next minute boundary might have passed" needs
@@ -27,6 +28,9 @@ const TICK_MS = 15_000;
 
 class NowTickStore {
   nowMs = $state(Date.now());
+  // Local midnight of nowMs. It changes once a day, so what reads it re-runs only then:
+  // a label that says "today" without a date.
+  today = $derived(startOfDay(this.nowMs));
 
   #timer: ReturnType<typeof setInterval> | null = null;
 

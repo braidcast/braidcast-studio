@@ -68,7 +68,7 @@ const RELATIVE_DAY_LIMIT = 7;
 // Local midnight for a timestamp, so "how many days ago" is answered in calendar days
 // rather than in 24-hour blocks: 23:50 last night is yesterday at 00:10 this morning,
 // which is what someone reading a date means by it.
-function startOfDay(ms: number): number {
+export function startOfDay(ms: number): number {
   const d = new Date(ms);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
@@ -112,6 +112,11 @@ export function fmtSince(ms: number, nowMs = Date.now()): string {
   if (days < RELATIVE_DAY_LIMIT) {
     return days + "d ago";
   }
+  return fmtShortDate(ms, nowMs);
+}
+
+// A calendar date, short: the year only when it is not this one.
+function fmtShortDate(ms: number, nowMs: number): string {
   const then = new Date(ms);
   const sameYear = then.getFullYear() === new Date(nowMs).getFullYear();
   return then.toLocaleDateString(undefined, {
@@ -119,6 +124,11 @@ export function fmtSince(ms: number, nowMs = Date.now()): string {
     month: "short",
     year: sameYear ? undefined : "numeric",
   });
+}
+
+// Wall-clock time of day, 24-hour.
+function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 // Chat-row age: answers "am I late replying" rather than "what time is it", so a bare
@@ -140,7 +150,14 @@ export function fmtChatTime(ms: number, nowMs = Date.now()): string {
   if (elapsed < HOUR_MS) {
     return Math.floor(elapsed / MINUTE_MS) + "m";
   }
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return fmtClock(ms);
+}
+
+// The divider a feed draws where a broadcast began: the clock time, and the date too
+// once it is not today's.
+export function fmtStreamStarted(ms: number, nowMs = Date.now()): string {
+  const at = "Stream started " + fmtClock(ms);
+  return startOfDay(ms) === startOfDay(nowMs) ? at : fmtShortDate(ms, nowMs) + " · " + at;
 }
 
 // Frame rate from a numerator/denominator pair: a fractional rate (den > 1) reads to

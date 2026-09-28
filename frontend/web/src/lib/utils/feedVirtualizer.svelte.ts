@@ -14,7 +14,8 @@
 // A consumer constructs one instance in its <script> (so the internal effects bind to the
 // component), renders `visible` over a `layout.total`-high sizer, and wires the two
 // actions (`scroll` on the scroll container, `measureRow` per row). `display` leads with
-// a `top` row of fixed height, which reads "loading", nothing, or "start of history".
+// a `top` row of fixed height, which reads "loading", nothing, or "start of history", and
+// interleaves a fixed-height divider where each broadcast began (config.boundaries).
 //
 // Scroll anchoring: rows sit at `style:top` over a sizer, which suppresses CSS scroll
 // anchoring, so this does it by hand. While the reader is scrolled up, every layout
@@ -34,12 +35,27 @@ const LOAD_RETRY_MAX_MS = 30_000;
  * for again. */
 export type TopState = "loading" | "idle" | "start" | "retrying";
 
-/** The top row's key. Item keys count up from 1, so no item can take it. */
+/** The top row's key. Item keys count up from 1 and divider keys down from -2, so
+ * neither can take it. */
 export const TOP_KEY = -1;
 
-export type DisplayRow<T> = { kind: "item"; clientKey: number; item: T } | { kind: "top"; clientKey: -1; state: TopState };
+/** A moment the feed marks with a divider: a broadcast start, by session id. */
+export interface Boundary {
+  id: string;
+  at: number;
+  /** The broadcast is still running, so its divider shows even before anything follows it. */
+  live: boolean;
+}
+
+export type DisplayRow<T> =
+  | { kind: "item"; clientKey: number; item: T }
+  | { kind: "divider"; clientKey: number; at: number; label: string }
+  | { kind: "top"; clientKey: -1; state: TopState };
 
 type ItemRow<T> = Extract<DisplayRow<T>, { kind: "item" }>;
+
+/** The rows that are not items: the top row and the dividers. */
+export type MarkerRow = Exclude<DisplayRow<never>, { kind: "item" }>;
 
 export interface FeedConfig<T> {
   /** Px height estimate for an unmeasured item row. */
@@ -55,6 +71,8 @@ export interface FeedConfig<T> {
   key(item: T): string;
   /** The host's page order. */
   compare(a: T, b: T): number;
+  /** When the item happened, on the clock `boundaries` are measured on. */
+  timeOf(item: T): number;
   /** One page, oldest-first: the newest without `before`, else the rows just older. */
   fetch(q: { before?: T; limit: number }): Promise<FeedPage<T>>;
   /** Rows a load asks for and a trim keeps (raised to three screens when that is more). */
@@ -68,6 +86,12 @@ export interface FeedConfig<T> {
   /** An older page loads once the viewport top is within this many screens of the window's
    * top (default 1.5). */
   prefetchScreens?: number;
+  /** Where to draw dividers, in any order. Read inside a derivation, so a reactive source
+   * redraws them. */
+  boundaries?: () => readonly Boundary[];
+  dividerLabel?: (b: Boundary) => string;
+  /** A divider's fixed CSS height (default topHeight). */
+  dividerHeight?: number;
 }
 
 interface Layout {
@@ -116,12 +140,19 @@ export class FeedVirtualizer<T> {
 
   display = $derived.by<DisplayRow<T>[]>(() => {
     const top: DisplayRow<T> = { kind: "top", clientKey: TOP_KEY, state: this.top };
-    return [top, ...this.rows];
+    const bounds = this.config.boundaries?.() ?? [];
+    if (bounds.length === 0) {
+      return [top, ...this.rows];
+    }
+    return this.interleave(top, [...bounds].sort((a, b) => a.at - b.at));
   });
 
   private readonly config: FeedConfig<T>;
   private heights = new Map<number, number>();
   private seq = 0;
+  // Session id -> divider clientKey, handed out once and never reused, so a divider keeps
+  // its DOM node and its hold on the reader's place for the life of the feed.
+  private dividerKeys = new Map<string, number>();
   // Reactive so the effects below first run once the container is attached: until then
   // they must not touch the display set at all (see the constructor).
   private scrollEl = $state.raw<HTMLDivElement | undefined>(undefined);
@@ -215,7 +246,65 @@ export class FeedVirtualizer<T> {
   }
 
   private heightOf(row: DisplayRow<T>): number {
-    return this.heights.get(row.clientKey) ?? (row.kind === "top" ? this.config.topHeight : this.config.estimate);
+    const measured = this.heights.get(row.clientKey);
+    if (measured !== undefined) {
+      return measured;
+    }
+    switch (row.kind) {
+      case "top":
+        return this.config.topHeight;
+      case "divider":
+        return this.config.dividerHeight ?? this.config.topHeight;
+      default:
+        return this.config.estimate;
+    }
+  }
+
+  // The window with each boundary's divider just before the first item at or after it.
+  // A divider needs evidence it sits where it says: an item before it in the window, or
+  // no older rows on the host -- else the rows before it may simply not be loaded yet. One
+  // with nothing after it yet shows at the bottom while its broadcast runs. Boundaries
+  // with no item between them would stack; only the latest of them shows.
+  private interleave(top: DisplayRow<T>, bounds: Boundary[]): DisplayRow<T>[] {
+    const { timeOf, dividerLabel } = this.config;
+    const rows = this.rows;
+    let earliest = Infinity;
+    for (const r of rows) {
+      earliest = Math.min(earliest, timeOf(r.item));
+    }
+    const out: DisplayRow<T>[] = [top];
+    const place = (b: Boundary): void => {
+      out.push({ kind: "divider", clientKey: this.dividerKey(b.id), at: b.at, label: dividerLabel?.(b) ?? "" });
+    };
+    let next = 0;
+    for (const row of rows) {
+      const t = timeOf(row.item);
+      let slot: Boundary | undefined;
+      for (; next < bounds.length && bounds[next].at <= t; next++) {
+        slot = bounds[next];
+      }
+      if (slot && (earliest < slot.at || !this.more)) {
+        place(slot);
+      }
+      out.push(row);
+    }
+    let tail: Boundary | undefined;
+    for (; next < bounds.length; next++) {
+      tail = bounds[next];
+    }
+    if (tail?.live && !this.detached) {
+      place(tail);
+    }
+    return out;
+  }
+
+  private dividerKey(id: string): number {
+    let key = this.dividerKeys.get(id);
+    if (key === undefined) {
+      key = -2 - this.dividerKeys.size;
+      this.dividerKeys.set(id, key);
+    }
+    return key;
   }
 
   // Three screens of rows at the estimate, or config.base when that is more.

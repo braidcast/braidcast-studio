@@ -1,13 +1,25 @@
 import { describe, expect, mock, test } from "bun:test";
 import { flushSync as flush } from "svelte";
-import { timer } from "./feedHarness";
-import { pre, root } from "./harness.svelte";
 import type { FeedFilter } from "$lib/api/bridge";
 import { compareCodePoints } from "$lib/docks/events/eventOrder";
 import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
 import type { DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
 import type { DestinationSelection } from "$lib/ui/destinationSelection";
-import { NUMBERS, frame, harness, items, range, underEye, useFrameMocks, type Harness } from "./feedHarness";
+import { fmtStreamStarted } from "$lib/utils/format";
+import type { Boundary } from "$lib/utils/feedVirtualizer.svelte";
+import {
+  NUMBERS,
+  frame,
+  harness,
+  items,
+  measure,
+  range,
+  timer,
+  underEye,
+  useFrameMocks,
+  type Harness,
+} from "./feedHarness";
+import { pre, root } from "./harness.svelte";
 
 // The bridge module wires window globals on import, and destinationSelection reaches it
 // through the stores; the predicates under test never call it.
@@ -486,6 +498,110 @@ describe("paged window: trims and clears", () => {
     await h.host.reply({ epoch: 0 });
     expect(items(h)).toEqual([]);
     h.stop();
+  });
+});
+
+describe("stream dividers", () => {
+  // Items are their own time, so a boundary "at 90.5" sits between rows 90 and 91.
+  function withBounds(bounds: Boundary[], hardMax = NUMBERS.hardMax) {
+    return harness<number>({
+      ...NUMBERS,
+      hardMax,
+      dividerHeight: 8,
+      boundaries: () => bounds,
+      dividerLabel: (b) => b.id,
+    });
+  }
+
+  // The window as items and "|id" dividers, top row left out.
+  function shape(h: Harness<number>): (number | string)[] {
+    return h.v.display.slice(1).map((r) => (r.kind === "item" ? r.item : r.kind === "divider" ? "|" + r.label : "?"));
+  }
+
+  function dividerKey(h: Harness<number>, id: string): number {
+    const row = h.v.display.find((r) => r.kind === "divider" && r.label === id);
+    if (!row) {
+      throw new Error("no divider " + id);
+    }
+    return row.clientKey;
+  }
+
+  test("each shows before the first row after it, once rows before it or the start are loaded", async () => {
+    const h = withBounds([
+      { id: "a", at: 5.5, live: false }, // before the whole store
+      { id: "b", at: 50.5, live: false },
+      { id: "c", at: 91.2, live: false }, // c and d have nothing between them:
+      { id: "d", at: 91.6, live: false }, // only d shows
+      { id: "e", at: 150, live: false }, // ended, and nothing after it
+    ], 100); // room to page back to the start without detaching
+    h.host.store = range(41, 100);
+    h.v.load();
+    await h.host.reply(); // 86..100, more rows on the host
+    expect(shape(h)).toEqual([...range(86, 91), "|d", ...range(92, 100)]);
+    const keyD = dividerKey(h, "d");
+    expect(keyD).toBeLessThan(-1);
+
+    h.el.userScroll(100);
+    await h.host.reply(); // 81..85
+    expect(dividerKey(h, "d")).toBe(keyD);
+    for (let pages = 0; h.v.more && pages < 20; pages++) {
+      h.el.userScroll(0); // on up to 41, where the host runs out
+      if (h.host.calls.length > 0) {
+        await h.host.reply();
+      }
+    }
+    expect(h.v.more).toBe(false);
+    // With nothing older on the host, a divider before the oldest row is placed correctly.
+    expect(shape(h).slice(0, 2)).toEqual(["|a", 41]);
+    expect(shape(h)).toContain("|b");
+    expect(shape(h).indexOf("|b")).toBe(shape(h).indexOf(51) - 1);
+    expect(dividerKey(h, "d")).toBe(keyD);
+    h.stop();
+  });
+
+  test("a running broadcast shows at the bottom before anything follows it, not while detached", async () => {
+    const h = withBounds([{ id: "live", at: 130.5, live: true }]);
+    h.host.store = range(1, 100);
+    h.v.load();
+    await h.host.reply();
+    expect(shape(h).at(-1)).toBe("|live");
+
+    h.el.userScroll(160);
+    for (const n of range(101, 130)) {
+      h.v.live(n);
+    }
+    frame(); // past hardMax: detached before anything of the stream arrived
+    expect(h.v.detached).toBe(true);
+    expect(shape(h)).not.toContain("|live");
+    h.stop();
+  });
+
+  test("a trim keeps a divider's measured height", async () => {
+    const h = withBounds([{ id: "s", at: 150.5, live: true }]);
+    h.host.store = range(1, 100);
+    h.v.load();
+    await h.host.reply();
+    const key = dividerKey(h, "s");
+    h.v.measureRow({ offsetHeight: 40 } as HTMLElement, key);
+    measure(h, 100, 20); // settles the effects
+    for (const n of range(101, 160)) {
+      h.v.live(n);
+    }
+    frame(); // trimmed back to 146..160
+    expect(items(h)).toEqual(range(146, 160));
+    const i = h.v.display.findIndex((r) => r.clientKey === key);
+    expect(h.v.display[i + 1]).toMatchObject({ kind: "item", item: 151 });
+    expect(h.v.layout.tops[i + 1] - h.v.layout.tops[i]).toBe(40);
+    h.stop();
+  });
+
+  test("the label reads the clock time, and the date once it is not today", () => {
+    const at = new Date(2026, 8, 28, 14, 5).getTime();
+    expect(fmtStreamStarted(at, new Date(2026, 8, 28, 23, 59).getTime())).toBe("Stream started 14:05");
+    const later = fmtStreamStarted(at, new Date(2026, 8, 29, 0, 1).getTime());
+    expect(later.endsWith(" · Stream started 14:05")).toBe(true);
+    expect(later).not.toContain("2026");
+    expect(fmtStreamStarted(at, new Date(2027, 0, 2).getTime())).toContain("2026");
   });
 });
 

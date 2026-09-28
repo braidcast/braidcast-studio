@@ -15,7 +15,7 @@
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
-  import FeedMarker, { FEED_TOP_HEIGHT } from "$lib/ui/FeedMarker.svelte";
+  import FeedMarker, { FEED_MARKERS } from "$lib/ui/FeedMarker.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import { EVENTS_STATE_NOTE, eventsTransportFor } from "$lib/ui/destinationHealth";
   import {
@@ -34,6 +34,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
+  import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
   import { compareEvents } from "$lib/docks/events/eventOrder";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
@@ -182,9 +183,10 @@
   // sizes are in rows; the host store holds at most 500 (EventStore::kCap).
   const feed = new FeedVirtualizer<NormalizedEvent>({
     estimate: 38,
-    topHeight: FEED_TOP_HEIGHT,
+    ...FEED_MARKERS,
     key: (e) => e.id,
     compare: compareEvents,
+    timeOf: (e) => e.ts,
     fetch: ({ before, limit }) =>
       obs.call("events.list", {
         before: before && { ts: before.ts, id: before.id },
@@ -195,6 +197,11 @@
     page: 30,
     highWater: 150,
     hardMax: 1000,
+  });
+
+  // The stream dividers are drawn from the session history.
+  $effect(() => {
+    sessionsStore.start();
   });
 
   function matches(e: NormalizedEvent): boolean {
@@ -441,8 +448,8 @@
     {:else}
       <div class="sizer" style:height={feed.layout.total + "px"}>
         {#each feed.visible as row (row.clientKey)}
-          {#if row.kind === "top"}
-            <FeedMarker state={row.state} top={row.top} />
+          {#if row.kind !== "item"}
+            <FeedMarker {row} />
           {:else}
           {@const e = row.item}
           {@const actorColor = e.actorColor || PLATFORM_COLOR[e.platform] || "var(--color-muted)"}

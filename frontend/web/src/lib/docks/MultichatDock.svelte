@@ -14,7 +14,7 @@
   import ChatOrigin from "$lib/ui/ChatOrigin.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
-  import FeedMarker, { FEED_TOP_HEIGHT } from "$lib/ui/FeedMarker.svelte";
+  import FeedMarker, { FEED_MARKERS } from "$lib/ui/FeedMarker.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import {
     ALL_DESTINATIONS,
@@ -31,6 +31,7 @@
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
   import { pollStore } from "$lib/stores/pollStore.svelte";
+  import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
   import type { LivePoll } from "$lib/api/bridge";
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
@@ -56,12 +57,14 @@
   // the message's identity, which is what dedupes a message arriving both in a page and
   // live. The host filters the pages by the selection and this dock filters the live
   // frames with the same predicate, so every row held matches it. 30px estimate for an
-  // unmeasured row.
+  // unmeasured row. The divider where a broadcast began is placed by `rx`, the host's
+  // admission time, on the clock that session starts are stamped on.
   const feed = new FeedVirtualizer<ChatMessage>({
     estimate: 30,
-    topHeight: FEED_TOP_HEIGHT,
+    ...FEED_MARKERS,
     key: chatKey,
     compare: (a, b) => a.seq - b.seq,
+    timeOf: (m) => m.rx,
     fetch: ({ before, limit }) =>
       obs.call("chat.list", {
         before: before && { seq: before.seq },
@@ -72,6 +75,11 @@
     page: 50,
     highWater: 300,
     hardMax: 2000,
+  });
+
+  // The stream dividers are drawn from the session history.
+  $effect(() => {
+    sessionsStore.start();
   });
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
@@ -609,8 +617,8 @@
       {:else}
         <div class="sizer" style:height={feed.layout.total + "px"}>
           {#each feed.visible as row (row.clientKey)}
-            {#if row.kind === "top"}
-              <FeedMarker state={row.state} top={row.top} />
+            {#if row.kind !== "item"}
+              <FeedMarker {row} />
             {:else}
             {@const m = row.item}
             {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}

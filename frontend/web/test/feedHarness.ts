@@ -176,6 +176,7 @@ export const NUMBERS: TestConfig<number> = {
   topHeight: 10,
   key: (n) => String(n),
   compare: (a, b) => a - b,
+  timeOf: (n) => n,
   base: 5,
   page: 5,
   highWater: 20,

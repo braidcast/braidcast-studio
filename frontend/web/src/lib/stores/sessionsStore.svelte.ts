@@ -1,12 +1,19 @@
 import { obs, type SessionDetail, type SessionInfo } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+import type { Boundary } from "$lib/utils/feedVirtualizer.svelte";
 
 // History is queried state, not a live stream: the list changes when a
-// broadcast ends or a row is deleted, which is what sessions.changed reports.
+// broadcast starts or ends or a row is deleted, which is what sessions.changed
+// reports. The feeds' live divider depends on the go-live refresh.
 // So this follows canvasStore's start-and-refresh shape rather than statsStore's
 // ref-counted push model.
 class SessionsStore {
   sessions = $state<SessionInfo[]>([]);
+  // Where each broadcast began, for the feeds' stream dividers. startedAt is the host's
+  // clock, the one chat's `rx` is stamped on.
+  boundaries = $derived<Boundary[]>(
+    this.sessions.map((s) => ({ id: s.id, at: s.startedAt, live: s.endedAt === null })),
+  );
   loaded = $state(false);
   error = $state<string | null>(null);
   #started = false;
