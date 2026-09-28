@@ -6,10 +6,14 @@
 
 void DiagnosticsSettings::Load()
 {
-	OBSDataAutoRelease root =
-		obs_data_create_from_json_file_safe(MultistreamBasicPath("diagnostics.json").c_str(), "bak");
+	const std::string path = MultistreamBasicPath("diagnostics.json");
+	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 	if (!root) {
-		return; // no file yet: keep struct defaults
+		// No file yet keeps the struct defaults. A file that is there but unusable is kept
+		// aside first: the next save would rotate it into the .bak and the one after would
+		// lose it.
+		KeepUnusableStore(path, "diagnostics.failed-", "[settings]");
+		return;
 	}
 	for (const DiagnosticsBoolField &f : kDiagnosticsBoolFields) {
 		obs_data_set_default_bool(root, f.file, this->*f.member);
