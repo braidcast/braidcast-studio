@@ -12,14 +12,18 @@
 //   Transitions::GetProgramScene()    (Save current-scene capture, Load bind)
 //   SceneCollections::ActiveScenePath()
 // The compiled store TUs (CanvasRuntime/CanvasStore/CanvasDefinition/StorePaths)
-// reference no ObsBootstrap/Bridge/Transitions symbols, so these four close the
-// link graph.
+// reference no ObsBootstrap/Bridge/Transitions symbols. Two UI hooks they call are
+// no-ops here, since the harness has no overlay server or preview window:
+//   Overlay::SyncSavedReroute()     (SceneCollection::Load)
+//   Preview::OnCanvasVideoReset()   (CanvasRuntime::ResetVideo)
 
 #include "testseam.hpp"
 
 #include "obs_bootstrap.hpp"
 #include "scene/scene_collections.hpp"
 #include "scene/transitions.hpp"
+#include "overlay/overlay_sources.hpp"
+#include "windowing/preview_window.hpp"
 
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -55,3 +59,7 @@ std::string SceneCollections::ActiveScenePath() const
 {
 	return TestSeam::ActiveScenePath();
 }
+
+void Overlay::SyncSavedReroute(obs_data_array_t *) {}
+
+void Preview::OnCanvasVideoReset(const std::string &) {}
