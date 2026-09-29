@@ -36,6 +36,7 @@
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
   import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
+  import { moderationMatcher, redactChat, TOMBSTONE_TEXT } from "$lib/docks/multichat/chatModeration";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -583,7 +584,10 @@
   // The host dedupes before it emits (its scrollback ring is the dedupe), so a live frame
   // is new to the host. What can still repeat is the seam between a chat.list page and
   // the live stream: subscribe FIRST so nothing falls between them, then load; the feed
-  // merges the frames that land while the page is in flight into it by chatKey.
+  // merges the frames that land while the page is in flight into it by chatKey. A
+  // moderation op redacts the rows it names wherever the feed holds them; the host has
+  // already redacted its own copy, so pages it reads after the op bring them redacted.
+  // The feed remembers the op for a row admitted before it that arrives after it.
   $effect(() => {
     const offMsg = obs.on(EV.chatMessage, (m) => {
       if (matchesSelection(m, selection, destByUuid)) {
@@ -591,10 +595,14 @@
       }
     });
     const offCleared = obs.on(EV.chatCleared, ({ epoch }) => feed.reset(epoch));
+    const offModeration = obs.on(EV.chatModeration, (op) =>
+      feed.patch(moderationMatcher(op), (m) => redactChat(m, op.action)),
+    );
     untrack(() => feed.load());
     return () => {
       offMsg();
       offCleared();
+      offModeration();
       feed.dispose();
     };
   });
@@ -621,14 +629,18 @@
               <FeedMarker {row} />
             {:else}
             {@const m = row.item}
-            {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
-            {@const paid = m.paid}
+            {@const authorColor = m.deleted ? undefined : m.author.color || PLATFORM_COLOR[m.platform]}
+            {@const paid = m.deleted ? undefined : m.paid}
             {@const paidColor = paid?.color && HEX_COLOR_RE.test(paid.color) ? paid.color : undefined}
             {@const paidBg = paidColor ?? platformChipColor(m.platform)}
             {@const chipTextColor = HEX_COLOR_RE.test(paidBg) ? readableTextColor(paidBg) : "var(--color-accent-ink)"}
+            <!-- A row platform moderation removed keeps its time, origin and author, so the
+                 talk around it still reads, and says what happened in place of the body; its
+                 badges and paid decoration go with the message. -->
             <div
               class="row selectable"
               class:paid={!!paid}
+              class:tombstone={!!m.deleted}
               style:top={row.top + "px"}
               style:border-left-color={PLATFORM_COLOR[m.platform] || "var(--color-muted)"}
               style:--paid={paid ? paidBg : undefined}
@@ -639,7 +651,7 @@
                 {@const o = attribute(m, destByAccount)}
                 <ChatOrigin platform={m.platform} origin={o} title={originTitle(m.platform, o)} />
               {/if}
-              {#each m.author.badges as b (b.kind + (b.url ?? ""))}
+              {#each m.deleted ? [] : m.author.badges as b (b.kind + (b.url ?? ""))}
                 {@const mark = BADGE_MARKS[b.kind]}
                 {#if b.url}
                   <img class="badge" src={b.url} alt={b.kind} title={b.kind} loading="lazy" draggable="false" />
@@ -659,7 +671,9 @@
                 <span class="sr-only">{PAID_KIND_LABEL[paid.kind]}</span>
                 <span class="amount" style:color={chipTextColor}>{paid.amount}</span>
               {/if}
-              {#if m.fragments.length > 0}
+              {#if m.deleted}
+                <span class="removed">{TOMBSTONE_TEXT[m.deleted]}</span>
+              {:else if m.fragments.length > 0}
                 <span class="text">
                   {#each m.fragments as frag, i (i)}
                     {#if frag.type === "text"}{frag.text}{:else}<img
@@ -859,6 +873,17 @@
   .text {
     color: var(--color-text);
     overflow-wrap: anywhere;
+  }
+  /* Removed by moderation: dim and plain, the author's own color dropped with the rest
+     of the message's decoration. --color-dim rather than --color-muted: muted falls under
+     4.5:1 on --color-surface in Industrial, Slate and light mode, while dim clears it in
+     every preset (lowest 5.20:1, Industrial). */
+  .tombstone .author,
+  .removed {
+    color: var(--color-dim);
+  }
+  .removed {
+    font-style: italic;
   }
   .emote {
     height: 18px;

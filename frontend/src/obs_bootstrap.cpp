@@ -10222,6 +10222,118 @@ void ObsBootstrap::RunChatHistorySelfTest()
 	}
 	const bool utf8Ok = badAdmitted && pageDumps && frameDumps && bad.value("seq", uint64_t(0)) > 0;
 	HostLog(std::string("[selftest] chat-history bad utf-8 -> ") + (utf8Ok ? "OK" : "FAIL"));
+
+	// Twitch moderation lines, offline: CLEARMSG deletes one message, CLEARCHAT with a user
+	// id removes that user's, a bare CLEARCHAT clears everything, a CLEARCHAT naming a user
+	// it gives no id for is not a clear of everyone, and a chat line is no op at all.
+	const auto parse = [](const std::string &raw) {
+		return OAuth::ParseTwitchModerationLine(raw);
+	};
+	const auto clearMsg = parse("@login=ronni;room-id=;target-msg-id=abc-1;tmi-sent-ts=1642720582342 "
+				    ":tmi.twitch.tv CLEARMSG #dallas :HeyGuys");
+	const auto clearUser = parse("@ban-duration=350;room-id=12345678;target-user-id=87654321;"
+				     "tmi-sent-ts=1642719320727 :tmi.twitch.tv CLEARCHAT #dallas :ronni");
+	const auto clearAll = parse("@room-id=12345678;tmi-sent-ts=1642715695392 :tmi.twitch.tv CLEARCHAT #dallas");
+	const auto unnamed = parse("@room-id=12345678 :tmi.twitch.tv CLEARCHAT #dallas :ronni");
+	const auto privmsg = parse("@id=abc-1;user-id=87654321 :ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :hi");
+	const bool parseOk = clearMsg && clearMsg->action == Chat::ModerationAction::Delete &&
+			     clearMsg->msgId == "abc-1" && clearMsg->authorId.empty() &&
+			     clearMsg->dest.accountId.empty() && clearUser &&
+			     clearUser->action == Chat::ModerationAction::ClearUser &&
+			     clearUser->authorId == "87654321" && clearUser->msgId.empty() && clearAll &&
+			     clearAll->action == Chat::ModerationAction::ClearAll && !unnamed && !privmsg;
+	HostLog(std::string("[selftest] chat-history twitch moderation parse -> ") + (parseOk ? "OK" : "FAIL"));
+
+	// The moderation round trip the hub runs: a Twitch line normalized and admitted, then the
+	// op parsed from Twitch's own CLEARMSG / CLEARCHAT for it, redacts exactly the frames it
+	// names (so the op's ids are the frames' ids) on its own destination, and the
+	// chat.moderation body carries the pinned keys and no others. A ClearUser or ClearAll
+	// reaches only messages admitted before it: `before` is the seq the next one gets, and
+	// that one stays intact.
+	Chat::ChatHistory moderated;
+	const Chat::ThirdPartyEmoteMap noEmotes;
+	// The admitted frame's seq, 0 when it was refused.
+	const auto admitTwitch = [&](const std::string &id, const std::string &userId) {
+		nlohmann::json frame = OAuth::NormalizeTwitchChatLine(
+			"@display-name=ronni;id=" + id + ";tmi-sent-ts=1642720582342;user-id=" + userId +
+				" :ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :hello",
+			"dallas", noEmotes);
+		frame.erase("event");
+		frame["accountId"] = twitch.accountId;
+		return moderated.Add(twitch, frame) ? frame.value("seq", uint64_t(0)) : uint64_t(0);
+	};
+	const auto admitYoutube = [&](const std::string &id) {
+		nlohmann::json frame = framed(youtubeA, id);
+		frame["author"] = nlohmann::json{{"name", "viewer"}, {"id", "u1"}};
+		frame["fragments"] = nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "hello"}}});
+		return moderated.Add(youtubeA, frame) ? frame.value("seq", uint64_t(0)) : uint64_t(0);
+	};
+	const bool admitted = admitTwitch("t1", "u1") && admitTwitch("t2", "u2") && admitTwitch("t3", "u2") &&
+			      admitTwitch("t4", "u3") && admitYoutube("t1");
+	// The mark on `id` held for `accountId`: its `deleted` value, "" when intact, "?" when a
+	// redacted frame kept text or the frame is not held.
+	const auto mark = [&moderated](const std::string &accountId, const std::string &id) {
+		for (const nlohmann::json &m : moderated.Page(std::nullopt, 10, Feed::Filter{}).items) {
+			if (m.value("accountId", "") != accountId || m.value("id", "") != id) {
+				continue;
+			}
+			const std::string deleted = m.value("deleted", "");
+			const bool emptied = m.contains("fragments") && m["fragments"].empty();
+			return deleted.empty() == !emptied ? deleted : std::string("?");
+		}
+		return std::string("?");
+	};
+	const auto apply = [&moderated](const std::string &platform, const OAuth::DestinationId &dest,
+					const std::optional<Chat::ModerationOp> &op) {
+		return op ? Chat::ApplyModeration(moderated, platform, dest, *op) : nlohmann::json();
+	};
+	// A body's `before`, 0 when it is missing or not a seq; and the body without it.
+	const auto before = [](const nlohmann::json &body) {
+		const auto it = body.find("before");
+		return it != body.end() && it->is_number_unsigned() ? it->get<uint64_t>() : uint64_t(0);
+	};
+	const auto keys = [](nlohmann::json body) {
+		body.erase("before");
+		return body;
+	};
+	const nlohmann::json deleteBody =
+		apply("twitch", twitch, parse("@target-msg-id=t1 :tmi.twitch.tv CLEARMSG #dallas :hello"));
+	const bool deleteOk = before(deleteBody) > 0 &&
+			      keys(deleteBody) == nlohmann::json{{"platform", "twitch"},
+								 {"accountId", "twitch:1"},
+								 {"action", "message"},
+								 {"msgId", "t1"}} &&
+			      mark("twitch:1", "t1") == "message" && mark("twitch:1", "t2").empty() &&
+			      mark("youtube:2", "t1").empty();
+	const nlohmann::json userBody =
+		apply("twitch", twitch, parse("@target-user-id=u2 :tmi.twitch.tv CLEARCHAT #dallas :ronni"));
+	// u2's first line after the timeout ends is a later message.
+	const uint64_t afterUserSeq = admitTwitch("t5", "u2");
+	const bool userOk = keys(userBody) == nlohmann::json{{"platform", "twitch"},
+							     {"accountId", "twitch:1"},
+							     {"action", "user"},
+							     {"authorId", "u2"}} &&
+			    afterUserSeq > 0 && before(userBody) == afterUserSeq && mark("twitch:1", "t2") == "user" &&
+			    mark("twitch:1", "t3") == "user" && mark("twitch:1", "t5").empty() &&
+			    mark("twitch:1", "t4").empty() && mark("youtube:2", "t1").empty();
+	// Not held: nothing in the ring changes, and the body still goes out (chat.db may hold it).
+	const nlohmann::json goneBody =
+		apply("twitch", twitch, parse("@target-msg-id=gone :tmi.twitch.tv CLEARMSG #dallas :x"));
+	const bool goneOk = goneBody.value("msgId", "") == "gone" && mark("twitch:1", "t4").empty();
+	Chat::ModerationOp clearEveryone;
+	clearEveryone.action = Chat::ModerationAction::ClearAll;
+	const nlohmann::json allBody = Chat::ApplyModeration(moderated, "youtube", youtubeA, clearEveryone);
+	const uint64_t afterAllSeq = admitYoutube("y2");
+	const bool allOk = keys(allBody) == nlohmann::json{{"platform", "youtube"},
+							   {"accountId", "youtube:2"},
+							   {"profileUuid", "profile-a"},
+							   {"action", "all"}} &&
+			   afterAllSeq > 0 && before(allBody) == afterAllSeq && mark("youtube:2", "t1") == "all" &&
+			   mark("youtube:2", "y2").empty() && mark("twitch:1", "t4").empty();
+	const bool roundTripOk = admitted && deleteOk && userOk && goneOk && allOk;
+	HostLog(std::string("[selftest] chat-history moderation round trip -> ") + (roundTripOk ? "OK" : "FAIL") +
+		" (admitted " + (admitted ? "1" : "0") + ", delete " + (deleteOk ? "1" : "0") + ", user " +
+		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") + ")");
 }
 
 void ObsBootstrap::RunEventsPagingSelfTest()

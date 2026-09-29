@@ -221,18 +221,19 @@ uint64_t ChatHistory::Clear()
 	return epoch;
 }
 
-void ChatHistory::Redact(const ModerationOp &op)
+uint64_t ChatHistory::Redact(const ModerationOp &op)
 {
-	const Redaction redaction = Redaction::From(op);
 	std::lock_guard<std::mutex> lock(mutex_);
+	const Redaction redaction = Redaction::From(op, nextSeq_);
 	for (Held &held : messages_) {
-		if (redaction.Matches(held.dest, held.frame)) {
+		if (redaction.Matches(held.dest, held.seq, held.frame)) {
 			RedactFrame(held.frame, op.action);
 		}
 	}
 	if (archive_) {
-		archive_->EnqueueRedact(op);
+		archive_->EnqueueRedact(redaction);
 	}
+	return redaction.belowSeq;
 }
 
 void ChatHistory::SetRetention(Retention retention)

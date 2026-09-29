@@ -48,6 +48,7 @@ export const EV = {
   chatState: "chat.state",
   chatMessage: "chat.message",
   chatCleared: "chat.cleared",
+  chatModeration: "chat.moderation",
   channelsStats: "channels.stats",
   viewersChanged: "viewers.changed",
   audioLevels: "audio.levels",

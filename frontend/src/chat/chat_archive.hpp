@@ -94,14 +94,20 @@ const char *DeletedMark(ModerationAction action);
 // A moderator action keyed the way held messages and stored rows are: by destination key
 // (OAuth::DestinationKey). The one predicate the ring, the writer's queue and a reader's
 // pending view all answer "does this remove that message" with.
+//
+// It reaches only messages admitted before it: seq below `belowSeq`, the ring's next seq
+// when the op was applied. A user's first line after a timeout ends, or anything said
+// after a clear, is a later message and stays.
 struct Redaction {
 	std::string dest;
 	ModerationAction action = ModerationAction::Delete;
 	std::string msgId, authorId;
+	uint64_t belowSeq = 0;
 
-	static Redaction From(const ModerationOp &op);
-	bool Matches(const std::string &destKey, const std::string &msgId, const std::string &authorId) const;
-	bool Matches(const std::string &destKey, const json &frame) const;
+	static Redaction From(const ModerationOp &op, uint64_t belowSeq);
+	bool Matches(const std::string &destKey, uint64_t seq, const std::string &msgId,
+		     const std::string &authorId) const;
+	bool Matches(const std::string &destKey, uint64_t seq, const json &frame) const;
 };
 
 // The stable platform user id of a frame's author, "" when the platform gave none.
@@ -180,7 +186,7 @@ public:
 
 	// The ring-lock calls (see above). Each is a no-op once Shutdown has begun.
 	void Enqueue(Row row);
-	void EnqueueRedact(const ModerationOp &op);
+	void EnqueueRedact(const Redaction &redaction);
 	// Remove every row admitted before `belowSeq`, the ring's next seq at the Clear.
 	void EnqueueClear(uint64_t belowSeq);
 	// Change the mode. `lastIssuedSeq` is the newest seq the ring has issued: turning

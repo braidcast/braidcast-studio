@@ -27,6 +27,8 @@ namespace Chat {
 
 using json = nlohmann::json;
 
+struct ModerationOp; // chat_archive.hpp
+
 // The runtime context the hub hands a transport for one live connection.
 //
 // `emit` pushes one payload toward JS. The payload MUST carry a top-level
@@ -65,6 +67,13 @@ using json = nlohmann::json;
 struct ChatContext {
 	std::function<void(const json &payload)> emit;
 	std::function<bool()> canceled;
+
+	// Report a moderator's removal the platform announced: a message deleted, a user's
+	// messages removed (ban or timeout), or the whole chat cleared. `msgId` and `authorId`
+	// must be the `id` and `author.id` the removed lines' chat.message frames carried. The
+	// op's `dest` is left empty: the hub fills in this transport's destination, as it
+	// stamps the identity on every emitted frame.
+	std::function<void(const ModerationOp &op)> emitModeration;
 
 	// Which destination this transport is reading. Needed by a transport that forwards
 	// into another subsystem on its own (YouTube's live chat is the only push source for

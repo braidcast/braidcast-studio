@@ -3,8 +3,10 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <string>
 
+#include "chat_archive.hpp" // Chat::ModerationOp
 #include "chat_transport.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"
@@ -27,6 +29,13 @@ class AuthStrategy;
 // self-test exercises exactly what live chat does.
 Chat::json NormalizeTwitchChatLine(const std::string &line, const std::string &channel,
 				   const Chat::ThirdPartyEmoteMap &emotes);
+
+// Read one raw IRC line as a moderator's removal, or nothing when it is not one. CLEARMSG
+// deletes the message its `target-msg-id` names, which is that line's `id` tag and so its
+// frame's `id`. CLEARCHAT with `target-user-id` removes that user's messages, a ban and a
+// timeout alike, matching the frames' `author.id` (their `user-id` tag); a bare CLEARCHAT
+// clears the whole chat. The op's `dest` is left empty for the hub to fill in.
+std::optional<Chat::ModerationOp> ParseTwitchModerationLine(const std::string &line);
 
 class TwitchChat : public Chat::ChatTransport {
 public:

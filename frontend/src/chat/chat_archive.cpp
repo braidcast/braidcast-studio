@@ -31,7 +31,7 @@ using namespace std::chrono_literals;
 // Until a platform is listed here its rows are removed at the next launch, so a message a
 // moderator removed while the app was not listening can outlive only the launch that saw
 // it. Each moderation commit adds its platform.
-constexpr std::array<std::string_view, 0> kModeratedPlatforms{};
+constexpr std::array<std::string_view, 1> kModeratedPlatforms{"twitch"};
 
 // The longest any row, or a quarantined copy of chat.db, is kept, in every mode. YouTube's
 // policy allows 30 days; this stays well under it.
@@ -222,14 +222,15 @@ void RedactFrame(json &frame, ModerationAction action)
 	frame["deleted"] = DeletedMark(action);
 }
 
-Redaction Redaction::From(const ModerationOp &op)
+Redaction Redaction::From(const ModerationOp &op, uint64_t belowSeq)
 {
-	return Redaction{OAuth::DestinationKey(op.dest), op.action, op.msgId, op.authorId};
+	return Redaction{OAuth::DestinationKey(op.dest), op.action, op.msgId, op.authorId, belowSeq};
 }
 
-bool Redaction::Matches(const std::string &destKey, const std::string &id, const std::string &author) const
+bool Redaction::Matches(const std::string &destKey, uint64_t seq, const std::string &id,
+			const std::string &author) const
 {
-	if (destKey != dest) {
+	if (destKey != dest || seq >= belowSeq) {
 		return false;
 	}
 	switch (action) {
@@ -243,9 +244,9 @@ bool Redaction::Matches(const std::string &destKey, const std::string &id, const
 	return false;
 }
 
-bool Redaction::Matches(const std::string &destKey, const json &frame) const
+bool Redaction::Matches(const std::string &destKey, uint64_t seq, const json &frame) const
 {
-	return Matches(destKey, JsonUtil::Str(frame, "id"), FrameAuthorId(frame));
+	return Matches(destKey, seq, JsonUtil::Str(frame, "id"), FrameAuthorId(frame));
 }
 
 ChatArchive::Options ChatArchive::DefaultOptions(const std::string &path, Retention retention)
@@ -360,9 +361,9 @@ void ChatArchive::Enqueue(Row row)
 	}
 }
 
-void ChatArchive::EnqueueRedact(const ModerationOp &op)
+void ChatArchive::EnqueueRedact(const Redaction &redaction)
 {
-	EnqueueControl(Redaction::From(op));
+	EnqueueControl(redaction);
 }
 
 void ChatArchive::EnqueueClear(uint64_t belowSeq)
@@ -633,12 +634,13 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 		if (!frame) {
 			continue;
 		}
+		const uint64_t seq = static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0));
 		const std::string dest = ColumnText(stmt.get(), 4);
 		const std::string msgId = ColumnText(stmt.get(), 5);
 		const std::string authorId = ColumnText(stmt.get(), 6);
 		for (const PendingOp &op : pending) {
 			const Redaction *redaction = std::get_if<Redaction>(&op);
-			if (redaction && redaction->Matches(dest, msgId, authorId)) {
+			if (redaction && redaction->Matches(dest, seq, msgId, authorId)) {
 				RedactFrame(*frame, redaction->action);
 			}
 		}
@@ -901,19 +903,22 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 			    (redaction->action == ModerationAction::ClearUser && redaction->authorId.empty())) {
 				continue;
 			}
-			std::string sql = "SELECT seq, body FROM messages WHERE dest = ?1";
+			// Queue order already keeps rows admitted after the op out of reach; the seq
+			// bound states it in the query as Redaction::Matches does.
+			std::string sql = "SELECT seq, body FROM messages WHERE dest = ?1 AND seq < ?2";
 			if (redaction->action == ModerationAction::Delete) {
-				sql += " AND msg_id = ?2";
+				sql += " AND msg_id = ?3";
 			} else if (redaction->action == ModerationAction::ClearUser) {
-				sql += " AND author_id = ?2";
+				sql += " AND author_id = ?3";
 			}
 			Statement select(db, sql);
 			if (!select) {
 				return fail();
 			}
 			select.Bind(1, redaction->dest);
+			select.Bind(2, SqlSeq(redaction->belowSeq));
 			if (redaction->action != ModerationAction::ClearAll) {
-				select.Bind(2, redaction->action == ModerationAction::Delete ? redaction->msgId
+				select.Bind(3, redaction->action == ModerationAction::Delete ? redaction->msgId
 											     : redaction->authorId);
 			}
 			std::vector<std::pair<int64_t, std::string>> hits;

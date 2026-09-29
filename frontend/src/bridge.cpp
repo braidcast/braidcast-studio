@@ -13933,9 +13933,10 @@ bool MethodStreamInfoPresetsRename(const json &params, json &result, std::string
 // Events the hub + the T6 viewer poller push to JS:
 //   - "chat.message"    one normalized message (see chat_transport.hpp)
 //   - "chat.state"      per-transport { platform, accountId, profileUuid?, connected, error? }
+//   - "chat.moderation" a moderator's removal (see Chat::ApplyModeration, chat_hub.hpp)
 //   - "viewers.changed" { perAccount: {accountId:n}, total, perDestination: [...] }
 //                        (emitted directly by the T6 ViewerPoller via Bridge::EmitEvent)
-// All three flow through the existing alive-guarded EmitEvent path -- no new emit
+// All of them flow through the existing alive-guarded EmitEvent path -- no new emit
 // plumbing is needed; the chat.* helpers live in the hub (RouteEmit).
 
 // The refusal for a call addressed to a destination the hub holds no live transport for.

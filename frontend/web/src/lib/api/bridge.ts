@@ -1478,7 +1478,10 @@ export interface ChatPaid {
  * `seq` is the order the host admitted the message in -- the order chat reads in, and
  * the chat.list cursor -- and `rx` the host's receipt time in epoch ms, on the same
  * clock as a session's `startedAt`. `ts` is the platform's own time, which disagrees
- * across platforms. */
+ * across platforms.
+ *
+ * `deleted` is set once platform moderation removed the message (see ChatModeration);
+ * its `fragments` are then empty, and it renders as a tombstone rather than a body. */
 export interface ChatMessage {
   platform: ChatPlatform;
   accountId: string;
@@ -1491,6 +1494,28 @@ export interface ChatMessage {
   author: ChatAuthor;
   fragments: ChatFragment[];
   paid?: ChatPaid;
+  deleted?: ChatModerationAction;
+}
+
+/** What platform moderation removed: one message, everything one author said (a ban or
+ * a timeout), or the whole chat. */
+export type ChatModerationAction = "message" | "user" | "all";
+
+/** One platform moderation op (the `chat.moderation` event). It names one destination --
+ * `accountId` plus `profileUuid`, absent for account-wide -- and within it one message
+ * (`msgId`, for `"message"`), one author (`authorId`, for `"user"`) or everything
+ * (`"all"`). The host has already redacted its own copy, so a page read after this
+ * arrives with `deleted` set and no fragments. */
+export interface ChatModeration {
+  platform: ChatPlatform;
+  accountId: string;
+  profileUuid?: string;
+  action: ChatModerationAction;
+  msgId?: string;
+  authorId?: string;
+  /** The host's next admission seq when it applied the op: the op names only messages
+   * with a lower `seq`, never one admitted after it. */
+  before: number;
 }
 
 /** Per-transport chat connection state. The `chat.state` METHOD returns the full
@@ -2620,6 +2645,9 @@ export interface ObsEvents {
   "chat.state": ChatState;
   // The multichat scrollback was emptied (chat.clear); drop every row.
   "chat.cleared": { epoch: number };
+  // Platform moderation removed a message, an author's messages or the whole chat; the
+  // host has redacted its scrollback, and every loaded row the op names is redacted too.
+  "chat.moderation": ChatModeration;
   // The full live-poll list after any change (open, close, a failure, dismiss).
   "polls.changed": { polls: LivePoll[] };
   /** The polls a stream stop just ended, with their final results (or, where the end call

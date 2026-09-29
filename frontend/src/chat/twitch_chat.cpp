@@ -483,12 +483,45 @@ json NormalizeChatLine(const IrcLine &m, const std::string &channel, const Chat:
 				      BuildBadges(m.tag("badges")), fragments, paid);
 }
 
+// CLEARMSG and CLEARCHAT as moderation ops; see ParseTwitchModerationLine. The ids are the
+// same tags NormalizeChatLine builds a frame's `id` and `author.id` from.
+std::optional<Chat::ModerationOp> ModerationFromLine(const IrcLine &m)
+{
+	Chat::ModerationOp op;
+	if (m.command == "CLEARMSG") {
+		op.action = Chat::ModerationAction::Delete;
+		op.msgId = m.tag("target-msg-id");
+		return op.msgId.empty() ? std::nullopt : std::optional<Chat::ModerationOp>(op);
+	}
+	if (m.command != "CLEARCHAT") {
+		return std::nullopt;
+	}
+	op.authorId = m.tag("target-user-id");
+	if (!op.authorId.empty()) {
+		op.action = Chat::ModerationAction::ClearUser;
+		return op;
+	}
+	// The trailing param names the removed user's login. With no id to match their lines
+	// by, a clear aimed at one user must not become a clear of everyone.
+	if (!m.trailing.empty()) {
+		DBG(LogCat::Chat, "twitch: ignored a CLEARCHAT that names a user but carries no target id");
+		return std::nullopt;
+	}
+	op.action = Chat::ModerationAction::ClearAll;
+	return op;
+}
+
 } // namespace
 
 json NormalizeTwitchChatLine(const std::string &line, const std::string &channel,
 			     const Chat::ThirdPartyEmoteMap &emotes)
 {
 	return NormalizeChatLine(ParseIrc(line), channel, emotes);
+}
+
+std::optional<Chat::ModerationOp> ParseTwitchModerationLine(const std::string &line)
+{
+	return ModerationFromLine(ParseIrc(line));
 }
 
 bool TwitchChat::sendLine(const std::string &line)
@@ -616,6 +649,12 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 					authFailed = true;
 					err = "Twitch chat login failed: " + m.trailing;
 					break;
+				}
+				if (const std::optional<Chat::ModerationOp> op = ModerationFromLine(m)) {
+					if (ctx.emitModeration) {
+						ctx.emitModeration(*op);
+					}
+					continue;
 				}
 				const json message = NormalizeChatLine(m, channel, thirdPartyEmotes_);
 				if (message.is_object()) {

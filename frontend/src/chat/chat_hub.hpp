@@ -38,6 +38,8 @@ namespace Chat {
 using json = nlohmann::json;
 
 class ChatTransport;
+class ChatHistory;
+struct ModerationOp;
 
 // The live destination one output binding streams to, false when its stream profile has no
 // linked, still-known account. THE DESTINATION KEYING RULE lives here, in one place, so
@@ -54,6 +56,20 @@ class ChatTransport;
 // the teardown path runs precisely when a binding has just been disabled or is about to be
 // removed.
 bool BindingDestination(const OutputBinding &b, OAuth::DestinationId &out);
+
+// Apply a transport's moderation op for `dest` to `history` (the held messages and the
+// stored ones), and return the body of the chat.moderation event that tells the docks:
+//   { "platform":     <providerId>,
+//     "accountId":    <string>,
+//     "profileUuid"?: <string>,               // omitted for an account-wide destination
+//     "action":       "message" | "user" | "all", // DeletedMark
+//     "msgId"?:       <string>,               // action "message": the frame's `id`
+//     "authorId"?:    <string>,               // action "user": the frame's `author.id`
+//     "before":       <number> }              // the op covers only messages with seq below it
+// The hub's emitModeration is this plus the post to the UI thread; it is separate so a
+// self-test can drive it against a private ring.
+json ApplyModeration(ChatHistory &history, const std::string &platform, const OAuth::DestinationId &dest,
+		     const ModerationOp &op);
 
 class ChatHub {
 public:

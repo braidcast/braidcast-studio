@@ -87,6 +87,33 @@ bool BindingDestination(const OutputBinding &b, OAuth::DestinationId &out)
 	return true;
 }
 
+json ApplyModeration(ChatHistory &history, const std::string &platform, const OAuth::DestinationId &dest,
+		     const ModerationOp &op)
+{
+	ModerationOp stamped = op;
+	stamped.dest = dest;
+	const uint64_t before = history.Redact(stamped);
+
+	json body = json{{"platform", platform},
+			 {"accountId", dest.accountId},
+			 {"action", DeletedMark(op.action)},
+			 {"before", before}};
+	if (!dest.profileUuid.empty()) {
+		body["profileUuid"] = dest.profileUuid;
+	}
+	switch (op.action) {
+	case ModerationAction::Delete:
+		body["msgId"] = op.msgId;
+		break;
+	case ModerationAction::ClearUser:
+		body["authorId"] = op.authorId;
+		break;
+	case ModerationAction::ClearAll:
+		break;
+	}
+	return body;
+}
+
 void ChatHub::Start()
 {
 	// Idempotent: tear down any prior generation (signals old workers + clears the
@@ -242,6 +269,19 @@ void ChatHub::Start()
 			ctx.dest = dest;
 			ctx.canceled = canceled;
 			ctx.emit = emitFn;
+			// A moderator's removal: redact the ring here on the worker and queue the same
+			// redaction for chat.db's writer, then tell the docks on the UI thread, behind the
+			// same stop guard as emit.
+			ctx.emitModeration = [dest, providerId, canceled](const ModerationOp &op) {
+				if (canceled()) {
+					return;
+				}
+				json body = ApplyModeration(History(), providerId, dest, op);
+				DBG(LogCat::Chat, "chat moderation: %s on %s", DeletedMark(op.action),
+				    providerId.c_str());
+				AsyncTask::PostToUi(
+					[body = std::move(body)] { RouteEmit(EventNames::kChatModeration, body); });
+			};
 			// Route this transport's health transitions to the shared aggregator, keyed by
 			// destination -- two destinations of one account each own a row instead of
 			// overwriting a shared platform row. Dropped once the generation OR this

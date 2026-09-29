@@ -84,7 +84,9 @@ public:
 	uint64_t Clear();
 
 	// Apply a moderator's removal to the held messages it covers, and to the stored ones.
-	void Redact(const ModerationOp &op);
+	// It covers only messages admitted before it; the returned bound is the seq the next
+	// admitted message will get, so it covers exactly those with a lower seq.
+	uint64_t Redact(const ModerationOp &op);
 
 	// Change what the archive keeps (Off / This session / 7 days).
 	void SetRetention(Retention retention);

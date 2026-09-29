@@ -21,6 +21,22 @@ export function destinationKey(accountId: string, profileUuid?: string | null): 
 }
 
 /**
+ * Whether `key` is `destinationKey(accountId, profileUuid)`, without building it: for a
+ * hot loop that compares many destinations against one key computed once.
+ */
+export function isDestinationKey(key: string, accountId: string, profileUuid?: string | null): boolean {
+  if (!profileUuid) {
+    return key === accountId;
+  }
+  return (
+    key.length === accountId.length + 1 + profileUuid.length &&
+    key.startsWith(accountId) &&
+    key[accountId.length] === "@" &&
+    key.endsWith(profileUuid)
+  );
+}
+
+/**
  * Transport-health row id for a chat transport. Look rows up by this exact id --
  * never enumerate the health array to decide which destinations exist. `Stop()`
  * leaves a terminal `Disconnected` row behind on purpose, so a destination the

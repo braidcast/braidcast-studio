@@ -33,6 +33,18 @@ import { RequestGuard } from "$lib/utils/requestGuard";
 const RETRY_MS = 1000;
 const RETRY_MAX_MS = 30_000;
 
+// How long the feed remembers a patch for items that join the window after it (see
+// patch). Only an item the host held before the patch but that arrives after it needs
+// one. A page read before it is covered for as long as that page is in flight, however
+// long; a live frame the host posted late is covered by time. The latest trails its patch
+// by at most the overlay's 3 s send timeout per stalled reader (chat_hub.cpp holds the
+// frame in BroadcastChat), so 10 s leaves room for a few.
+const PATCH_RETAIN_MS = 10_000;
+// And the most it remembers at once: 10 s of a mass-ban raid at about 400 bans a second.
+// Past it the oldest goes regardless, and an item it would have caught keeps its old form
+// until the next load, which reads the host's patched copy.
+const PATCH_MEMORY_MAX = 4096;
+
 /** What the top row says: a page is loading, older rows are there to load, the window
  * reaches the oldest row the host holds, or the newest page failed and is being asked
  * for again. */
@@ -177,6 +189,13 @@ export class FeedVirtualizer<T> {
   private heldOld: T[] = [];
   // Rows that arrived while a load was in flight, merged into the page it returns.
   private loadBuf: T[] = [];
+  // The remembered patches, oldest first, run over every item as it joins the window.
+  // `n` counts every patch ever made and `at` is when it was (Date.now()).
+  private patches: { apply: (item: T) => T; n: number; at: number }[] = [];
+  private patchCount = 0;
+  // The first patch the page in flight was asked for before: it may need that patch and
+  // every later one. Null while no page is in flight.
+  private patchStamp: number | null = null;
   // A load or an older page failed: the timer that asks again, and how long the next one
   // waits. While it runs nothing else asks, so a host that keeps failing is never polled.
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -432,6 +451,12 @@ export class FeedVirtualizer<T> {
 
   private setInflight(kind: "load" | "older" | null): void {
     this.inflight = kind;
+    // A page asked for now is read after every patch so far. Settling does not trim: the
+    // page is patched after this, as it joins the window.
+    this.patchStamp = kind === null ? null : this.patchCount;
+    if (kind !== null) {
+      this.trimPatches();
+    }
     this.fetching = kind !== null;
     this.fetchingOlder = kind === "older";
   }
@@ -465,7 +490,7 @@ export class FeedVirtualizer<T> {
     const rows: ItemRow<T>[] = items.map((item) => ({
       kind: "item",
       clientKey: this.keys.get(keyOf(item)) ?? ++this.seq,
-      item,
+      item: this.patched(item),
     }));
     const live = new Set(rows.map((r) => r.clientKey));
     for (const key of [...this.heights.keys()]) {
@@ -644,7 +669,7 @@ export class FeedVirtualizer<T> {
       const k = key(item);
       if (!known.has(k)) {
         known.add(k);
-        added.push({ kind: "item", clientKey: ++this.seq, item });
+        added.push(this.newRow(item));
       }
     }
     // An old row that arrived meanwhile: kept if it sorts inside the new window, or if the
@@ -657,7 +682,7 @@ export class FeedVirtualizer<T> {
         continue;
       }
       known.add(k);
-      added.push({ kind: "item", clientKey: ++this.seq, item });
+      added.push(this.newRow(item));
       sort = true;
     }
     const next = added.concat(this.rows);
@@ -717,6 +742,68 @@ export class FeedVirtualizer<T> {
     this.heldOld = [];
     return rows.slice(cut);
   }
+
+  // `item` with every remembered patch run over it.
+  private patched(item: T): T {
+    let out = item;
+    for (const p of this.patches) {
+      out = p.apply(out);
+    }
+    return out;
+  }
+
+  // Forget the patches nothing can need any more: older than the page in flight and past
+  // PATCH_RETAIN_MS. Past PATCH_MEMORY_MAX the oldest go whatever they are.
+  private trimPatches(): void {
+    const now = Date.now();
+    const stamp = this.patchStamp ?? Infinity;
+    let drop = 0;
+    while (drop < this.patches.length) {
+      const p = this.patches[drop];
+      const needed = p.n >= stamp || now - p.at < PATCH_RETAIN_MS;
+      if (needed && this.patches.length - drop <= PATCH_MEMORY_MAX) {
+        break;
+      }
+      drop++;
+    }
+    if (drop > 0) {
+      this.patches = this.patches.slice(drop);
+    }
+  }
+
+  // A row for an item new to the window.
+  private newRow(item: T): ItemRow<T> {
+    return { kind: "item", clientKey: ++this.seq, item: this.patched(item) };
+  }
+
+  /** Replace every item `match` picks with `update(item)`, which must keep its key (a
+   * moderation op redacting chat rows, say). A row keeps its clientKey and its place, so
+   * its measured height stays until the row re-measures and the reader's place is held
+   * like any other height change. An update returning the item itself changes nothing.
+   *
+   * The patch is also remembered (while a page asked for before it is in flight, and for
+   * PATCH_RETAIN_MS, up to PATCH_MEMORY_MAX of them; a clear forgets them all) and run over
+   * every item that joins the window later: a live row queued or posted late, a page read
+   * before it. So `match` must pick only items that existed when it was made -- a
+   * moderation op names rows the host admitted before it, never one admitted after -- and
+   * should be cheap, since every item joining the window meets every remembered patch. */
+  patch = (match: (item: T) => boolean, update: (item: T) => T): void => {
+    const apply = (item: T): T => (match(item) ? update(item) : item);
+    this.patches.push({ apply, n: this.patchCount++, at: Date.now() });
+    this.trimPatches();
+    let changed = false;
+    const rows = this.rows.map((r) => {
+      const item = apply(r.item);
+      if (item === r.item) {
+        return r;
+      }
+      changed = true;
+      return { ...r, item };
+    });
+    if (changed) {
+      this.rows = rows;
+    }
+  };
 
   /** A live row (events.new, chat.message) that matches the current filter. */
   live = (item: T): void => {
@@ -786,7 +873,7 @@ export class FeedVirtualizer<T> {
     if (accepted.length === 0) {
       return;
     }
-    const added: ItemRow<T>[] = accepted.map((item) => ({ kind: "item", clientKey: ++this.seq, item }));
+    const added: ItemRow<T>[] = accepted.map((item) => this.newRow(item));
     let next = this.rows.concat(added);
     const lastBefore = this.rows[this.rows.length - 1];
     if (lastBefore !== undefined && added.some((r) => this.byOrder(r, lastBefore) < 0)) {
@@ -850,6 +937,7 @@ export class FeedVirtualizer<T> {
     }
     this.guard.supersede();
     this.epoch = epoch;
+    this.patches = [];
     this.cancelRetry();
     this.retryMs = RETRY_MS;
     this.retrying = false;

@@ -60,6 +60,7 @@ inline constexpr const char *kFilterPreviewClosed = "filterPreview.closed";
 inline constexpr const char *kChatState = "chat.state";
 inline constexpr const char *kChatMessage = "chat.message";
 inline constexpr const char *kChatCleared = "chat.cleared";
+inline constexpr const char *kChatModeration = "chat.moderation";
 inline constexpr const char *kChannelsStats = "channels.stats";
 inline constexpr const char *kViewersChanged = "viewers.changed";
 inline constexpr const char *kAudioLevels = "audio.levels";

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -362,6 +363,56 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		Report("sweep under reader", sweepOk,
 		       std::to_string(walks.load()) + " walks, " + std::to_string(disordered.load()) + " disordered, " +
 			       std::to_string(left) + " rows left");
+	}
+
+	// A redaction reaches only rows below its seq bound, in the writer and in a reader's view
+	// of it while it is still queued. b3 was committed before the op although its seq is past
+	// the bound (the ring never orders them so, but neither path may rely on that), and b4
+	// is queued after the op.
+	{
+		const std::string path = dbPath("redactbound");
+		Chat::ChatArchive archive;
+		Chat::ChatArchive::Seed seed;
+		archive.Open(TestOptions(path, Chat::Retention::SevenDays, "L1"), seed);
+		const auto enqueue = [&](uint64_t seq) {
+			json frame = Frame(kTwitch, "b" + std::to_string(seq), "twitch");
+			frame["author"]["id"] = "author-x";
+			std::optional<Chat::ChatArchive::Row> row = Chat::ChatArchive::MakeRow(kTwitch, frame);
+			if (row) {
+				row->seq = seq;
+				row->rx = TimeUtil::NowMs();
+				archive.Enqueue(std::move(*row));
+			}
+		};
+		// Each row's id and `deleted` mark, oldest first, as ReadOlder serves them.
+		const auto marks = [&] {
+			const std::optional<std::vector<json>> rows = archive.ReadOlder(UINT64_MAX, 10, Feed::Filter{});
+			if (!rows) {
+				return std::string("unreadable");
+			}
+			std::string out;
+			for (auto it = rows->rbegin(); it != rows->rend(); ++it) {
+				out += (out.empty() ? "" : ",") + it->value("id", "") + "=" + it->value("deleted", "");
+			}
+			return out;
+		};
+		enqueue(1);
+		enqueue(2);
+		enqueue(3);
+		archive.WaitIdle(kIdleWait);
+		archive.HoldWrites(true);
+		archive.EnqueueRedact(
+			{OAuth::DestinationKey(kTwitch), Chat::ModerationAction::ClearUser, "", "author-x", 3});
+		enqueue(4);
+		const std::string pending = marks();
+		archive.HoldWrites(false);
+		archive.WaitIdle(kIdleWait);
+		const std::string committed = marks();
+		const std::string stored = Column(path, "SELECT msg_id || '=' || deleted FROM messages ORDER BY seq");
+		archive.Shutdown();
+		const bool ok = pending == "b1=user,b2=user,b3=" && committed == "b1=user,b2=user,b3=,b4=" &&
+				stored == committed;
+		Report("redaction bound", ok, pending + " | " + committed + " | " + stored);
 	}
 
 	// Across a relaunch: rows of a platform whose moderation is not honored are gone, a
