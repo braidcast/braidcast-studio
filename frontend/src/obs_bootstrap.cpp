@@ -50,6 +50,7 @@
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "chat/poll_registry.hpp"
 #include "chat/twitch_chat.hpp"
+#include "chat/youtube_chat.hpp" // Chat::DecodeYouTubeModerationItem
 #include "chat/youtube_innertube.hpp"
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
@@ -10334,6 +10335,199 @@ void ObsBootstrap::RunChatHistorySelfTest()
 	HostLog(std::string("[selftest] chat-history moderation round trip -> ") + (roundTripOk ? "OK" : "FAIL") +
 		" (admitted " + (admitted ? "1" : "0") + ", delete " + (deleteOk ? "1" : "0") + ", user " +
 		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") + ")");
+
+	// YouTube moderation, offline, over both reads. UNVERIFIED SHAPES: no capture of any of
+	// these has been taken; the InnerTube actions follow the community clients that read that
+	// endpoint and the Data API items follow its reference. Each per-message removal names the
+	// item's `id` and each per-author one its channel id -- checked here against what
+	// DecodeChatItem reads from a line, so the op's ids are the frame's `id` and `author.id`.
+	{
+		using Chat::ModerationAction;
+		const nlohmann::json line = {{"liveChatTextMessageRenderer",
+					      {{"id", "ChwKGkNQaUxoOEdnd0pZREZiNUpUQWdkMFJzaGlB"},
+					       {"timestampUsec", "1700000000000000"},
+					       {"authorName", {{"simpleText", "viewer"}}},
+					       {"authorExternalChannelId", "UCselftest0000000000000a"},
+					       {"message", {{"runs", nlohmann::json::array({{{"text", "hello"}}})}}}}}};
+		Chat::YouTubeInnerTube::DecodedItem decoded;
+		const bool lineDecoded = Chat::YouTubeInnerTube::DecodeChatItem(line, decoded);
+		const auto innertube = [](const char *name, const char *key, const std::string &target) {
+			return Chat::YouTubeInnerTube::DecodeModerationAction(nlohmann::json{
+				{name, {{key, target}, {"deletedStateMessage", {{"runs", nlohmann::json::array()}}}}}});
+		};
+		const auto is = [](const std::optional<Chat::ModerationOp> &op, ModerationAction action,
+				   const std::string &msgId, const std::string &authorId) {
+			return op && op->action == action && op->msgId == msgId && op->authorId == authorId &&
+			       op->dest.accountId.empty();
+		};
+		const bool innertubeOk =
+			lineDecoded &&
+			is(innertube("markChatItemAsDeletedAction", "targetItemId", decoded.id),
+			   ModerationAction::Delete, decoded.id, "") &&
+			is(innertube("removeChatItemAction", "targetItemId", decoded.id), ModerationAction::Delete,
+			   decoded.id, "") &&
+			is(innertube("markChatItemsByAuthorAsDeletedAction", "externalChannelId",
+				     decoded.authorChannelId),
+			   ModerationAction::ClearUser, "", decoded.authorChannelId) &&
+			is(innertube("removeChatItemByAuthorAction", "externalChannelId", decoded.authorChannelId),
+			   ModerationAction::ClearUser, "", decoded.authorChannelId) &&
+			!innertube("markChatItemAsDeletedAction", "targetItemId", "") &&
+			!Chat::YouTubeInnerTube::DecodeModerationAction(
+				nlohmann::json{{"addChatItemAction", {{"item", line}}}});
+
+		const auto dataApi = [](const nlohmann::json &snippet, const std::string &id = "LCC.selftest-event") {
+			nlohmann::json item = nlohmann::json{{"snippet", snippet}};
+			if (!id.empty()) {
+				item["id"] = id;
+			}
+			return Chat::DecodeYouTubeModerationItem(item);
+		};
+		const std::string deletedAt = "2026-09-29T09:59:00.000Z";
+		const std::string bannedAt = "2026-09-29T10:00:00.250Z";
+		const auto banned = [](const char *banType, const std::string &publishedAt) {
+			nlohmann::json snippet = {{"type", "userBannedEvent"},
+						  {"displayMessage", "viewer has been banned"},
+						  {"userBannedDetails",
+						   {{"bannedUserDetails", {{"channelId", "UCselftest0000000000000a"}}},
+						    {"banType", banType}}}};
+			if (!publishedAt.empty()) {
+				snippet["publishedAt"] = publishedAt;
+			}
+			return snippet;
+		};
+		const auto tombstone =
+			dataApi({{"type", "tombstone"}, {"publishedAt", deletedAt}}, "LCC.selftest-message");
+		const auto timedOut = dataApi(banned("temporary", bannedAt));
+		const auto untimed = dataApi(banned("permanent", ""));
+		const bool dataApiOk =
+			is(tombstone, ModerationAction::Delete, "LCC.selftest-message", "") && !tombstone->beforeTs &&
+			is(timedOut, ModerationAction::ClearUser, "", "UCselftest0000000000000a") &&
+			timedOut->beforeTs == TimeUtil::Rfc3339ToEpochMs(bannedAt) &&
+			is(untimed, ModerationAction::ClearUser, "", "UCselftest0000000000000a") &&
+			!untimed->beforeTs && Chat::SafeToReplay(*tombstone) && Chat::SafeToReplay(*timedOut) &&
+			!Chat::SafeToReplay(*untimed) &&
+			!dataApi({{"type", "tombstone"}, {"publishedAt", deletedAt}}, "") &&
+			!dataApi({{"type", "messageDeletedEvent"},
+				  {"messageDeletedDetails", {{"deletedMessageId", "LCC.selftest-message"}}}}) &&
+			!dataApi({{"type", "textMessageEvent"},
+				  {"displayMessage", "hello"},
+				  {"textMessageDetails", {{"messageText", "hello"}}}});
+		HostLog(std::string("[selftest] chat-history youtube moderation parse -> ") +
+			(innertubeOk && dataApiOk ? "OK" : "FAIL") + " (innertube " + (innertubeOk ? "1" : "0") +
+			", data api " + (dataApiOk ? "1" : "0") + ")");
+	}
+
+	// The Data API read's item pass. A backlog (the first response after connecting) emits
+	// no line and no event but applies its removals, each only as far back as its own time:
+	// an old timeout reaches the lines its user said before it, not the ones since, and a ban
+	// with no time is not replayed at all. With emitModeration unset, a removal is dropped
+	// and nothing else changes. Same UNVERIFIED item shapes as above.
+	{
+		Chat::ChatHistory backlogRing;
+		const OAuth::DestinationId yt{"youtube:9", "profile-y"};
+		const std::string bannedAt = "2026-09-29T10:00:00.000Z";
+		const int64_t bannedMs = TimeUtil::Rfc3339ToEpochMs(bannedAt);
+		const auto admitFrame = [&](const std::string &id, const std::string &author, int64_t ts) {
+			nlohmann::json frame = {{"id", id},
+						{"platform", "youtube"},
+						{"ts", ts},
+						{"author", {{"name", "viewer"}, {"id", author}}},
+						{"fragments",
+						 nlohmann::json::array({{{"type", "text"}, {"text", "hi"}}})},
+						{"accountId", yt.accountId},
+						{"profileUuid", yt.profileUuid}};
+			return backlogRing.Add(yt, frame);
+		};
+		const bool backlogAdmitted =
+			admitFrame("early", "UCa", bannedMs - 60000) && admitFrame("late", "UCa", bannedMs + 60000) &&
+			admitFrame("untimed", "UCa", 0) && admitFrame("other", "UCb", bannedMs - 60000) &&
+			admitFrame("gone", "UCc", bannedMs - 120000);
+		const auto backlogMark = [&backlogRing](const std::string &id) {
+			for (const nlohmann::json &m : backlogRing.Page(std::nullopt, 10, Feed::Filter{}).items) {
+				if (m.value("id", "") == id) {
+					return m.value("deleted", std::string());
+				}
+			}
+			return std::string("?");
+		};
+		const auto author = [](const char *channelId) {
+			return nlohmann::json{{"channelId", channelId}, {"displayName", "viewer"}};
+		};
+		const nlohmann::json items = nlohmann::json::array({
+			{{"id", "LCC.line"},
+			 {"snippet",
+			  {{"type", "textMessageEvent"}, {"publishedAt", bannedAt}, {"displayMessage", "hello"}}},
+			 {"authorDetails", author("UCd")}},
+			{{"id", "LCC.paid"},
+			 {"snippet",
+			  {{"type", "superChatEvent"},
+			   {"publishedAt", bannedAt},
+			   {"superChatDetails",
+			    {{"amountMicros", "5000000"}, {"currency", "USD"}, {"amountDisplayString", "$5.00"}}}}},
+			 {"authorDetails", author("UCd")}},
+			{{"id", "LCC.ban-a"},
+			 {"snippet",
+			  {{"type", "userBannedEvent"},
+			   {"publishedAt", bannedAt},
+			   {"userBannedDetails",
+			    {{"bannedUserDetails", {{"channelId", "UCa"}}}, {"banType", "temporary"}}}}}},
+			{{"id", "LCC.ban-b"},
+			 {"snippet",
+			  {{"type", "userBannedEvent"},
+			   {"userBannedDetails",
+			    {{"bannedUserDetails", {{"channelId", "UCb"}}}, {"banType", "permanent"}}}}}},
+			{{"id", "gone"},
+			 {"snippet", {{"type", "tombstone"}, {"publishedAt", "2026-09-29T09:58:00.000Z"}}}},
+		});
+		const std::unordered_map<std::string, std::string> noThirdParty;
+		int lines = 0;
+		int events = 0;
+		int ops = 0;
+		const auto countEvent = [&events](Events::NormalizedEvent &) {
+			++events;
+		};
+		Chat::ChatContext ctx;
+		ctx.emit = [&lines](const nlohmann::json &) {
+			++lines;
+		};
+		ctx.emitModeration = [&](const Chat::ModerationOp &op) {
+			++ops;
+			Chat::ApplyModeration(backlogRing, "youtube", yt, op);
+		};
+		Chat::ProcessYouTubeChatItems(ctx, items, "lc", noThirdParty, [] { return false; }, true, countEvent);
+		const bool backlogOk = backlogAdmitted && lines == 0 && events == 0 && ops == 2 &&
+				       backlogMark("early") == "user" && backlogMark("late").empty() &&
+				       backlogMark("untimed").empty() && backlogMark("other").empty() &&
+				       backlogMark("gone") == "message";
+		// Unset emitModeration: the removals go nowhere, and a live pass still emits the line,
+		// the Super Chat's line and its event.
+		Chat::ChatContext bare;
+		bare.emit = ctx.emit;
+		lines = 0;
+		Chat::ProcessYouTubeChatItems(bare, items, "lc", noThirdParty, [] { return false; }, true, countEvent);
+		const bool guardBacklogOk = lines == 0 && events == 0 && ops == 2;
+		Chat::ProcessYouTubeChatItems(bare, items, "lc", noThirdParty, [] { return false; }, false, countEvent);
+		const bool guardLiveOk = lines == 2 && events == 1 && ops == 2 && backlogMark("late").empty();
+		// Read live, no op carries a time: the seq bound alone is exact.
+		int liveOps = 0;
+		bool liveUntimed = true;
+		Chat::ChatContext live;
+		live.emit = [](const nlohmann::json &) {
+		};
+		live.emitModeration = [&](const Chat::ModerationOp &op) {
+			++liveOps;
+			liveUntimed = liveUntimed && !op.beforeTs;
+		};
+		Chat::ProcessYouTubeChatItems(
+			live, items, "lc", noThirdParty, [] { return false; }, false, [](Events::NormalizedEvent &) {});
+		const bool liveOpsOk = liveOps == 3 && liveUntimed;
+		const bool itemsOk = backlogOk && guardBacklogOk && guardLiveOk && liveOpsOk;
+		HostLog(std::string("[selftest] chat-history youtube backlog -> ") + (itemsOk ? "OK" : "FAIL") +
+			" (backlog " + (backlogOk ? "1" : "0") + ", unset " + (guardBacklogOk ? "1" : "0") + ", live " +
+			(guardLiveOk ? "1" : "0") + ", live ops " + (liveOpsOk ? "1" : "0") + ", early=" +
+			backlogMark("early") + " late=" + backlogMark("late") + " untimed=" + backlogMark("untimed") +
+			" other=" + backlogMark("other") + " gone=" + backlogMark("gone") + ")");
+	}
 }
 
 void ObsBootstrap::RunEventsPagingSelfTest()

@@ -1516,6 +1516,11 @@ export interface ChatModeration {
   /** The host's next admission seq when it applied the op: the op names only messages
    * with a lower `seq`, never one admitted after it. */
   before: number;
+  /** When the platform says the op happened, in epoch ms on the clock of a message's
+   * `ts`. Present, the op names only messages with `0 < ts <= beforeTs`: one read out of
+   * the platform's history is applied long after it happened, so `before` alone would
+   * reach lines said since. */
+  beforeTs?: number;
 }
 
 /** Per-transport chat connection state. The `chat.state` METHOD returns the full

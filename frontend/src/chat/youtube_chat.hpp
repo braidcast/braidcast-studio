@@ -2,10 +2,15 @@
 #define OBS_MULTISTREAM_FRONTEND_CHAT_YOUTUBE_CHAT_HPP_
 
 #include <atomic>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "../events/event_model.hpp" // Events::NormalizedEvent
+#include "chat_archive.hpp"          // ModerationOp
 #include "chat_transport.hpp"
 
 // The YouTube live-chat transport (Phase 9.0). It reads one broadcast's chat over a LADDER of
@@ -38,6 +43,29 @@ class YouTubeProvider;
 
 namespace Chat {
 
+// One liveChatMessages item read as a moderator's removal, or nothing when it is not one.
+// A tombstone deletes the message whose place it holds: its own `id`, the item `id` a frame
+// from this read carries. (messageDeletedEvent, the old per-deletion item, is no longer
+// returned by the API, so a live delete is not seen on this read; a tombstone arrives only
+// where the deleted message would have been listed.) userBannedEvent, temporary or
+// permanent, removes the lines of userBannedDetails.bannedUserDetails.channelId, which is the
+// frames' `author.id` (authorDetails.channelId), and carries `beforeTs` from the item's
+// snippet.publishedAt when that parses (none when it does not). A delete, exact by id, carries
+// no time. The op's `dest` is left empty for the hub to fill in. Pure.
+std::optional<ModerationOp> DecodeYouTubeModerationItem(const json &item);
+
+// One liveChatMessageListResponse's items[]: each chat line to ctx.emit and, in addition, each
+// monetization/membership item to `emitEvent`; each removal to ctx.emitModeration, in item
+// order. A `backlog` response (the first after connecting) emits no line and no event, but
+// its removals still apply -- they name lines this destination may already hold, read before
+// a handover from InnerTube or stored by an earlier launch -- except an author-wide one with
+// no time of its own (SafeToReplay). Read live, an op's time is dropped: the seq bound it gets
+// when applied is already exact. Runs on the read worker.
+void ProcessYouTubeChatItems(const ChatContext &ctx, const json &items, const std::string &liveChatId,
+			     const std::unordered_map<std::string, std::string> &thirdPartyEmotes,
+			     const std::function<bool()> &canceled, bool backlog,
+			     const std::function<void(Events::NormalizedEvent &ev)> &emitEvent);
+
 class YouTubeChat : public ChatTransport {
 public:
 	explicit YouTubeChat(OAuth::YouTubeProvider &owner) : owner_(owner) {}
@@ -46,7 +74,7 @@ public:
 	// (BRAIDCAST_YOUTUBE_INNERTUBE=false drops to the Data API,
 	// BRAIDCAST_YOUTUBE_STREAMLIST=false additionally forces .list). Every path emits only
 	// messages that arrive AFTER the cold connect -- the first response's backlog is dropped
-	// and only its cursor kept -- and every path shares ONE session, so the connected state
+	// and only its cursor and its removals kept -- and every path shares ONE session, so the connected state
 	// and this destination's live-chat refcount hold survive a handover exactly once.
 	// Re-checks cancellation frequently via the poll/chunk callback + CancelableSleep so a
 	// Stop() returns within ~0.5s. `channelRef` is the liveChatId; empty (no active

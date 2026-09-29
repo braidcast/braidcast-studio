@@ -415,6 +415,58 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		Report("redaction bound", ok, pending + " | " + committed + " | " + stored);
 	}
 
+	// A redaction with a platform time reaches only rows said at or before it, in the writer
+	// and in a reader's view of it while it is queued: t1 is before the time, t2 exactly at
+	// it, t3 after it, and t4 has no time at all, which a time-bounded op never reaches.
+	{
+		const std::string path = dbPath("redacttime");
+		Chat::ChatArchive archive;
+		Chat::ChatArchive::Seed seed;
+		archive.Open(TestOptions(path, Chat::Retention::SevenDays, "L1"), seed);
+		uint64_t seq = 0;
+		const auto enqueue = [&](const std::string &id, int64_t ts) {
+			json frame = Frame(kTwitch, id, "twitch");
+			frame["author"]["id"] = "author-x";
+			frame["ts"] = ts;
+			std::optional<Chat::ChatArchive::Row> row = Chat::ChatArchive::MakeRow(kTwitch, frame);
+			if (row) {
+				row->seq = ++seq;
+				row->rx = TimeUtil::NowMs();
+				archive.Enqueue(std::move(*row));
+			}
+		};
+		const auto marks = [&] {
+			const std::optional<std::vector<json>> rows = archive.ReadOlder(UINT64_MAX, 10, Feed::Filter{});
+			if (!rows) {
+				return std::string("unreadable");
+			}
+			std::string out;
+			for (auto it = rows->rbegin(); it != rows->rend(); ++it) {
+				out += (out.empty() ? "" : ",") + it->value("id", "") + "=" + it->value("deleted", "");
+			}
+			return out;
+		};
+		enqueue("t1", 100);
+		enqueue("t2", 150);
+		enqueue("t3", 151);
+		enqueue("t4", 0);
+		archive.WaitIdle(kIdleWait);
+		archive.HoldWrites(true);
+		Chat::Redaction timed{OAuth::DestinationKey(kTwitch), Chat::ModerationAction::ClearUser, "", "author-x",
+				      seq + 1};
+		timed.beforeTs = 150;
+		archive.EnqueueRedact(timed);
+		const std::string pending = marks();
+		archive.HoldWrites(false);
+		archive.WaitIdle(kIdleWait);
+		const std::string committed = marks();
+		const std::string stored = Column(path, "SELECT msg_id || '=' || deleted FROM messages ORDER BY seq");
+		archive.Shutdown();
+		const std::string want = "t1=user,t2=user,t3=,t4=";
+		const bool ok = pending == want && committed == want && stored == want;
+		Report("redaction time bound", ok, pending + " | " + committed + " | " + stored);
+	}
+
 	// Across a relaunch: rows of a platform whose moderation is not honored are gone, a
 	// moderated platform's survive and seed the ring, and a re-delivery of a seeded message
 	// is recognized. This session only: everything goes at the next launch.

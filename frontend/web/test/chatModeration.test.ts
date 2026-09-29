@@ -64,6 +64,14 @@ describe("moderationMatcher", () => {
     ["op account-wide, row under a profile", op({}), { profileUuid: "p1" }, false],
     ["same profile", op({ profileUuid: "p1" }), { profileUuid: "p1" }, true],
     ["another profile", op({ profileUuid: "p2" }), { profileUuid: "p1" }, false],
+    ["no beforeTs: any time", op({ action: "user", authorId: "u1" }), { ts: 9_999_999 }, true],
+    ["said before beforeTs", op({ action: "user", authorId: "u1", beforeTs: 100 }), { ts: 99 }, true],
+    ["said at beforeTs", op({ action: "user", authorId: "u1", beforeTs: 100 }), { ts: 100 }, true],
+    ["said after beforeTs", op({ action: "user", authorId: "u1", beforeTs: 100 }), { ts: 101 }, false],
+    ["no time under a beforeTs", op({ action: "user", authorId: "u1", beforeTs: 100 }), { ts: 0 }, false],
+    ["all: said after beforeTs", op({ beforeTs: 100 }), { ts: 101 }, false],
+    ["message: its id at its own time", op({ action: "message", msgId: "m1", beforeTs: 1 }), {}, true],
+    ["beforeTs never widens the seq bound", op({ before: 1, beforeTs: 100 }), { ts: 5 }, false],
   ];
   for (const [name, o, row, want] of cases) {
     test(name, () => {

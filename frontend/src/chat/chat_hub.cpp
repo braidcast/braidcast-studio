@@ -101,6 +101,9 @@ json ApplyModeration(ChatHistory &history, const std::string &platform, const OA
 	if (!dest.profileUuid.empty()) {
 		body["profileUuid"] = dest.profileUuid;
 	}
+	if (op.beforeTs) {
+		body["beforeTs"] = *op.beforeTs;
+	}
 	switch (op.action) {
 	case ModerationAction::Delete:
 		body["msgId"] = op.msgId;

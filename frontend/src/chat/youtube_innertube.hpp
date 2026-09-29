@@ -3,12 +3,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
 #include "../events/event_model.hpp"
+#include "chat_archive.hpp" // ModerationOp
 
 // YouTube's InnerTube live-chat read (youtubei/v1/live_chat/get_live_chat) -- the endpoint
 // youtube.com's own web client polls. PROTOCOL ONLY: given a videoId it resolves a
@@ -44,6 +46,9 @@ struct Callbacks {
 	std::function<void(Events::NormalizedEvent &ev)> emitEvent;
 	// A running poll's live result, as YouTubePoll::FromInnerTube reads it. Optional.
 	std::function<void(const json &live)> emitPoll;
+	// A moderator's removal (DecodeModerationAction), in its place among the batch's chat
+	// lines. Optional.
+	std::function<void(const ModerationOp &op)> emitModeration;
 	// The first response proving the chat is being read. The transport's connected state
 	// AND its per-destination live-chat refcount hold hang off this, so it must be called
 	// before any message is emitted. Idempotent on the transport's side.
@@ -84,6 +89,15 @@ struct DecodedItem {
 // False when the item holds no renderer this read decodes. Pure: the read loop and the smoke
 // self-test share it.
 bool DecodeChatItem(const json &item, DecodedItem &out);
+
+// One actions[] entry read as a moderator's removal, or nothing when it is not one. The two
+// per-message actions (markChatItemAsDeletedAction, which leaves a "message deleted" stub, and
+// removeChatItemAction, which takes the line away) delete the item their `targetItemId`
+// names: the renderer `id` DecodeChatItem reads, so the frame's `id`. The two per-author
+// actions remove every line of their `externalChannelId`, the renderer's
+// `authorExternalChannelId`, so the frame's `author.id`. The op's `dest` is left empty for the
+// hub to fill in. Pure, like DecodeChatItem.
+std::optional<ModerationOp> DecodeModerationAction(const json &action);
 
 // Run the whole read on the CALLING thread until canceled or the chat ends. Returns true to
 // request the caller's fallback read -- the continuation never resolved, or the endpoint

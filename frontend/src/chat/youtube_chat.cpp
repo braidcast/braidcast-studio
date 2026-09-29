@@ -289,6 +289,39 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 				fragments, paid);
 }
 
+} // namespace
+
+std::optional<ModerationOp> DecodeYouTubeModerationItem(const json &item)
+{
+	const json &snippet = Obj(item, "snippet");
+	const std::string type = Str(snippet, "type");
+	ModerationOp op;
+	// A tombstone stands where a deleted message was, under that message's own id. A delete is
+	// exact by id, so it carries no time: one could only make it miss.
+	if (type == "tombstone") {
+		op.action = ModerationAction::Delete;
+		op.msgId = Str(item, "id");
+		return op.msgId.empty() ? std::nullopt : std::optional<ModerationOp>(op);
+	}
+	// A temporary ban (a timeout) and a permanent one alike remove the user's lines said up to
+	// the ban's own time.
+	if (type == "userBannedEvent") {
+		op.action = ModerationAction::ClearUser;
+		// Missing or unreadable, the time stays unset rather than falling back to now, which
+		// would widen the bound: unset, the ban is not replayed from a backlog at all
+		// (SafeToReplay).
+		op.beforeTs = TimeUtil::TryRfc3339ToEpochMs(Str(snippet, "publishedAt"));
+		if (op.beforeTs && *op.beforeTs <= 0) {
+			op.beforeTs.reset();
+		}
+		op.authorId = Str(Obj(Obj(snippet, "userBannedDetails"), "bannedUserDetails"), "channelId");
+		return op.authorId.empty() ? std::nullopt : std::optional<ModerationOp>(op);
+	}
+	return std::nullopt;
+}
+
+namespace {
+
 // Recognize the monetization/membership live-chat item types and fill `ev` with the
 // normalized event. Returns false for plain chat (textMessageEvent) and any unhandled
 // type. A Super Chat is shown in BOTH the chat feed and the events feed, so the caller
@@ -371,13 +404,12 @@ void IngestChatEvent(const ChatContext &ctx, Events::NormalizedEvent &ev)
 	Events::Hub().Ingest(ev);
 }
 
-// Process one liveChatMessageListResponse's items[]: emit each chat line and, in addition,
-// forward monetization/membership types into the events feed. Shared by the streamList and
-// the .list fallback so the emit semantics (chat-line-then-event, cancel-polled) can't
-// drift between the two read paths.
-void ProcessChatItems(const ChatContext &ctx, const json &items, const std::string &liveChatId,
-		      const std::unordered_map<std::string, std::string> &thirdPartyEmotes,
-		      const std::function<bool()> &canceled)
+} // namespace
+
+void ProcessYouTubeChatItems(const ChatContext &ctx, const json &items, const std::string &liveChatId,
+			     const std::unordered_map<std::string, std::string> &thirdPartyEmotes,
+			     const std::function<bool()> &canceled, bool backlog,
+			     const std::function<void(Events::NormalizedEvent &ev)> &emitEvent)
 {
 	if (!items.is_array()) {
 		return;
@@ -385,6 +417,24 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 	for (const json &item : items) {
 		if (canceled()) {
 			break;
+		}
+		// A removal is not a line: its displayMessage is YouTube's own notice, and a
+		// tombstone is only the place a deleted one stood.
+		if (std::optional<ModerationOp> op = DecodeYouTubeModerationItem(item)) {
+			// Read live, the op reaches everything admitted before it, which the seq bound
+			// already says exactly; the platform time only bounds a replay.
+			if (!backlog) {
+				op->beforeTs.reset();
+			}
+			if (backlog && !SafeToReplay(*op)) {
+				DBG(LogCat::Chat, "youtube: skipped an author-wide removal with no time in a backlog");
+			} else if (ctx.emitModeration) {
+				ctx.emitModeration(*op);
+			}
+			continue;
+		}
+		if (backlog) {
+			continue;
 		}
 		// Chat first: a plain message emits a chat line, and so does a Super Chat or Sticker
 		// (its amount alone is a line) or a membership item that carries text.
@@ -397,9 +447,21 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 		// source for Super Chats/memberships. The store dedupes against backfill/poll.
 		Events::NormalizedEvent ev;
 		if (BuildEventFromChat(item, ev)) {
-			IngestChatEvent(ctx, ev);
+			emitEvent(ev);
 		}
 	}
+}
+
+namespace {
+
+// The live reads' ProcessYouTubeChatItems: events go into the EventHub under this
+// destination.
+void ProcessChatItems(const ChatContext &ctx, const json &items, const std::string &liveChatId,
+		      const std::unordered_map<std::string, std::string> &thirdPartyEmotes,
+		      const std::function<bool()> &canceled, bool backlog)
+{
+	ProcessYouTubeChatItems(ctx, items, liveChatId, thirdPartyEmotes, canceled, backlog,
+				[&ctx](Events::NormalizedEvent &ev) { IngestChatEvent(ctx, ev); });
 }
 
 // The shared per-connection context both read loops run on. References into connect()'s
@@ -640,6 +702,7 @@ bool RunInnerTube(ChatSession &s, std::string &err)
 	cb.emitPoll = [&s](const json &live) {
 		Polls().UpdateLive(s.ctx.dest, live);
 	};
+	cb.emitModeration = s.ctx.emitModeration;
 	// Reusing AnnounceOnce is what keeps this destination's live-chat refcount held for an
 	// InnerTube read exactly as it is for a Data API read. Without that hold
 	// ShouldPollSuperChats concludes the broadcast's chat is uncovered and superChatEvents.list
@@ -692,8 +755,9 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 bool RunStreamList(ChatSession &s, std::string &err)
 {
 	std::string pageToken;
-	// The first response object on a COLD connect is backlog; suppress it so the user sees
-	// messages from connect onward. This is set false after that first object and never
+	// The first response object on a COLD connect is backlog; none of its lines is emitted,
+	// so the user sees messages from connect onward, but its removals still apply (see
+	// ProcessChatItems). This is set false after that first object and never
 	// again, so reconnects (which resume from a nextPageToken) emit normally.
 	bool firstConnect = true;
 	// Consecutive 2xx connections that parsed no response object at all. A healthy stream
@@ -758,6 +822,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 				const json &items = Obj(resp, "items");
 				const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
 				itemsIn += n;
+				const bool backlog = firstConnect;
 				if (firstConnect) {
 					firstConnect = false;
 					DBG(LogCat::Chat,
@@ -767,8 +832,8 @@ bool RunStreamList(ChatSession &s, std::string &err)
 				} else {
 					DBG(LogCat::Chat, "youtube streamList: dest=%s frame items=%d -> emitting",
 					    s.destTag.c_str(), n);
-					ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
 				}
+				ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled, backlog);
 				const std::string next = Str(resp, "nextPageToken");
 				if (!next.empty()) {
 					pageToken = next;
@@ -1054,18 +1119,19 @@ void RunListPoll(ChatSession &s, std::string &err)
 
 		AnnounceOnce(s);
 
-		// First response is backlog: keep only the cursor, emit nothing, so the user sees
-		// messages from connect onward rather than a wall of history.
+		// First response is backlog: keep the cursor and its removals, emit no line, so the
+		// user sees messages from connect onward rather than a wall of history.
 		const json &items = Obj(j, "items");
 		const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
+		const bool backlog = firstPoll;
 		if (firstPoll) {
 			firstPoll = false;
 			DBG(LogCat::Chat, "youtube list: dest=%s first poll items=%d (suppressed as backlog)",
 			    s.destTag.c_str(), n);
 		} else {
 			DBG(LogCat::Chat, "youtube list: dest=%s poll items=%d -> emitting", s.destTag.c_str(), n);
-			ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
 		}
+		ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled, backlog);
 
 		// Same exposure as the streamList loop: an ended chat keeps answering 200 forever, and
 		// none of the error branches above can see it. Checked after this poll's items are

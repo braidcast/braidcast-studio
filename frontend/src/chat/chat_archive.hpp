@@ -81,12 +81,25 @@ enum class ModerationAction { Delete, ClearUser, ClearAll };
 
 // One moderator action against a destination's chat: a message deleted, a user's
 // messages removed (a ban or a timeout), or the whole chat cleared.
+//
+// `beforeTs` is when the platform says the action happened, in epoch ms on the clock of a
+// frame's `ts`. When set, the op reaches only messages with 0 < ts <= beforeTs: a frame with
+// no usable time (ts absent or 0) cannot be shown to precede the action and is left alone.
+// It is what bounds an op read out of a platform's history, where the seq bound the op gets
+// when it is applied would reach lines said after it.
 struct ModerationOp {
 	OAuth::DestinationId dest;
 	ModerationAction action = ModerationAction::Delete;
 	std::string msgId;    // Delete
 	std::string authorId; // ClearUser
+	std::optional<int64_t> beforeTs;
 };
+
+// Whether `op` may be applied when it was read out of a platform's history (a backlog or a
+// reload) rather than as it happened. A delete names one message by id, so it is. An
+// author-wide or chat-wide removal is only with its own time: applied at replay, the seq
+// bound alone would reach everything the author said since, lines the platform still shows.
+bool SafeToReplay(const ModerationOp &op);
 
 // The `deleted` mark a redacted frame and its row carry: "message", "user" or "all".
 const char *DeletedMark(ModerationAction action);
@@ -96,22 +109,27 @@ const char *DeletedMark(ModerationAction action);
 // pending view all answer "does this remove that message" with.
 //
 // It reaches only messages admitted before it: seq below `belowSeq`, the ring's next seq
-// when the op was applied. A user's first line after a timeout ends, or anything said
-// after a clear, is a later message and stays.
+// when the op was applied, and, when the op carries one, a time at or before `beforeTs`
+// (ModerationOp). A user's first line after a timeout ends, or anything said after a clear,
+// is a later message and stays.
 struct Redaction {
 	std::string dest;
 	ModerationAction action = ModerationAction::Delete;
 	std::string msgId, authorId;
 	uint64_t belowSeq = 0;
+	std::optional<int64_t> beforeTs;
 
 	static Redaction From(const ModerationOp &op, uint64_t belowSeq);
-	bool Matches(const std::string &destKey, uint64_t seq, const std::string &msgId,
+	bool Matches(const std::string &destKey, uint64_t seq, int64_t ts, const std::string &msgId,
 		     const std::string &authorId) const;
 	bool Matches(const std::string &destKey, uint64_t seq, const json &frame) const;
 };
 
 // The stable platform user id of a frame's author, "" when the platform gave none.
 std::string FrameAuthorId(const json &frame);
+
+// A frame's platform time `ts` in epoch ms, 0 when it has none (the stored rows' `ts`).
+int64_t FrameTs(const json &frame);
 
 // Strip a removed message's text and mark it deleted. The frame keeps its identity,
 // author and time, so a dock can still show where it was.

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <optional>
 #include <string>
 
 // Time helpers shared by the chat/event integrations. Kept in ONE place so the
@@ -25,9 +26,8 @@ inline int64_t NowMs()
 }
 
 // Parse an RFC3339 / ISO-8601 UTC instant ("2024-01-02T03:04:05.678Z") into epoch
-// milliseconds; falls back to the current wall clock on a parse failure so an event
-// never carries a zero/garbage timestamp. MSVC UTC mktime (_mkgmtime).
-inline int64_t Rfc3339ToEpochMs(const std::string &iso)
+// milliseconds, or nothing when it does not parse. MSVC UTC mktime (_mkgmtime).
+inline std::optional<int64_t> TryRfc3339ToEpochMs(const std::string &iso)
 {
 	int y = 0, mon = 0, d = 0, h = 0, mi = 0, s = 0;
 	if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mon, &d, &h, &mi, &s) == 6) {
@@ -59,7 +59,14 @@ inline int64_t Rfc3339ToEpochMs(const std::string &iso)
 			return static_cast<int64_t>(epoch) * 1000 + millis;
 		}
 	}
-	return NowMs();
+	return std::nullopt;
+}
+
+// TryRfc3339ToEpochMs, falling back to the current wall clock on a parse failure so an
+// event never carries a zero/garbage timestamp.
+inline int64_t Rfc3339ToEpochMs(const std::string &iso)
+{
+	return TryRfc3339ToEpochMs(iso).value_or(NowMs());
 }
 
 // Current UTC time as an RFC3339 instant ("2024-01-02T03:04:05Z"), the shape

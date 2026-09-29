@@ -31,7 +31,7 @@ using namespace std::chrono_literals;
 // Until a platform is listed here its rows are removed at the next launch, so a message a
 // moderator removed while the app was not listening can outlive only the launch that saw
 // it. Each moderation commit adds its platform.
-constexpr std::array<std::string_view, 1> kModeratedPlatforms{"twitch"};
+constexpr std::array<std::string_view, 2> kModeratedPlatforms{"twitch", "youtube"};
 
 // The longest any row, or a quarantined copy of chat.db, is kept, in every mode. YouTube's
 // policy allows 30 days; this stays well under it.
@@ -210,6 +210,12 @@ const char *DeletedMark(ModerationAction action)
 	return "message";
 }
 
+int64_t FrameTs(const json &frame)
+{
+	const auto ts = frame.find("ts");
+	return ts != frame.end() && ts->is_number() ? ts->get<int64_t>() : 0;
+}
+
 std::string FrameAuthorId(const json &frame)
 {
 	const auto author = frame.find("author");
@@ -222,15 +228,23 @@ void RedactFrame(json &frame, ModerationAction action)
 	frame["deleted"] = DeletedMark(action);
 }
 
-Redaction Redaction::From(const ModerationOp &op, uint64_t belowSeq)
+bool SafeToReplay(const ModerationOp &op)
 {
-	return Redaction{OAuth::DestinationKey(op.dest), op.action, op.msgId, op.authorId, belowSeq};
+	return op.action == ModerationAction::Delete || op.beforeTs.has_value();
 }
 
-bool Redaction::Matches(const std::string &destKey, uint64_t seq, const std::string &id,
+Redaction Redaction::From(const ModerationOp &op, uint64_t belowSeq)
+{
+	return Redaction{OAuth::DestinationKey(op.dest), op.action, op.msgId, op.authorId, belowSeq, op.beforeTs};
+}
+
+bool Redaction::Matches(const std::string &destKey, uint64_t seq, int64_t ts, const std::string &id,
 			const std::string &author) const
 {
 	if (destKey != dest || seq >= belowSeq) {
+		return false;
+	}
+	if (beforeTs && !(ts > 0 && ts <= *beforeTs)) {
 		return false;
 	}
 	switch (action) {
@@ -246,7 +260,7 @@ bool Redaction::Matches(const std::string &destKey, uint64_t seq, const std::str
 
 bool Redaction::Matches(const std::string &destKey, uint64_t seq, const json &frame) const
 {
-	return Matches(destKey, seq, JsonUtil::Str(frame, "id"), FrameAuthorId(frame));
+	return Matches(destKey, seq, FrameTs(frame), JsonUtil::Str(frame, "id"), FrameAuthorId(frame));
 }
 
 ChatArchive::Options ChatArchive::DefaultOptions(const std::string &path, Retention retention)
@@ -336,8 +350,7 @@ std::optional<ChatArchive::Row> ChatArchive::MakeRow(const OAuth::DestinationId 
 	row.accountId = JsonUtil::Str(frame, "accountId");
 	row.profileUuid = JsonUtil::Str(frame, "profileUuid");
 	row.authorId = FrameAuthorId(frame);
-	const auto ts = frame.find("ts");
-	row.ts = ts != frame.end() && ts->is_number() ? ts->get<int64_t>() : 0;
+	row.ts = FrameTs(frame);
 	return row;
 }
 
@@ -592,7 +605,7 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 		}
 		return out;
 	}
-	std::string sql = "SELECT seq, rx, deleted, body, dest, msg_id, author_id, account_id FROM messages "
+	std::string sql = "SELECT seq, rx, deleted, body, dest, msg_id, author_id, account_id, ts FROM messages "
 			  "WHERE seq < ?1 AND seq >= ?2";
 	switch (filter.kind) {
 	case Feed::Filter::Kind::All:
@@ -638,9 +651,10 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 		const std::string dest = ColumnText(stmt.get(), 4);
 		const std::string msgId = ColumnText(stmt.get(), 5);
 		const std::string authorId = ColumnText(stmt.get(), 6);
+		const int64_t ts = sqlite3_column_int64(stmt.get(), 8);
 		for (const PendingOp &op : pending) {
 			const Redaction *redaction = std::get_if<Redaction>(&op);
-			if (redaction && redaction->Matches(dest, seq, msgId, authorId)) {
+			if (redaction && redaction->Matches(dest, seq, ts, msgId, authorId)) {
 				RedactFrame(*frame, redaction->action);
 			}
 		}
@@ -911,6 +925,9 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 			} else if (redaction->action == ModerationAction::ClearUser) {
 				sql += " AND author_id = ?3";
 			}
+			if (redaction->beforeTs) {
+				sql += " AND ts > 0 AND ts <= ?4"; // Redaction::Matches' time bound
+			}
 			Statement select(db, sql);
 			if (!select) {
 				return fail();
@@ -920,6 +937,9 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 			if (redaction->action != ModerationAction::ClearAll) {
 				select.Bind(3, redaction->action == ModerationAction::Delete ? redaction->msgId
 											     : redaction->authorId);
+			}
+			if (redaction->beforeTs) {
+				select.Bind(4, *redaction->beforeTs);
 			}
 			std::vector<std::pair<int64_t, std::string>> hits;
 			int rc = SQLITE_ROW;

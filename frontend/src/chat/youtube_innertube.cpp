@@ -602,10 +602,10 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 	}
 }
 
-// Moderation and banner actions. The normalized wire shape carries no deletion or pinned-
-// banner frame, so there is nothing to render -- but they are recognized ON PURPOSE rather
-// than left to the unknown-action path, so the log distinguishes "handled, nothing to draw"
-// from "an action name we have never seen".
+// Banner and ticker actions. The normalized wire shape carries no pinned-banner frame, so
+// there is nothing to render -- but they are recognized ON PURPOSE rather than left to the
+// unknown-action path, so the log distinguishes "handled, nothing to draw" from "an action
+// name we have never seen".
 void OnNothingToRender(Loop &lp, const char *name, const json &)
 {
 	DBG(LogCat::Chat, "youtube innertube: dest=%s %s has no wire frame to render, skipped", lp.cfg.destTag.c_str(),
@@ -640,7 +640,8 @@ void OnActionPanel(Loop &lp, const char *, const json &action)
 using ActionFn = void (*)(Loop &, const char *name, const json &action);
 
 // actions[] entry name -> handler. Dispatch is a table lookup, not a chain: an entry whose
-// name is absent falls through and is skipped silently.
+// name is absent falls through and is skipped silently. The moderation actions are not
+// here: DecodeModerationAction (kModerationActions) reads them ahead of this table.
 //
 // addLiveChatTickerItemAction is here as a NO-OP ON PURPOSE, and must stay one. YouTube emits
 // a Super Chat / new membership TWICE while it is happening -- once as the chat item and once
@@ -650,10 +651,6 @@ using ActionFn = void (*)(Loop &, const char *name, const json &action);
 const std::pair<const char *, ActionFn> kActions[] = {
 	{"addChatItemAction", OnAddChatItem},
 	{"addLiveChatTickerItemAction", OnNothingToRender},
-	{"markChatItemAsDeletedAction", OnNothingToRender},
-	{"markChatItemsByAuthorAsDeletedAction", OnNothingToRender},
-	{"removeChatItemAction", OnNothingToRender},
-	{"removeChatItemByAuthorAction", OnNothingToRender},
 	{"addBannerToLiveChatCommand", OnNothingToRender},
 	{"removeBannerForLiveChatCommand", OnNothingToRender},
 	{"updateLiveChatPollAction", OnPollUpdate},
@@ -668,6 +665,28 @@ void ProcessActions(Loop &lp, const json &actions)
 	for (const json &action : actions) {
 		if (lp.cb.canceled()) {
 			return;
+		}
+		// In array order with the chat items, so a removal of a line added earlier in the
+		// same batch lands after that line. A reload's history can name a line this read
+		// already emitted, and chat.db may hold one it did not, so a delete applies there too.
+		// These actions carry no time of their own, though, so an author-wide one replayed
+		// from history is skipped (SafeToReplay): applied now it would reach every line that
+		// author has said since.
+		if (const std::optional<ModerationOp> op = DecodeModerationAction(action)) {
+			if (op->action == ModerationAction::Delete) {
+				// A line whose deletion arrives first is never admitted afterwards.
+				lp.seen.add(op->msgId);
+			}
+			if (lp.suppress && !SafeToReplay(*op)) {
+				DBG(LogCat::Chat,
+				    "youtube innertube: dest=%s skipped an author-wide removal in history",
+				    lp.cfg.destTag.c_str());
+				continue;
+			}
+			if (lp.cb.emitModeration) {
+				lp.cb.emitModeration(*op);
+			}
+			continue;
 		}
 		for (const auto &entry : kActions) {
 			const json &payload = Obj(action, entry.first);
@@ -805,7 +824,39 @@ long JitteredWaitMs(long stepMs, std::mt19937 &rng)
 	return std::max(static_cast<long>(static_cast<double>(stepMs) * jitter(rng)), kPollFloorMs);
 }
 
+// The moderation actions: name -> what it does and the field naming its target. Documented
+// by the community clients that read this endpoint; no capture of one has been taken yet.
+const struct ModerationKind {
+	const char *name;
+	ModerationAction action;
+	const char *targetKey;
+} kModerationActions[] = {
+	{"markChatItemAsDeletedAction", ModerationAction::Delete, "targetItemId"},
+	{"removeChatItemAction", ModerationAction::Delete, "targetItemId"},
+	{"markChatItemsByAuthorAsDeletedAction", ModerationAction::ClearUser, "externalChannelId"},
+	{"removeChatItemByAuthorAction", ModerationAction::ClearUser, "externalChannelId"},
+};
+
 } // namespace
+
+std::optional<ModerationOp> DecodeModerationAction(const json &action)
+{
+	for (const ModerationKind &kind : kModerationActions) {
+		const json &payload = Obj(action, kind.name);
+		if (!payload.is_object()) {
+			continue;
+		}
+		const std::string target = Str(payload, kind.targetKey);
+		if (target.empty()) {
+			return std::nullopt;
+		}
+		ModerationOp op;
+		op.action = kind.action;
+		(kind.action == ModerationAction::Delete ? op.msgId : op.authorId) = target;
+		return op;
+	}
+	return std::nullopt;
+}
 
 bool DecodeChatItem(const json &item, DecodedItem &out)
 {

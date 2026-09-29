@@ -16,19 +16,24 @@ export const TOMBSTONE_TEXT: Record<ChatModerationAction, string> = {
 };
 
 /** Whether `op` removes a message: one the host admitted before the op (`seq` under
- * `before`), from the same destination, and then the whole chat, the one message it
- * names, or everything by the author it names. An op missing the id its action needs
- * names nothing. A message admitted after the op is never removed by it: a line said
- * after a clear, or by a user whose timeout has run out.
+ * `before`) and, when the op carries `beforeTs`, said at or before it (a message with no
+ * time, `ts` 0, is then never named), from the same destination, and then the whole
+ * chat, the one message it names, or everything by the author it names. An op missing
+ * the id its action needs names nothing. A message admitted or said after the op is never
+ * removed by it: a line said after a clear, or by a user whose timeout has run out.
  *
  * Built once per op, so testing a message allocates nothing: the feed runs every
  * remembered op over every row that joins it. */
 export function moderationMatcher(
   op: ChatModeration,
-): (m: Pick<ChatMessage, "accountId" | "profileUuid" | "id" | "seq" | "author">) => boolean {
+): (m: Pick<ChatMessage, "accountId" | "profileUuid" | "id" | "seq" | "ts" | "author">) => boolean {
   const dest = destinationKey(op.accountId, op.profileUuid);
+  const beforeTs = op.beforeTs;
   return (m) => {
     if (!(m.seq < op.before) || !isDestinationKey(dest, m.accountId, m.profileUuid)) {
+      return false;
+    }
+    if (beforeTs !== undefined && !(m.ts > 0 && m.ts <= beforeTs)) {
       return false;
     }
     switch (op.action) {
