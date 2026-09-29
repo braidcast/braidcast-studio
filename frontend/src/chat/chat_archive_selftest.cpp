@@ -804,8 +804,7 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		Add(launch.history, kTwitch, "fresh");
 		launch.archive.WaitIdle(kIdleWait);
 		const bool ok = launch.archive.Status() == Chat::ArchiveStatus::Recovered && !AnyQuarantined(path) &&
-				detail.find(".corrupt-") == std::string::npos &&
-				Scalar(path, "SELECT count(*) FROM messages") == 1;
+				detail.empty() && Scalar(path, "SELECT count(*) FROM messages") == 1;
 		Report("corrupt file this session", ok, detail);
 	}
 
@@ -880,6 +879,198 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		launch.archive.WaitIdle(kIdleWait);
 		const bool removed = !Exists(path) && launch.archive.WriterStarted();
 		Report("off retries an unreadable file", leftAtOpen && removed);
+	}
+
+	// The report chat.historyStatus answers with: the count a reader can reach (a queued
+	// Clear already hides its rows), the status and detail, whether a file is on disk, and
+	// the moderated platforms. It waits for a control op queued before it, not for rows.
+	{
+		const std::string path = dbPath("report");
+		Launch launch(path, Chat::Retention::SevenDays, "L1");
+		for (int i = 0; i < 3; ++i) {
+			Add(launch.history, kTwitch, "r" + std::to_string(i));
+		}
+		launch.archive.WaitIdle(kIdleWait);
+		const json stored = launch.archive.StatusJson(kIdleWait);
+		Add(launch.history, kTwitch, "r3"); // a row in its batching delay
+		const auto askedAt = std::chrono::steady_clock::now();
+		launch.archive.StatusJson(kIdleWait);
+		const auto waited = std::chrono::steady_clock::now() - askedAt;
+		launch.archive.HoldWrites(true);
+		launch.history.Clear();
+		const json cleared = launch.archive.StatusJson(0ms);
+		launch.archive.HoldWrites(false);
+		launch.history.SetRetention(Chat::Retention::Off);
+		const json off = launch.archive.StatusJson(kIdleWait);
+
+		const std::string newerPath = dbPath("report-newer");
+		WriteWalDb(newerPath, kNewerVersion);
+		Launch newer(newerPath, Chat::Retention::SevenDays, "L1");
+		const json refused = newer.archive.StatusJson(kIdleWait);
+
+		const bool ok = stored == json{{"status", "ok"},
+					       {"detail", ""},
+					       {"rows", 3},
+					       {"onDisk", true},
+					       {"moderatedPlatforms", json::array({"kick"})}} &&
+				waited < 200ms && cleared.value("rows", -1) == 0 && off.value("status", "") == "off" &&
+				off.value("rows", -1) == 0 && !off.value("onDisk", true) &&
+				refused.value("status", "") == "newer-schema" && !refused.value("detail", "").empty() &&
+				refused.value("onDisk", false);
+		Report("status report", ok,
+		       stored.dump() + " | " +
+			       std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(waited).count()) +
+			       " ms | " + cleared.dump() + " | " + off.dump() + " | " + refused.dump());
+	}
+
+	// A stored retention this build does not know runs as 7 days that writes no new row.
+	// Open sweeps as 7 days does (the age limit, earlier launches' rows on a platform whose
+	// moderation is not honored, expired copies) and seeds this launch's seqs above what is
+	// stored; purges, redactions and Clear still reach the store. Moving to 7 days keeps
+	// every row, and Off removes the store.
+	{
+		const auto held = [&](const std::string &path, const std::string &launchId) {
+			auto options = TestOptions(path, Chat::Retention::SevenDays, launchId);
+			options.unknownSetting = "7D";
+			return options;
+		};
+		const auto count = [](const std::string &path, const std::string &where = "1") {
+			return Scalar(path, "SELECT count(*) FROM messages WHERE " + where);
+		};
+		const auto seed = [&](const std::string &path) {
+			Launch first(path, Chat::Retention::SevenDays, "L1");
+			Add(first.history, kKickA, "a0", "kick");
+			Add(first.history, kKickA, "a1", "kick");
+			Add(first.history, kKickB, "b0", "kick");
+			Add(first.history, kKickB, "old", "kick");
+			Add(first.history, kTwitch, "t0", "twitch");
+			first.archive.WaitIdle(kIdleWait);
+		};
+
+		const std::string path = dbPath("unknown");
+		seed(path);
+		Scalar(path, "UPDATE messages SET rx = " + std::to_string(TimeUtil::NowMs() - 8 * TimeUtil::kDayMs) +
+				     " WHERE msg_id = 'old'");
+		const fs::path expired = fs::u8path(path).parent_path() / "chat.db.corrupt-2000-01-01_00-00-00";
+		std::ofstream(expired, std::ios::binary) << "x";
+		const std::string a1Before = Column(path, "SELECT body FROM messages WHERE msg_id = 'a1'");
+		bool opened = false, redacted = false, purged = false, paged = false, cleared = false;
+		std::string report;
+		{
+			Chat::ChatArchive archive;
+			Chat::ChatHistory history{&archive};
+			history.OpenArchive(held(path, "L2"));
+			const json status = archive.StatusJson(kIdleWait);
+			opened = status.value("status", "") == "unknown-setting" &&
+				 status.value("detail", "") == "7D" && archive.WriterStarted() && !archive.Active() &&
+				 count(path) == 3 && count(path, "msg_id IN ('old', 't0')") == 0 &&
+				 !Exists(expired.u8string());
+
+			Add(history, kKickA, "n1", "kick");
+			history.Redact({kKickA, Chat::ModerationAction::Delete, "a1", ""});
+			archive.WaitIdle(kIdleWait);
+			const std::string a1After = Column(path, "SELECT body FROM messages WHERE msg_id = 'a1'");
+			redacted = !a1After.empty() && a1After != a1Before && count(path, "msg_id = 'n1'") == 0;
+
+			archive.PurgeAccount(kKickA.accountId);
+			archive.WaitIdle(kIdleWait);
+			purged = Column(path, "SELECT msg_id FROM messages") == "b0";
+
+			// The ring evicts the seeded rows and n1 without waiting on the disk; paging past
+			// it reaches the stored b0, and n1, which was never written, is gone.
+			for (const std::string &id : ids("f", 0, 1000)) {
+				Add(history, kKickB, id, "kick");
+			}
+			const Walk walk = WalkAll(history, 200);
+			paged = walk.ordered && !walk.unreadable && walk.ids.size() == 1001 &&
+				walk.ids.front() == "b0" && count(path) == 1;
+
+			history.Clear();
+			const json afterClear = archive.StatusJson(kIdleWait);
+			cleared = Exists(path) && count(path) == 0 &&
+				  afterClear.value("status", "") == "unknown-setting" &&
+				  afterClear.value("rows", -1) == 0;
+			report = status.dump() + " | " + std::to_string(walk.ids.size()) + " paged | " +
+				 afterClear.dump();
+			archive.Shutdown();
+		}
+
+		const std::string keepPath = dbPath("unknown-keep");
+		seed(keepPath);
+		const int64_t storedMax = Scalar(keepPath, "SELECT max(seq) FROM messages");
+		bool keeps = false;
+		{
+			Chat::ChatArchive archive;
+			Chat::ChatHistory history{&archive};
+			history.OpenArchive(held(keepPath, "L2"));
+			const int64_t heldRows = count(keepPath); // the twitch row is gone, as under 7 days
+			Add(history, kKickA, "k1", "kick");
+			history.SetRetention(Chat::Retention::SevenDays);
+			Add(history, kKickA, "k2", "kick");
+			archive.WaitIdle(kIdleWait);
+			keeps = archive.Status() == Chat::ArchiveStatus::Ok && archive.StatusDetail().empty() &&
+				count(keepPath) == heldRows + 1 && count(keepPath, "msg_id = 'k1'") == 0 &&
+				Scalar(keepPath, "SELECT seq FROM messages WHERE msg_id = 'k2'") > storedMax &&
+				WalkAll(history).ordered;
+			archive.Shutdown();
+		}
+
+		const std::string offPath = dbPath("unknown-off");
+		seed(offPath);
+		bool offRemoves = false;
+		{
+			Chat::ChatArchive archive;
+			Chat::ChatHistory history{&archive};
+			history.OpenArchive(held(offPath, "L2"));
+			const bool kept = Exists(offPath);
+			history.SetRetention(Chat::Retention::Off);
+			archive.WaitIdle(kIdleWait);
+			offRemoves = kept && !Exists(offPath) && archive.Status() == Chat::ArchiveStatus::Off;
+			archive.Shutdown();
+		}
+		const bool ok = opened && redacted && purged && paged && cleared && keeps && offRemoves;
+		Report("unknown setting holds", ok,
+		       report + " | opened " + std::to_string(opened) + " redacted " + std::to_string(redacted) +
+			       " purged " + std::to_string(purged) + " paged " + std::to_string(paged) + " cleared " +
+			       std::to_string(cleared) + " keeps " + std::to_string(keeps) + " off " +
+			       std::to_string(offRemoves));
+	}
+
+	// Recovered names the copy it set aside only while that copy is there: a Clear takes it,
+	// and the status is then plain Ok.
+	{
+		const std::string path = dbPath("recovered-clear");
+		{
+			std::ofstream out(fs::u8path(path), std::ios::binary);
+			out << Garbage();
+		}
+		Launch launch(path, Chat::Retention::SevenDays, "L1");
+		const bool named = launch.archive.Status() == Chat::ArchiveStatus::Recovered &&
+				   launch.archive.StatusDetail().find(".corrupt-") != std::string::npos;
+		launch.history.Clear();
+		launch.archive.WaitIdle(kIdleWait);
+		const bool ok = named && !AnyQuarantined(path) && launch.archive.Status() == Chat::ArchiveStatus::Ok &&
+				launch.archive.StatusDetail().empty();
+		Report("recovered clears with its copy", ok);
+	}
+
+	// A move to This session removes the copies set aside even when chat.db cannot be
+	// opened (here a newer build's, which stays as it is).
+	{
+		const std::string path = dbPath("session-sweep");
+		WriteWalDb(path, kNewerVersion);
+		const std::string before = Bytes(path);
+		const fs::path copy =
+			fs::u8path(path).parent_path() /
+			fs::u8path(fs::u8path(path).filename().u8string() + ".corrupt-" + TimeUtil::LocalFileStamp());
+		std::ofstream(copy, std::ios::binary) << "x";
+		Launch launch(path, Chat::Retention::SevenDays, "L1");
+		const bool keptAtOpen = AnyQuarantined(path); // under 7 days old
+		launch.history.SetRetention(Chat::Retention::Session);
+		launch.archive.WaitIdle(kIdleWait);
+		const bool ok = keptAtOpen && !AnyQuarantined(path) && Bytes(path) == before &&
+				launch.archive.Status() == Chat::ArchiveStatus::NewerSchema;
+		Report("session sweeps when the store cannot open", ok);
 	}
 
 	fs::remove_all(dir, ec);

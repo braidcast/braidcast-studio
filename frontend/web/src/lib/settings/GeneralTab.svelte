@@ -1,6 +1,15 @@
 <script lang="ts">
-  import { obs, type GeneralSettings } from "$lib/api/bridge";
+  import { obs, type ChatHistoryRetention, type ChatHistoryStatus, type GeneralSettings } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { popEsc, pushEsc, isTopEsc } from "$lib/utils/escStack";
+  import {
+    RETENTION_OPTIONS,
+    historyStatusText,
+    isRetention,
+    retentionChangeDeletes,
+    retentionConfirmMessage,
+    sessionOnlyHint,
+  } from "./chatHistory";
   import { openMissingFiles } from "$lib/dialogs/missingFilesOpener.svelte";
   import { openLogViewer } from "$lib/dialogs/logViewerOpener.svelte";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
@@ -38,6 +47,7 @@ import { EV } from "$lib/utils/eventNames";
     warnBeforeGoLive: false,
     warnBeforeStop: false,
     scheduleRequireAllDestinations: false,
+    chatHistoryRetention: "off",
     startMinimized: false,
     minimizeToTray: false,
     alwaysShowTray: false,
@@ -61,6 +71,11 @@ import { EV } from "$lib/utils/eventNames";
   function adopt(g: GeneralSettings): void {
     s = g;
     confirmed = { ...g };
+    // Another window may have changed retention under a pending confirm; it is asked
+    // only while the change it would make still deletes something.
+    if (historyConfirm?.kind === "retention" && !retentionChangeDeletes(g.chatHistoryRetention, historyConfirm.to)) {
+      historyConfirm = null;
+    }
   }
 
   $effect(() => {
@@ -100,6 +115,138 @@ import { EV } from "$lib/utils/eventNames";
     } catch (e) {
       error = (e as Error).message;
       if (current()) s = { ...confirmed };
+    }
+  }
+
+  // Chat history. The status line is read on the async lane and refreshed after anything
+  // that can change it: a retention change (ours or another window's) and a clear.
+  let history = $state<ChatHistoryStatus | null>(null);
+  let historyFailed = $state(false);
+  const historyGuard = new RequestGuard();
+  const historyLine = $derived(
+    history
+      ? historyStatusText(history)
+      : { text: historyFailed ? "Could not read the chat history status." : "Reading status…", problem: historyFailed },
+  );
+  const sessionHint = $derived(history ? sessionOnlyHint(history.moderatedPlatforms) : "");
+
+  function refreshHistory(): void {
+    const current = historyGuard.claim();
+    obs
+      .call("chat.historyStatus")
+      .then((h) => {
+        if (!current()) return;
+        history = h;
+        historyFailed = false;
+      })
+      .catch(() => {
+        if (!current()) return;
+        history = null;
+        historyFailed = true;
+      });
+  }
+
+  $effect(() => {
+    refreshHistory();
+    let seenRetention: string | null = null;
+    const offGeneral = obs.on(EV.settingsGeneralChanged, (g) => {
+      if (g.chatHistoryRetention !== seenRetention) {
+        seenRetention = g.chatHistoryRetention;
+        refreshHistory();
+      }
+    });
+    // chat.cleared reaches every window, this one included, so a clear made here refreshes
+    // through it too.
+    const offCleared = obs.on(EV.chatCleared, refreshHistory);
+    return () => {
+      offGeneral();
+      offCleared();
+    };
+  });
+
+  // A change that deletes stored chat waits here for its inline confirm; the select shows
+  // the pending choice meanwhile. Only one confirm is open at a time.
+  type HistoryConfirm = { kind: "retention"; to: ChatHistoryRetention } | { kind: "clear" };
+  let historyConfirm = $state<HistoryConfirm | null>(null);
+  let clearing = $state(false);
+  const RETENTION_ID = "chat-history-retention";
+  const CLEAR_ID = "chat-history-clear";
+  const CONFIRM_MESSAGE_ID = "chat-history-confirm-message";
+
+  const shownRetention = $derived(
+    historyConfirm?.kind === "retention" ? historyConfirm.to : s.chatHistoryRetention,
+  );
+  // Said through a live region rather than by moving focus: arrow keys on a closed select
+  // change its value at once, and taking focus away would stop the user mid-way.
+  const confirmAnnouncement = $derived(
+    historyConfirm?.kind === "retention" ? `${retentionConfirmMessage(historyConfirm.to)} Confirm or cancel below.` : "",
+  );
+
+  function chooseRetention(to: ChatHistoryRetention): void {
+    if (retentionChangeDeletes(s.chatHistoryRetention, to)) {
+      historyConfirm = { kind: "retention", to };
+      return;
+    }
+    historyConfirm = null;
+    void apply({ chatHistoryRetention: to });
+  }
+
+  function openClearConfirm(): void {
+    if (!clearing) historyConfirm = { kind: "clear" };
+  }
+
+  // Clear is an explicit activation, so its strip opens on Cancel, the choice that deletes
+  // nothing. The retention strip leaves focus on the select.
+  function focusCancel(node: HTMLElement): void {
+    node.querySelector<HTMLButtonElement>("[data-cancel]")?.focus();
+  }
+
+  // The strip owns Escape while it is open, wherever focus is, through the same stack
+  // menus and dialogs use, so a layer opened over it still closes first. An Escape it takes
+  // goes no further: App's window handler would otherwise also leave a preview group, since
+  // it is gated on the preview's overlays rather than on this stack, and the stack may
+  // already be popped by the time the event reaches the window.
+  $effect(() => {
+    if (!historyConfirm) return;
+    const token = pushEsc();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !isTopEsc(token)) return;
+      e.stopPropagation();
+      closeConfirm();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      popEsc(token);
+    };
+  });
+
+  // Focus inside the strip goes back to the control that opened it, which unmounting the
+  // strip would lose; focus anywhere else stays where it is.
+  function closeConfirm(): void {
+    const opener = historyConfirm?.kind === "clear" ? CLEAR_ID : RETENTION_ID;
+    const inStrip = (document.activeElement as HTMLElement | null)?.closest(".confirm") != null;
+    historyConfirm = null;
+    if (inStrip) document.getElementById(opener)?.focus();
+  }
+
+  async function commitConfirm(): Promise<void> {
+    const pending = historyConfirm;
+    closeConfirm();
+    if (pending?.kind === "retention") {
+      await apply({ chatHistoryRetention: pending.to });
+    } else if (pending?.kind === "clear") {
+      // Clear stays enabled, so the focus closeConfirm returned to it is not lost; a second
+      // press while this runs opens nothing.
+      error = null;
+      clearing = true;
+      try {
+        await obs.call("chat.clear");
+      } catch (e) {
+        error = (e as Error).message;
+      } finally {
+        clearing = false;
+      }
     }
   }
 </script>
@@ -196,6 +343,54 @@ import { EV } from "$lib/utils/eventNames";
       />
       Warn before stopping the stream
     </label>
+  </section>
+
+  {#snippet confirmStrip(message: string, action: string)}
+    <p id={CONFIRM_MESSAGE_ID} class="confirm-msg">{message}</p>
+    <Button size="sm" tone="live" onclick={() => void commitConfirm()}>{action}</Button>
+    <Button size="sm" data-cancel onclick={closeConfirm}>Cancel</Button>
+  {/snippet}
+
+  <section class="group">
+    <h4>Chat history</h4>
+    <div class="field">
+      <label class="flabel" for={RETENTION_ID}>Keep chat history</label>
+      <select
+        id={RETENTION_ID}
+        value={shownRetention}
+        aria-describedby={historyConfirm?.kind === "retention" ? CONFIRM_MESSAGE_ID : undefined}
+        onchange={(e) => chooseRetention(e.currentTarget.value as ChatHistoryRetention)}
+      >
+        {#if !isRetention(s.chatHistoryRetention)}
+          <!-- A newer build's value, or a hand edit: shown, but not one to choose. -->
+          <option value={s.chatHistoryRetention} disabled>Not recognized</option>
+        {/if}
+        {#each RETENTION_OPTIONS as o (o.value)}
+          <option value={o.value}>{o.label}</option>
+        {/each}
+      </select>
+    </div>
+    <p class="sr-only" aria-live="polite">{confirmAnnouncement}</p>
+    {#if historyConfirm?.kind === "retention"}
+      <div class="confirm" role="group" aria-labelledby={CONFIRM_MESSAGE_ID}>
+        {@render confirmStrip(
+          retentionConfirmMessage(historyConfirm.to),
+          historyConfirm.to === "off" ? "Turn off and delete" : "Delete older chat",
+        )}
+      </div>
+    {/if}
+    <p class="dim note">Stored chat lets the chat dock scroll back past its last 1,000 messages and across restarts. This session keeps chat until Braidcast closes; after a crash it stays on disk until the next launch. 7 days keeps up to 10,000 messages.</p>
+    {#if sessionHint && s.chatHistoryRetention === "7d"}<p class="dim note">{sessionHint}</p>{/if}
+    <p class="note status" class:dim={!historyLine.problem} class:warn={historyLine.problem} role="status">{historyLine.text}</p>
+    <div class="actions">
+      <Button id={CLEAR_ID} onclick={openClearConfirm}>Clear chat history…</Button>
+    </div>
+    {#if historyConfirm?.kind === "clear"}
+      <div class="confirm" role="group" aria-labelledby={CONFIRM_MESSAGE_ID} use:focusCancel>
+        {@render confirmStrip("Delete all stored chat history and empty the chat docks?", "Delete")}
+      </div>
+    {/if}
+    <p class="dim note">Deleting is best effort: deleted chat is overwritten in the history file, but the drive (an SSD especially) or the database journal can keep a copy for a while.</p>
   </section>
 
   <section class="group">
@@ -368,6 +563,31 @@ import { EV } from "$lib/utils/eventNames";
   .note {
     font-size: 12px;
     margin-top: 8px;
+  }
+  .status.warn {
+    color: var(--color-warn);
+  }
+  .actions {
+    margin-top: 10px;
+  }
+  /* The inline confirm for a change that deletes stored chat: edged in the destructive
+     tone its action button carries, so the strip reads as the warning it is. */
+  .confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    max-width: 480px;
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border: var(--border-weight) solid var(--color-live);
+    background: var(--color-surface);
+  }
+  .confirm-msg {
+    flex: 1 1 100%;
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-text);
   }
   .error {
     color: var(--color-live);

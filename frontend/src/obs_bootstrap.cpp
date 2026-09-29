@@ -821,6 +821,24 @@ void LoadMultistreamModel()
 	HostLog("[obs] multistream: streams.json=" + StreamProfileStore::FilePath());
 }
 
+// chat.db's archive options for the retention General settings hold. A value this build
+// does not know (a hand edit, a newer build's token) opens the archive as 7 days that saves
+// no new chat, until the user chooses a mode. The value stays as stored, in `settings` too,
+// so saving another General field does not turn it into a mode that would delete the file
+// at the next launch.
+Chat::ChatArchive::Options ChatArchiveOptions(const GeneralSettings &settings)
+{
+	Chat::ChatArchive::Options options = Chat::ChatArchive::DefaultOptions(MultistreamBasicPath("chat.db"));
+	if (const std::optional<Chat::Retention> retention = Chat::RetentionFromToken(settings.chatHistoryRetention)) {
+		options.retention = *retention;
+	} else {
+		HostLog("[settings] unknown stored chat history retention '" + settings.chatHistoryRetention +
+			"'; stored chat is kept up to 7 days and no new chat is saved until one is chosen");
+		options.unknownSetting = settings.chatHistoryRetention;
+	}
+	return options;
+}
+
 } // namespace
 
 ::SceneCollections &ObsBootstrap::SceneCollections()
@@ -1485,10 +1503,10 @@ bool ObsBootstrap::Start()
 
 	// Chat history on disk opens beside it, in its own file, before any chat transport can
 	// admit a message: the scrollback is seeded from what the archive kept, and a
-	// re-delivered message after a restart is then recognized. With retention Off (the
-	// default until the setting exists) nothing is created, and what an earlier launch
-	// stored is removed.
-	Chat::History().OpenArchive(Chat::ChatArchive::DefaultOptions(MultistreamBasicPath("chat.db")));
+	// re-delivered message after a restart is then recognized. It opens in the retention
+	// General settings hold; with Off nothing is created, and what an earlier launch stored
+	// is removed.
+	Chat::History().OpenArchive(ChatArchiveOptions(g_general));
 
 	g_scheduledSetup.log = [](const std::string &line) {
 		HostLog(line);
@@ -2874,6 +2892,65 @@ void ObsBootstrap::RunSettingsSelfTest()
 	run("settings.setGeneral", saved, ok);
 	const json g4 = run("settings.getGeneral", json(nullptr), ok);
 	HostLog("[selftest] preview-overlays: restored " + verdict(ok && overlaysAre(g4, saved)));
+
+	// 9) Chat history retention: the field round-trips through the General commit and
+	// reaches the process archive, an unknown value is refused with the rest of its call,
+	// and chat.historyStatus's reply has its shape. Runs in the self-test config dir, so the
+	// chat.db a mode change creates or removes is that dir's. Restored afterwards.
+	constexpr auto kSettle = std::chrono::seconds(10);
+	const json r0 = run("settings.getGeneral", json(nullptr), ok);
+	const std::string retention0 = ok ? r0.value("chatHistoryRetention", std::string()) : std::string();
+	const std::optional<Chat::Retention> mode0 = Chat::RetentionFromToken(retention0);
+	const std::string retention1 = retention0 == "off" ? "session" : "off";
+	const auto archiveStatus = [&] {
+		return Chat::Archive().StatusJson(kSettle).value("status", std::string());
+	};
+	const json r1 = run("settings.setGeneral", json{{"chatHistoryRetention", retention1}}, ok);
+	const bool setOk = ok && r1.value("chatHistoryRetention", std::string()) == retention1;
+	const std::string status1 = archiveStatus();
+	json badResult;
+	std::string badError;
+	const bool badAccepted = Bridge::Dispatch(
+		"settings.setGeneral", json{{"chatHistoryRetention", "forever"}, {"previewSafeAreas", !safe0}},
+		badResult, badError);
+	const json r2 = run("settings.getGeneral", json(nullptr), ok);
+	const bool intact = ok && r2.value("chatHistoryRetention", std::string()) == retention1 &&
+			    r2.value("previewSafeAreas", safe0) == saved.value("previewSafeAreas", safe0);
+	run("settings.setGeneral", json{{"chatHistoryRetention", retention0}}, ok);
+	const json r3 = run("settings.getGeneral", json(nullptr), ok);
+	const bool restored = ok && r3.value("chatHistoryRetention", std::string()) == retention0;
+	const json report = Chat::Archive().StatusJson(kSettle);
+	const auto isString = [&](const char *key) {
+		return report.contains(key) && report[key].is_string();
+	};
+	const bool shapeOk = isString("status") && isString("detail") && report.contains("rows") &&
+			     report["rows"].is_number_integer() && report.contains("onDisk") &&
+			     report["onDisk"].is_boolean() && report.contains("moderatedPlatforms") &&
+			     report["moderatedPlatforms"].is_array();
+	const bool statusBack = retention0 == "off" ? report.value("status", std::string()) == "off"
+						    : report.value("status", std::string()) != "off";
+	HostLog("[selftest] chat-retention: stored '" + retention0 + "' " + verdict(mode0.has_value()) + ", set '" +
+		retention1 + "' " + verdict(setOk) + " (archive " + status1 + " " +
+		verdict((retention1 == "off") == (status1 == "off")) + "), unknown value " + verdict(!badAccepted) +
+		" (" + Err::Diagnostic(badError) + "), values intact " + verdict(intact) + ", restored " +
+		verdict(restored && statusBack) + ", historyStatus shape " + verdict(shapeOk) + " " + report.dump());
+
+	// 9b) A stored value this build does not know (as a newer build or a hand edit leaves
+	// it) rides along unchanged with an edit to another field, which must not turn it into
+	// a mode; only a new unknown value is refused.
+	ObsBootstrap::General().chatHistoryRetention = "7D";
+	const json u1 =
+		run("settings.setGeneral", json{{"previewSafeAreas", saved.value("previewSafeAreas", safe0)}}, ok);
+	const bool keptUnknown = ok && u1.value("chatHistoryRetention", std::string()) == "7D";
+	json newResult;
+	std::string newError;
+	const bool newAccepted =
+		Bridge::Dispatch("settings.setGeneral", json{{"chatHistoryRetention", "8D"}}, newResult, newError);
+	run("settings.setGeneral", json{{"chatHistoryRetention", retention0}}, ok);
+	const json u2 = run("settings.getGeneral", json(nullptr), ok);
+	HostLog("[selftest] chat-retention: stored unknown value kept on another edit " + verdict(keptUnknown) +
+		", new unknown value " + verdict(!newAccepted) + ", restored " +
+		verdict(ok && u2.value("chatHistoryRetention", std::string()) == retention0));
 }
 
 void ObsBootstrap::RunCanvasBridgeSelfTest()

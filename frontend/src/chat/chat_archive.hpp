@@ -21,6 +21,7 @@
 
 #include "../history/Db.hpp"
 #include "../oauth/provider.hpp" // OAuth::DestinationId
+#include "chat_retention.hpp"
 #include "feed_query.hpp"
 
 struct sqlite3;
@@ -63,11 +64,6 @@ namespace Chat {
 
 using json = nlohmann::json;
 
-enum class Retention { Off, Session, SevenDays };
-
-// Nothing is written until the retention setting exists to turn it off again.
-inline constexpr Retention kDefaultRetention = Retention::Off;
-
 enum class ArchiveStatus {
 	Off,         // retention is Off: nothing stored, nothing read
 	Ok,          // persisting
@@ -75,6 +71,9 @@ enum class ArchiveStatus {
 	Recovered,   // a corrupt chat.db was set aside and a fresh one started
 	NewerSchema, // chat.db belongs to a newer build and is left untouched
 	Degraded,    // writes failed; the ring alone serves until the next launch, whatever the mode
+	// The stored retention setting is one this build does not know: the store runs as 7 days
+	// (Options::unknownSetting), but no new message is written to it.
+	UnknownSetting,
 };
 
 enum class ModerationAction { Delete, ClearUser, ClearAll };
@@ -183,6 +182,12 @@ public:
 		std::string launchId;
 		// The platforms whose rows may outlive their launch (kModeratedPlatforms).
 		std::vector<std::string> moderatedPlatforms;
+		// The retention setting as stored, when this build does not know it (`retention` is
+		// then not read). The store runs as 7 days, the longest a known setting keeps chat,
+		// except that no new message is written: what is stored still ages out and is still
+		// purged, redacted and cleared, and moving to 7 days keeps it. A newer build's token
+		// or a hand edit must not cost the user their stored chat without them choosing it.
+		std::optional<std::string> unknownSetting;
 	};
 
 	// Options for `path` with this process's launch id and moderated platforms.
@@ -227,8 +232,17 @@ public:
 	uint64_t PersistedSeq() const { return persistedSeq_.load(std::memory_order_acquire); }
 	// Rows are being queued and stored now.
 	bool Active() const { return active_.load(std::memory_order_acquire); }
+	// ReadOlder may have stored rows to return: Active, or holding an unknown setting.
+	bool Readable() const;
 	ArchiveStatus Status() const;
 	std::string StatusDetail() const;
+	// What Settings shows (chat.historyStatus): {status, detail, rows, onDisk,
+	// moderatedPlatforms}. `rows` counts the stored messages less those a queued Clear
+	// already hides (a queued purge is not subtracted); `onDisk` is whether a chat.db or a
+	// set-aside copy of one is there, whatever the status. It first waits up to `settle`
+	// for the writer to apply the control ops (a mode change, a Clear) queued before the
+	// call, so one just made shows. Reads chat.db, so never on TID_UI.
+	json StatusJson(std::chrono::milliseconds settle);
 
 	// Commit everything queued, stop the writer, close both connections and release the
 	// lock file. Idempotent. Must run before static destruction on every orderly exit.
@@ -306,8 +320,8 @@ private:
 	// Delete chat.db, -wal first, then -shm and the file. False, logged, if one stays.
 	bool DeleteStoreFiles();
 	// Session mode's answer to an unreadable chat.db: it holds only earlier launches' chat,
-	// so it is deleted rather than set aside. The status detail, or "" when it could not be.
-	std::string DiscardCorrupt();
+	// so it is deleted rather than set aside. False when it could not be.
+	bool DiscardCorrupt();
 	// Rename chat.db (and any -wal/-shm) aside; the new name, or "" when it failed.
 	std::string Quarantine();
 	// Delete the quarantined copies: all of them, or those past the retention window.
@@ -351,6 +365,11 @@ private:
 	// owed; the next control op tries again.
 	std::string owedRemoval_;
 	bool failWriterStart_ = false;
+	bool unknownSetting_ = false; // Options::unknownSetting, until a mode is set
+	// Control ops queued, and those the writer has applied or dropped; StatusJson waits for
+	// the second to reach what the first was when it was called.
+	uint64_t controlsQueued_ = 0;
+	uint64_t controlsDone_ = 0;
 	bool urgent_ = false;  // a control op is queued: write it without the batching delay
 	bool writing_ = false; // a batch is off the queue and not yet applied
 	bool held_ = false;

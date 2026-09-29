@@ -334,6 +334,13 @@ export interface GeneralSettings {
    * live. Default false, which starts on whichever subset can route and leaves the
    * rest out -- see ScheduleDestinationInfo.blockReason for what was left. */
   scheduleRequireAllDestinations: boolean;
+  /** How long chat history is kept on disk, a ChatHistoryRetention. A change is applied at
+   * once; one that shortens what is kept deletes stored chat (7 days to This session, or
+   * anything to Off -- see retentionChangeDeletes). setGeneral refuses a new value outside
+   * the three, but a value already stored that this build does not know (a newer build's)
+   * comes back as it is, and chat history then runs as 7 days that saves no new chat until
+   * one of the three is chosen. */
+  chatHistoryRetention: string;
   startMinimized: boolean;
   minimizeToTray: boolean;
   alwaysShowTray: boolean;
@@ -2377,14 +2384,20 @@ export interface ObsMethods {
   // started by the host on go-live and stopped on stop -- there is no connect method.
   "chat.send": { ok: boolean };
   "chat.state": ChatState[];
-  // One page of the host's in-memory scrollback (the last 1000 chat.message frames across
-  // every destination), in seq order: params { before?: {seq}; limit?: number (default 50,
-  // max 200); filter?: FeedFilter }. Without `before` it is the newest page. Deduped by
-  // the host already, but a message can still arrive both here and live while the call is
-  // in flight, so a consumer merges by destination + id. Not persisted: empty after a
-  // restart. clear empties it; every consumer resets on chat.cleared.
+  // One page of the host's chat scrollback, in seq order: params { before?: {seq};
+  // limit?: number (default 50, max 200); filter?: FeedFilter }. Without `before` it is the
+  // newest page. Pages come from the in-memory ring (the last 1000 chat.message frames
+  // across every destination) and, past it, from chat.db while chat history is kept
+  // (GeneralSettings.chatHistoryRetention), so what survives a restart follows that
+  // setting. Rejects, rather than returning an empty page, while chat.db is still opening.
+  // Deduped by the host already, but a message can still arrive both here and live while
+  // the call is in flight, so a consumer merges by destination + id. clear empties it;
+  // every consumer resets on chat.cleared.
   "chat.list": FeedPage<ChatMessage>;
   "chat.clear": { epoch: number };
+  // What Settings shows about stored chat history (async lane: it reads chat.db, and waits
+  // briefly for a retention change or a clear just made to land first).
+  "chat.historyStatus": ChatHistoryStatus;
   // Live polls. create ({accountId, profileUuid?, question, options: string[2..4]}) opens
   // one in that destination's broadcast chat and remembers it as a template; end ({id})
   // closes it and returns the final tallies when the platform reports them; dismiss ({id})
@@ -2688,6 +2701,37 @@ export interface ObsEvents {
 
 /** Which items the preview draws overflow for: none, the selected ones, or every one. */
 export type PreviewOverflowMode = "hidden" | "selection" | "always";
+
+/** GeneralSettings.chatHistoryRetention: nothing stored, this launch only, or 7 days. */
+export type ChatHistoryRetention = "off" | "session" | "7d";
+
+/** The state of chat history on disk (chat.historyStatus). "unknown-setting": the stored
+ * retention is not one this build knows; what is stored is kept and removed as 7 days
+ * keeps it, and new chat is not saved. */
+export type ChatHistoryState =
+  | "off"
+  | "ok"
+  | "disabled"
+  | "recovered"
+  | "newer-schema"
+  | "degraded"
+  | "unknown-setting";
+
+export interface ChatHistoryStatus {
+  status: ChatHistoryState;
+  /** "recovered": the name the damaged file was set aside under, or empty when it was
+   * deleted instead. "unknown-setting": the stored value. "newer-schema", "disabled",
+   * "degraded": why. Otherwise empty. */
+  detail: string;
+  /** Messages stored on disk, less any a clear still in flight already hides. */
+  rows: number;
+  /** A chat history file, or a set-aside copy of one, is on disk, whatever the status
+   * (Off leaves a newer build's file, or one another Braidcast holds). */
+  onDisk: boolean;
+  /** Platforms whose deletes and bans the app applies to stored chat. Every other
+   * platform's chat is kept for the current session only. */
+  moderatedPlatforms: string[];
+}
 
 export interface PreviewOverlays {
   overflow: PreviewOverflowMode;

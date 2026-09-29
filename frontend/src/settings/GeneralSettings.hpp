@@ -3,6 +3,8 @@
 
 #include <string>
 
+#include "../chat/chat_retention.hpp"
+
 // The default preview overflow mode, named so the preview can check it against its own
 // token table at compile time.
 inline constexpr const char *kDefaultPreviewOverflow = "selection";
@@ -36,6 +38,11 @@ struct GeneralSettings {
 	// Whether a scheduled entry refuses to start unless every destination it names can
 	// go live. Off keeps the entry going live with whatever subset can route.
 	bool scheduleRequireAllDestinations = false;
+	// --- chat history (applied through Chat::History().SetRetention) ---
+	// A Chat::kRetentionTokens token: "off", "session" or "7d". The commit refuses a new
+	// value outside them; one already in the file is kept as it is, and chat history then
+	// runs as 7 days without saving new chat (ChatArchive::Options::unknownSetting).
+	std::string chatHistoryRetention = Chat::RetentionToken(Chat::kDefaultRetention);
 	// --- persisted prefs consumed by later backlog items ---
 	bool startMinimized = false;                   // Item 11 (tray)
 	bool minimizeToTray = false;                   // Item 11
@@ -98,6 +105,7 @@ inline constexpr GeneralBoolField kGeneralBoolFields[] = {
 inline constexpr GeneralStringField kGeneralStringFields[] = {
 	{"multiviewLayout", "multiview_layout", &GeneralSettings::multiviewLayout},
 	{"previewOverflow", "preview_overflow", &GeneralSettings::previewOverflow},
+	{"chatHistoryRetention", "chat_history_retention", &GeneralSettings::chatHistoryRetention},
 };
 inline constexpr GeneralDoubleField kGeneralDoubleFields[] = {
 	{"snapDistance", "snap_distance", &GeneralSettings::snapDistance, 0.0, 100.0},

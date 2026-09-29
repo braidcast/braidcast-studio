@@ -80,6 +80,8 @@ const char *StatusName(ArchiveStatus status)
 		return "newer-schema";
 	case ArchiveStatus::Degraded:
 		return "degraded";
+	case ArchiveStatus::UnknownSetting:
+		return "unknown-setting";
 	}
 	return "unknown";
 }
@@ -291,19 +293,28 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 {
 	const auto started = std::chrono::steady_clock::now();
 	options_ = options;
-	retention_ = options.retention;
+	const bool unknownSetting = options.unknownSetting.has_value();
+	// An unknown setting runs as 7 days, the longest a known one keeps chat, bar the rows.
+	retention_ = unknownSetting ? Retention::SevenDays : options.retention;
 	{
 		std::lock_guard<std::mutex> lock(queueMutex_);
-		mode_ = options.retention;
+		mode_ = retention_;
+		unknownSetting_ = unknownSetting;
 	}
+	bool opened = false;
 	if (retention_ == Retention::Off) {
 		SetStatus(ArchiveStatus::Off, {});
 		RemoveOrOwe(kOffReason);
 	} else if (OpenStore()) {
+		opened = true;
 		Sweep();
 		BuildSeed(seed);
 		persistedSeq_.store(seed.nextSeq - 1, std::memory_order_release);
-		active_.store(true, std::memory_order_release);
+		if (unknownSetting) {
+			SetStatus(ArchiveStatus::UnknownSetting, *options.unknownSetting);
+		} else {
+			active_.store(true, std::memory_order_release);
+		}
 	} else if (Status() == ArchiveStatus::NewerSchema) {
 		// chat.db stays exactly as the newer build left it; the copies this one set aside
 		// still age out.
@@ -311,7 +322,7 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 	}
 	const int64_t kept = count_; // the writer owns count_ once it runs
 	bool writing = true;
-	if (active_.load(std::memory_order_acquire)) {
+	if (opened) {
 		std::lock_guard<std::mutex> lock(queueMutex_);
 		writing = StartWriterLocked();
 	}
@@ -397,7 +408,10 @@ void ChatArchive::EnqueueControl(Op op)
 	bool started = true;
 	{
 		std::lock_guard<std::mutex> lock(queueMutex_);
-		if (stopped_ || NothingToReachLocked()) {
+		if (stopped_) {
+			return;
+		}
+		if (NothingToReachLocked()) {
 			return;
 		}
 		PushControlLocked(std::move(op));
@@ -417,6 +431,7 @@ void ChatArchive::PushControlLocked(Op op)
 		pending_.push_back(*purge);
 	}
 	PushLocked(std::move(op));
+	++controlsQueued_;
 	urgent_ = true;
 	wake_.notify_one();
 }
@@ -430,6 +445,13 @@ void ChatArchive::SetRetention(Retention retention, uint64_t lastIssuedSeq)
 			return;
 		}
 		const bool offSinceOpen = NothingToReachLocked();
+		if (unknownSetting_) {
+			unknownSetting_ = false;
+			if (status_ == ArchiveStatus::UnknownSetting) {
+				status_ = ArchiveStatus::Ok;
+				statusDetail_.clear();
+			}
+		}
 		mode_ = retention;
 		if (retention == Retention::Off) {
 			active_.store(false, std::memory_order_release);
@@ -469,6 +491,7 @@ bool ChatArchive::StartWriterLocked()
 		active_.store(false, std::memory_order_release);
 		ops_.clear();
 		pending_.clear();
+		controlsDone_ = controlsQueued_;
 		urgent_ = false;
 		if (!degraded_) {
 			degraded_ = true;
@@ -666,6 +689,15 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 	return out;
 }
 
+bool ChatArchive::Readable() const
+{
+	if (Active()) {
+		return true;
+	}
+	std::lock_guard<std::mutex> lock(queueMutex_);
+	return unknownSetting_ && !degraded_ && !stopped_;
+}
+
 ArchiveStatus ChatArchive::Status() const
 {
 	std::lock_guard<std::mutex> lock(queueMutex_);
@@ -676,6 +708,41 @@ std::string ChatArchive::StatusDetail() const
 {
 	std::lock_guard<std::mutex> lock(queueMutex_);
 	return statusDetail_;
+}
+
+json ChatArchive::StatusJson(std::chrono::milliseconds settle)
+{
+	json out{{"moderatedPlatforms", options_.moderatedPlatforms}};
+	{
+		std::unique_lock<std::mutex> lock(queueMutex_);
+		const uint64_t queued = controlsQueued_;
+		idle_.wait_for(lock, settle, [&] { return controlsDone_ >= queued; });
+		out["status"] = StatusName(status_);
+		out["detail"] = statusDetail_;
+	}
+	bool onDisk = false;
+	if (!options_.path.empty()) {
+		std::error_code ec;
+		onDisk = fs::exists(fs::u8path(options_.path), ec);
+		ForEachQuarantined([&](const fs::path &, const std::string &) { onDisk = true; });
+	}
+	out["onDisk"] = onDisk;
+	int64_t rows = 0;
+	{
+		std::lock_guard<std::mutex> lock(readMutex_);
+		if (readDb_) {
+			// Rows a queued Clear has already hidden from readers are not counted either.
+			Statement stmt(readDb_, "SELECT count(*) FROM messages WHERE seq >= ?1");
+			if (stmt) {
+				stmt.Bind(1, SqlSeq(clearedBelow_.load(std::memory_order_acquire)));
+				if (stmt.Step() == SQLITE_ROW) {
+					rows = sqlite3_column_int64(stmt.get(), 0);
+				}
+			}
+		}
+	}
+	out["rows"] = rows;
+	return out;
 }
 
 void ChatArchive::SetStatus(ArchiveStatus status, std::string detail)
@@ -767,6 +834,9 @@ void ChatArchive::WriterLoop()
 		ops_.clear();
 		urgent_ = false;
 		writing_ = true;
+		const auto controls = static_cast<uint64_t>(std::count_if(batch.begin(), batch.end(), [](const Op &op) {
+			return !std::holds_alternative<Row>(op);
+		}));
 		lock.unlock();
 
 		// An exception escaping this thread would end the process.
@@ -782,6 +852,7 @@ void ChatArchive::WriterLoop()
 
 		lock.lock();
 		writing_ = false;
+		controlsDone_ += controls;
 		idle_.notify_all();
 	}
 }
@@ -1028,14 +1099,17 @@ void ChatArchive::ApplyMode(Retention retention)
 		}
 		if (!OpenStore()) {
 			StopPersisting();
+			// The copies set aside still age out, and This session still removes them all.
+			WithStoreLock([this] { SweepQuarantined(); });
 			return;
 		}
 		SetOwedRemoval({}); // the file an Off could not remove is the live store again
-		// Off leaves no rows behind, so any found here are ones an Off failed to remove.
-		// They predate this launch's seqs, which would collide with them on the key.
+		// The store was not open when this launch seeded its seqs: an Off could not
+		// remove it, or it could not be opened then. Rows found in it may share a seq with
+		// this launch's, which would collide on the key.
 		if (count_ > 0) {
 			HostLog("[chat-archive] removing " + std::to_string(count_) +
-				" row(s) left from before chat history was turned off");
+				" row(s) this launch did not start from");
 			db_.Exec("DELETE FROM messages");
 			count_ = 0;
 			Checkpoint();
@@ -1157,13 +1231,21 @@ bool ChatArchive::OpenStore()
 			corrupt = true;
 		}
 	}
-	std::string recovered;
+	// Recovered names the copy it set aside in its detail; in Session mode the unreadable
+	// file is deleted instead, and the detail is empty.
+	bool recovered = false;
+	std::string setAside;
 	if (!opened) {
 		if (!corrupt) {
 			return giveUp(ArchiveStatus::Disabled, db_.LastError());
 		}
-		recovered = retention_ == Retention::Session ? DiscardCorrupt() : Quarantine();
-		if (recovered.empty()) {
+		if (retention_ == Retention::Session) {
+			recovered = DiscardCorrupt();
+		} else {
+			setAside = Quarantine();
+			recovered = !setAside.empty();
+		}
+		if (!recovered) {
 			return giveUp(ArchiveStatus::Disabled,
 				      "chat.db is unreadable and could not be moved out of the way");
 		}
@@ -1200,7 +1282,7 @@ bool ChatArchive::OpenStore()
 		std::lock_guard<std::mutex> lock(readMutex_);
 		readDb_ = reader;
 	}
-	SetStatus(recovered.empty() ? ArchiveStatus::Ok : ArchiveStatus::Recovered, recovered);
+	SetStatus(recovered ? ArchiveStatus::Recovered : ArchiveStatus::Ok, setAside);
 	return true;
 }
 
@@ -1285,6 +1367,7 @@ void ChatArchive::DeleteQuarantined(bool all)
 {
 	const std::time_t now = std::time(nullptr);
 	int removed = 0;
+	std::vector<std::string> names;
 	ForEachQuarantined([&](const fs::path &path, const std::string &stamp) {
 		// A name this archive did not stamp still carries its prefix, so it is its copy.
 		const std::optional<std::time_t> at = QuarantineTime(stamp);
@@ -1294,12 +1377,20 @@ void ChatArchive::DeleteQuarantined(bool all)
 		std::error_code ec;
 		if (fs::remove(path, ec)) {
 			++removed;
+			names.push_back(path.filename().u8string());
 		} else if (ec) {
 			HostLog("[chat-archive] could not delete " + path.filename().u8string() + ": " + ec.message());
 		}
 	});
 	if (removed > 0) {
 		HostLog("[chat-archive] deleted " + std::to_string(removed) + " quarantined chat.db file(s)");
+		// Recovered names the copy it set aside; once that copy is gone it is plain Ok.
+		std::lock_guard<std::mutex> lock(queueMutex_);
+		if (status_ == ArchiveStatus::Recovered &&
+		    std::find(names.begin(), names.end(), statusDetail_) != names.end()) {
+			status_ = ArchiveStatus::Ok;
+			statusDetail_.clear();
+		}
 	}
 }
 
@@ -1429,14 +1520,14 @@ bool ChatArchive::DeleteStoreFiles()
 	return true;
 }
 
-std::string ChatArchive::DiscardCorrupt()
+bool ChatArchive::DiscardCorrupt()
 {
 	if (!DeleteStoreFiles()) {
-		return {};
+		return false;
 	}
 	HostLog("[chat-archive] chat.db was unreadable; deleted it, since chat history is kept for this session "
 		"only, and started a fresh one");
-	return "an unreadable chat.db was deleted";
+	return true;
 }
 
 void ChatArchive::BuildSeed(Seed &seed)

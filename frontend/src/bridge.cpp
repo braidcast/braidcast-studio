@@ -985,25 +985,38 @@ bool MethodSettingsGetGeneral(const json & /*params*/, json &result, std::string
 }
 
 // The one commit for General settings: every write to them ends here, so what a preview
-// draws cannot come to disagree with the file. It checks one field, the preview overflow
-// mode, because settings.setGeneral accepts any string for it, and refuses an unknown
-// mode without touching anything. Otherwise it adopts `next`, saves, live-applies the
-// wired effects (the preview overlays and projectors' always-on-top) and broadcasts the
-// full state.
+// draws cannot come to disagree with the file. It checks the two enum fields, the preview
+// overflow mode and the chat history retention, because settings.setGeneral accepts any
+// string for them, and refuses an unknown value without touching anything (a retention
+// the file already held is kept as it is; see ChatArchiveOptions). Otherwise it
+// adopts `next`, saves, live-applies the wired effects (the preview overlays, projectors'
+// always-on-top and a changed retention) and broadcasts the full state.
 bool CommitGeneral(const GeneralSettings &next, json &result, std::string &error)
 {
 	if (!Preview::OverlaysFromSettings(next)) {
 		error = "unknown preview overflow mode '" + next.previewOverflow + "'";
 		return false;
 	}
-
+	// A stored value this build does not know rides along unchanged with an edit to another
+	// field; only a new one is refused.
 	GeneralSettings &g = ObsBootstrap::General();
+	const bool retentionChanged = g.chatHistoryRetention != next.chatHistoryRetention;
+	const std::optional<Chat::Retention> retention = Chat::RetentionFromToken(next.chatHistoryRetention);
+	if (!retention && retentionChanged) {
+		error = "unknown chat history retention '" + next.chatHistoryRetention + "'";
+		return false;
+	}
+
 	g = next;
 	const bool saved = g.Save();
 
 	Preview::LoadOverlays(g);
 	if (Projector::Instance()) {
 		Projector::Instance()->ApplyAlwaysOnTop(g.projectorAlwaysOnTop);
+	}
+	// Only enqueues: the writer thread does the deleting, so a slow disk never holds TID_UI.
+	if (retention && retentionChanged) {
+		Chat::History().SetRetention(*retention);
 	}
 
 	result = GeneralToJson(g);
@@ -14015,8 +14028,9 @@ bool ParseChatCursor(const json &params, std::optional<uint64_t> &out, std::stri
 // dock can open on the newest messages and page back as the reader scrolls up. On the
 // async lane rather than the sync one so TID_UI, where every on-stream browser source
 // renders, never contends for the lock every chat transport's emit also takes. The reply
-// is still serialized on TID_UI when the lane resolves. The body touches the ring alone
-// (its own mutex), never the bridge or CEF.
+// is still serialized on TID_UI when the lane resolves. The body touches the ring (its own
+// mutex) and, past it, chat.db through the archive's read connection; never the bridge or
+// CEF.
 bool MethodChatList(const json &params, json &result, std::string &error)
 {
 	Feed::Filter filter;
@@ -14044,6 +14058,19 @@ bool MethodChatClear(const json & /*params*/, json &result, std::string & /*erro
 	const uint64_t epoch = Chat::History().Clear();
 	EmitEvent(EventNames::kChatCleared, json{{"epoch", epoch}});
 	result = json{{"epoch", epoch}};
+	return true;
+}
+
+// How long chat.historyStatus waits for the writer to apply a retention change or a Clear
+// the caller has just made, before it answers with what is there.
+constexpr std::chrono::milliseconds kHistoryStatusSettle{1000};
+
+// The chat history line in Settings: {status, detail, rows, onDisk, moderatedPlatforms}. On the
+// async lane because it reads chat.db and may wait on the writer; it reports counts and
+// file names only, never a message.
+bool MethodChatHistoryStatus(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Chat::Archive().StatusJson(kHistoryStatusSettle);
 	return true;
 }
 
@@ -15443,6 +15470,10 @@ void Init()
 		{"chat.list",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.list", p, cb, MethodChatList);
+		 }},
+		{"chat.historyStatus",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("chat.historyStatus", p, cb, MethodChatHistoryStatus);
 		 }},
 		{"polls.create",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {

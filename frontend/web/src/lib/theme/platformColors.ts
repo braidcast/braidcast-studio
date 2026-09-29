@@ -51,9 +51,9 @@ export function platformName(raw: string): string {
 }
 
 /** Stable platform order so chip rows / filters never reshuffle. Chat/event surfaces
- * only — a platform belongs here once it has a chat transport, so Facebook is absent:
- * listing it would have the multichat dock report a connected platform as "not armed"
- * for a feed that does not exist yet. */
+ * only. Facebook is not listed, although it has a chat transport
+ * (frontend/src/chat/facebook_chat.cpp), so oauthStore.connectedPlatforms and the
+ * surfaces ordered by it leave Facebook out. */
 export const PLATFORM_ORDER = ["twitch", "youtube", "kick"] as const;
 
 /**

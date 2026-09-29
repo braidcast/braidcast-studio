@@ -163,7 +163,7 @@ ChatPage ChatHistory::Page(std::optional<uint64_t> beforeSeq, size_t limit, cons
 		std::lock_guard<std::mutex> lock(mutex_);
 		page.epoch = epoch_;
 		ringOldest = messages_.empty() ? nextSeq_ : messages_.front().seq;
-		readArchive = archive_ && archive_->Active();
+		readArchive = archive_ && archive_->Readable();
 		for (auto it = messages_.rbegin(); it != messages_.rend() && newestFirst.size() <= limit; ++it) {
 			if (beforeSeq && it->seq >= *beforeSeq) {
 				continue;
@@ -176,7 +176,8 @@ ChatPage ChatHistory::Page(std::optional<uint64_t> beforeSeq, size_t limit, cons
 		}
 	}
 	// The ring ran out: the rest comes from disk, starting below everything the ring holds.
-	// Every message older than the ring's oldest was committed before it left the ring.
+	// Every message older than the ring's oldest was committed before it left the ring, or,
+	// while the retention setting is unknown, was never going to be.
 	if (readArchive && newestFirst.size() <= limit) {
 		const uint64_t below = beforeSeq ? std::min(*beforeSeq, ringOldest) : ringOldest;
 		std::optional<std::vector<json>> older =
