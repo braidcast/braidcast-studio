@@ -549,10 +549,9 @@ bool Save()
 
 void Load()
 {
-	const std::string path = MultistreamBasicPath("hotkeys.json");
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	OBSDataAutoRelease root = LoadStoreData(MultistreamBasicPath("hotkeys.json"));
 	if (!root) {
-		return; // no saved file yet -- registerers' own bindings stand
+		return; // no saved file yet, or one kept aside as unusable -- registerers' own bindings stand
 	}
 
 	// For each live hotkey, if the file has an entry under its name, load it. Looking

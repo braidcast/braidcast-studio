@@ -159,9 +159,10 @@ size_t PruneOutputBindingsForCanvas(const std::string &canvasUuid);
 // persist. Call after loading the collection's bindings: canvases are global and
 // bindings are per-collection, so a canvas deleted while another collection was
 // active leaves that collection's rows dangling with nothing to prune them.
-// No-ops when the canvas store is empty, which means it failed to load rather than
-// that every canvas is gone -- pruning against an empty store would delete every
-// binding the user has. Returns the number pruned.
+// No-ops over an empty canvas store, and while it holds the fallback seeded over an
+// unusable canvases.json (CanvasStore::LoadedUnusable, for the session): the user's
+// canvases are not in it, so pruning against it would delete every binding on them.
+// Returns the number pruned.
 size_t ReconcileOutputBindings();
 
 // The encode-once / fan-out streaming engine, owned by the bootstrap
@@ -604,6 +605,15 @@ void RunScheduleSelfTest();
 // made. Gated by the caller to the smoke path.
 void RunMcpSelfTest();
 void RunMcpUnreadableConfigSelfTest();
+// Headless proof for #30's shared store load, against throwaway files beside the real
+// stores that it removes afterwards: an unusable file is kept aside once and reported, a
+// first run and an OnUnusable::Leave store copy nothing, an OutputBindingStore skips
+// saving its fallback over the file until it changes, as does an OverlayStore at its boot
+// SetPort and a StreamProfileStore (whose unusable report, which gates the orphaned-account
+// reclaim, outlasts that first save), and bindings are not pruned against canvases seeded
+// over an unusable file.
+// Gated by the caller to the smoke path.
+void RunStoreKeepAsideSelfTest();
 // Headless proof for the CEF remote-debugging gate: assert the environment-only
 // opt-in resolves closed when nothing names it, that DevToolsPort::Active() (what
 // main.cpp handed CefSettings) agrees with a fresh resolution, and that

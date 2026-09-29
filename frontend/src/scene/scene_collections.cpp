@@ -235,7 +235,7 @@ bool SceneCollections::RebuildFromScenes()
 	tryScene("scene_collection.json", "Untitled");
 
 	// Every per-collection scene file under scenes/, excluding the per-collection
-	// siblings (output bindings, scene links) and any .bak.
+	// siblings (output bindings, scene links), any .bak, and the copies of unusable ones.
 	const std::string scenesDir = MultistreamBasicPath("scenes");
 	std::error_code scanEc;
 	for (std::filesystem::directory_iterator it(std::filesystem::u8path(scenesDir), scanEc), end;
@@ -250,7 +250,7 @@ bool SceneCollections::RebuildFromScenes()
 			continue;
 		}
 		if (fname.find(".output_bindings.json") != std::string::npos ||
-		    fname.find(".scene_links.json") != std::string::npos) {
+		    fname.find(".scene_links.json") != std::string::npos || IsUnusableStoreCopy(fname)) {
 			continue;
 		}
 		const std::string slug = fname.substr(0, fname.size() - suffix.size());
@@ -430,6 +430,7 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// comes up with a fresh placeholder Default scene instead of an empty world.
 	if (!SceneCollection::Load(ActiveScenePath())) {
 		ObsBootstrap::CreateDefaultSceneDetached();
+		SceneCollection::HoldFallback();
 	}
 
 	// Re-wrap the now-current scene on channel 0 with the program transition, exactly

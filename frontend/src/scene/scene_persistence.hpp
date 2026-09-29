@@ -57,13 +57,19 @@ void Save(const std::string &path);
 
 // Restore the active collection and bind channel 0 to the saved current scene
 // (falling back to the first loaded scene). Returns true when a collection was
-// loaded and a scene bound; false when no file exists or it holds no scenes, in
-// which case the caller builds the placeholder default scene. Either outcome also
-// seeds + re-binds every additional canvas's scene internally (idempotent), so all
-// callers -- boot and collection switch alike -- restore canvas scenes for free.
+// loaded and a scene bound; false when no file exists, it could not be used (it is
+// then kept aside, LoadStoreData) or it holds no scenes, in which case the caller
+// builds the placeholder default scene and then calls HoldFallback. Either outcome
+// also seeds + re-binds every additional canvas's scene internally (idempotent), so
+// all callers -- boot and collection switch alike -- restore canvas scenes for free.
 bool Load();
 // Restore from an explicit file path.
 bool Load(const std::string &path);
+
+// After the placeholder built for a Load that returned false: when that Load kept its
+// file aside as unusable, Save skips writing the placeholder over it (the shutdown save,
+// the switch flush) until the collection changes (UnusableStoreHold).
+void HoldFallback();
 
 // Remove the active collection's scene world from libobs -- main-canvas scenes +
 // plain inputs (exactly the set Save persists) -- preserving the channel 1-6 global

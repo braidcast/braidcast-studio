@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "overlay_template.hpp"
+#include "../multistream/StorePaths.hpp"
 
 namespace Overlay {
 
@@ -98,7 +99,9 @@ std::string WidgetUrl(const Widget &w, int port);
 // The persisted widget registry (global overlays.json).
 class OverlayStore {
 public:
-	OverlayStore() { Load(); }
+	OverlayStore() : OverlayStore(FilePath()) {}
+	// A store on another file than overlays.json; the self-test's throwaway one.
+	explicit OverlayStore(std::string path) : path_(std::move(path)) { Load(); }
 
 	std::vector<Widget> List() const;                       // copy, mutex-guarded
 	std::optional<Widget> Get(const std::string &id) const; // by id
@@ -184,7 +187,11 @@ private:
 	// save overwrites it. `asRead` is what Load() parsed, used only when the file itself
 	// can no longer be read.
 	void WritePreMigrationBackup(const std::string &path, const json &asRead) const;
+	// The widgets as Save writes them, and what UnusableStoreHold compares: the port is
+	// left out because only the server's own bind at start (SetPort) ever changes it.
+	json WidgetsJson() const;
 
+	const std::string path_;
 	mutable std::mutex mutex_;
 	std::vector<Widget> widgets_;
 	int port_ = 43000;
@@ -197,6 +204,10 @@ private:
 	// mutations do not check it and are lost at the next start, which is why Load() warns
 	// once and says so. Save() carries the full account.
 	bool upgradeDeferred_ = false;
+	// Armed when Load() kept an unusable overlays.json aside, so the empty store it runs on
+	// is not saved over that file (SetPort does it at every server start) until the
+	// widgets change. Save is const, but the hold records whether a save has happened.
+	mutable UnusableStoreHold hold_;
 };
 
 OverlayStore &Store(); // function-local static singleton (lives to process exit)

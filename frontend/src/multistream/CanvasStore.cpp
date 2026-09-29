@@ -39,7 +39,12 @@ void CanvasStore::FromJson(const nlohmann::json &j)
 
 void CanvasStore::Load()
 {
-	FromJson(LoadStoreJson(FilePath()));
+	Load(FilePath());
+}
+
+void CanvasStore::Load(const std::string &path)
+{
+	FromJson(LoadStoreJson(path, OnUnusable::Keep, &loadedUnusable));
 }
 
 bool CanvasStore::Save() const

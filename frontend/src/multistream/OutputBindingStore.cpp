@@ -32,7 +32,10 @@ void OutputBindingStore::Load()
 
 void OutputBindingStore::Load(const std::string &path)
 {
-	FromJson(LoadStoreJson(path));
+	bool unusable = false;
+	FromJson(LoadStoreJson(path, OnUnusable::Keep, &unusable));
+	// The collection switch and duplicate flush the bindings with no change of their own.
+	hold.AfterLoad(unusable, ToJson().dump());
 }
 
 bool OutputBindingStore::Save() const
@@ -42,5 +45,9 @@ bool OutputBindingStore::Save() const
 
 bool OutputBindingStore::Save(const std::string &path) const
 {
-	return SaveStoreJson(ToJson(), path);
+	const nlohmann::json root = ToJson();
+	if (hold.Skips(root.dump())) {
+		return true;
+	}
+	return SaveStoreJson(root, path);
 }

@@ -35,6 +35,11 @@ namespace {
 // obs_enum_scenes and obs_canvas_enum_scenes both yield creation order.
 std::map<std::string, std::vector<std::string>> g_sceneOrder;
 
+// Whether the last Load kept its file aside as unusable, and the hold HoldFallback arms
+// from it so the placeholder built in its place is never saved over that file.
+bool g_loadedUnusable = false;
+UnusableStoreHold g_hold;
+
 // Collect a scene's uuid into the std::vector<std::string> passed as `param`. The
 // callback shape both obs_enum_scenes and obs_canvas_enum_scenes take.
 bool CollectSceneUuid(void *param, obs_source_t *source)
@@ -218,14 +223,8 @@ const std::vector<std::string> &SceneOrderToPersist(const std::string &canvasUui
 	return g_sceneOrder[canvasUuid];
 }
 
-} // namespace
-
-void Save()
-{
-	Save(ObsBootstrap::SceneCollections().ActiveScenePath());
-}
-
-void Save(const std::string &path)
+// The collection as Save writes it.
+OBSDataAutoRelease BuildCollectionData()
 {
 	SaveContext ctx;
 	OBSSourceAutoRelease audioRefs[6];
@@ -284,8 +283,37 @@ void Save(const std::string &path)
 		obs_data_array_push_back(sceneOrder, item);
 	}
 	obs_data_set_array(root, "scene_order", sceneOrder);
+	return root;
+}
 
+std::string SerializedCollection(obs_data_t *root)
+{
+	const char *json = obs_data_get_json(root);
+	return json ? json : "";
+}
+
+} // namespace
+
+void Save()
+{
+	Save(ObsBootstrap::SceneCollections().ActiveScenePath());
+}
+
+void Save(const std::string &path)
+{
+	OBSDataAutoRelease root = BuildCollectionData();
+	if (g_hold.Armed() && g_hold.Skips(SerializedCollection(root))) {
+		return;
+	}
 	ReportSaveResult(SaveJsonAtomic(root, path), path);
+}
+
+void HoldFallback()
+{
+	if (g_loadedUnusable) {
+		OBSDataAutoRelease root = BuildCollectionData();
+		g_hold.AfterLoad(true, SerializedCollection(root));
+	}
 }
 
 bool Load()
@@ -298,10 +326,12 @@ bool Load(const std::string &path)
 	// Reset first: a collection switch loads a different file, and a stale order
 	// from the outgoing collection must never leak into the incoming one.
 	g_sceneOrder.clear();
+	g_hold = UnusableStoreHold();
 
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	OBSDataAutoRelease root = LoadStoreData(path, &g_loadedUnusable);
 	if (!root) {
-		RestoreCanvasScenes({}); // never-saved collection: still seed empty additional canvases
+		// Never saved, or kept aside as unusable: still seed empty additional canvases.
+		RestoreCanvasScenes({});
 		return false;
 	}
 

@@ -349,6 +349,23 @@ void MaterializeTargetDestinationsAtBoot()
 	if (Env::IsSelfTestRun()) {
 		return;
 	}
+	// Every owned profile reads as unclaimed without stream_meta.json's claims, and a pass
+	// that adopts or creates saves stream meta and bindings: a change of the pass's own, not
+	// the user's, over a file that could not be read. The connect flow's own reconcile is the
+	// user's action and still runs.
+	std::string unusable;
+	for (const auto &[loadedUnusable, file] :
+	     {std::pair{ObsBootstrap::StreamProfiles().LoadedUnusable(), "streams.json"},
+	      std::pair{ObsBootstrap::StreamMeta().LoadedUnusable(), "stream_meta.json"},
+	      std::pair{ObsBootstrap::OutputBindings().LoadedUnusable(), "the collection's output bindings"}}) {
+		if (loadedUnusable) {
+			unusable += (unusable.empty() ? "" : ", ") + std::string(file);
+		}
+	}
+	if (!unusable.empty()) {
+		HostLog("[oauth] boot target reconcile skipped: " + unusable + " could not be used");
+		return;
+	}
 
 	std::vector<BootReconcile> pending;
 	for (const auto &entry : OAuth::Accounts().All()) {

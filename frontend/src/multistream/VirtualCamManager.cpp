@@ -141,8 +141,7 @@ void VirtualCamManager::ReleaseTargetPreview()
 
 void VirtualCamManager::Load()
 {
-	OBSDataAutoRelease root =
-		obs_data_create_from_json_file_safe(MultistreamBasicPath("virtualcam.json").c_str(), "bak");
+	OBSDataAutoRelease root = LoadStoreData(MultistreamBasicPath("virtualcam.json"));
 	if (root) {
 		const char *canvas = obs_data_get_string(root, "canvas");
 		targetCanvas_ = canvas ? canvas : "";

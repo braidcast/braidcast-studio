@@ -10,8 +10,6 @@
 
 #include <uuid_util.hpp>
 
-#include <util/platform.h>
-
 #include <utility>
 
 using json = nlohmann::json;
@@ -54,12 +52,14 @@ void PollTemplateStore::Load()
 	templates_.clear();
 
 	const std::string path = FilePath();
-	const json root = LoadStoreJson(path);
+	bool unusable = false;
+	const json root = LoadStoreJson(path, OnUnusable::Keep, &unusable);
 	const json &stored = JsonUtil::Obj(root, "templates");
 	if (!stored.is_array()) {
-		if (os_file_exists(path.c_str())) {
-			HostLog("[storage] poll_templates.json unreadable or malformed; the saved poll templates it "
-				"held are gone");
+		// A file that reads but holds no template list is kept aside like one that does not
+		// read at all (LoadStoreJson has kept that one).
+		if (!unusable) {
+			KeepUnusableStore(path, "[storage]");
 		}
 		return;
 	}

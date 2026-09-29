@@ -148,7 +148,9 @@ void SetStatsTickObserver(std::function<void(const json &)> observer);
 // references (an orphan stranded when its owning profile was deleted before the delete
 // path cleaned up accounts). Runs the shared account teardown per orphan and pushes
 // oauth.status. Call once at bootstrap, after the profile + account stores load and the
-// provider registry is populated, before the chat/events hubs start. UI thread only.
+// provider registry is populated, before the chat/events hubs start. Skipped for the
+// session when streams.json loaded unusable (StreamProfileStore::LoadedUnusable): every
+// account would read as an orphan. UI thread only.
 void ReconcileOrphanedAccounts();
 
 // Launch-time self-heal: seed "server=auto" (and, if the key itself is missing,
@@ -398,9 +400,11 @@ bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::
 
 // Write/read a single string value under `key` to/from a MultistreamBasicPath
 // JSON file (atomic, with a .bak). Shared by the per-feature key/value stores
-// (audio_devices.json / theme.json / layout.json / transitions.json).
+// (audio_devices.json / theme.json / layout.json / transitions.json). A read that
+// finds the file but cannot use it keeps it aside (LoadStoreData) and reports that
+// through `unusable`.
 bool WriteJsonString(const char *file, const char *key, const std::string &value);
-std::string ReadJsonString(const char *file, const char *key);
+std::string ReadJsonString(const char *file, const char *key, bool *unusable = nullptr);
 
 } // namespace Bridge
 

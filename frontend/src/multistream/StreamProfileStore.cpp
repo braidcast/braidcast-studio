@@ -47,12 +47,31 @@ void StreamProfileStore::FromJson(const nlohmann::json &j)
 
 void StreamProfileStore::Load()
 {
-	FromJson(LoadStoreJson(FilePath()));
+	Load(FilePath());
+}
+
+void StreamProfileStore::Load(const std::string &path)
+{
+	// Not kept aside when unusable: streams.json holds stream keys and bearer tokens, and an
+	// account's removal rewrites it, so a kept copy would outlive a deleted key and a disconnect.
+	// Held in place instead, which is all that protects it.
+	bool unusable = false;
+	FromJson(LoadStoreJson(path, OnUnusable::Leave, &unusable));
+	hold.AfterLoad(unusable, ToJson().dump());
 }
 
 bool StreamProfileStore::Save() const
 {
-	return SaveStoreJson(ToJson(), FilePath());
+	return Save(FilePath());
+}
+
+bool StreamProfileStore::Save(const std::string &path) const
+{
+	const nlohmann::json root = ToJson();
+	if (hold.Skips(root.dump())) {
+		return true;
+	}
+	return SaveStoreJson(root, path);
 }
 
 StreamProfile *StreamProfileStore::Primary()

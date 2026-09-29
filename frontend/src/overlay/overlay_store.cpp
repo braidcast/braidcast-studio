@@ -4,6 +4,7 @@
 #include "../multistream/StorePaths.hpp"
 #include "overlay_template.hpp"
 #include "util/file_util.hpp"
+#include "util/json_util.hpp"
 #include "util/random_util.hpp"
 #include "uuid_util.hpp"
 
@@ -803,41 +804,30 @@ void OverlayStore::RemoveForTest(const std::string &id)
 void OverlayStore::Load()
 {
 	// Called from the ctor before `this` is visible to any other thread, so no lock.
-	const std::string path = FilePath();
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	bool unusable = false;
+	OBSDataAutoRelease root = LoadStoreData(path_, &unusable, "[overlay]");
 	const char *js = root ? obs_data_get_json(root) : nullptr;
-	if (!js) {
-		return;
-	}
-	json parsed;
-	try {
-		parsed = json::parse(js);
-	} catch (const std::exception &e) {
-		// A corrupt file starts the store empty rather than aborting boot, but the lost
-		// widgets must not read as "none configured".
-		HostLog(std::string("[overlay] overlays.json unparseable (") + e.what() +
-			"); starting with no widgets");
-		return;
-	}
-	if (!parsed.is_object()) {
+	const json parsed = js ? JsonUtil::ParseJson(js) : json();
+	const json &widgets = JsonUtil::Obj(parsed, "widgets");
+	if (!widgets.is_array()) {
+		// Starting empty rather than aborting boot. A file that reads but holds no widget
+		// list is kept aside like one that does not read at all (LoadStoreData has kept that
+		// one), so its widgets are not lost to the empty store's first save.
+		if (!unusable) {
+			unusable = KeepUnusableStore(path_, "[overlay]");
+		}
+		hold_.AfterLoad(unusable, WidgetsJson().dump());
 		return;
 	}
 	port_ = parsed.value("port", 43000);
 	// Every document written before the field existed is a v1 document.
 	const bool migrating = parsed.value("version", 1) < kStoreVersion;
-	const json *widgets = nullptr;
-	if (parsed.contains("widgets") && parsed["widgets"].is_array()) {
-		widgets = &parsed["widgets"];
-	}
 	// Asked before a single widget is converted, because the answer decides whether
 	// anything at all may be written for the rest of the session.
-	const std::optional<std::string> unreadableType =
-		migrating && widgets != nullptr ? FirstTypeStillPartial(*widgets) : std::nullopt;
+	const std::optional<std::string> unreadableType = migrating ? FirstTypeStillPartial(widgets) : std::nullopt;
 	upgradeDeferred_ = unreadableType.has_value();
-	if (widgets != nullptr) {
-		for (const json &item : *widgets) {
-			widgets_.push_back(migrating ? MigrateV1Widget(item) : Widget::FromJson(item));
-		}
+	for (const json &item : widgets) {
+		widgets_.push_back(migrating ? MigrateV1Widget(item) : Widget::FromJson(item));
 	}
 
 	// The server refuses a request whose token is empty, so a stored widget without one
@@ -882,7 +872,7 @@ void OverlayStore::Load()
 		// The whole conversion happened in memory above, so nothing on disk has moved
 		// yet and a throw on the way here would have left the v1 file exactly as it was.
 		// The copy goes down before the save that replaces it.
-		WritePreMigrationBackup(path, parsed);
+		WritePreMigrationBackup(path_, parsed);
 		HostLog("[overlay] overlays.json upgraded to v" + std::to_string(kStoreVersion) + " (" +
 			std::to_string(widgets_.size()) + " widgets)");
 		if (!Save()) {
@@ -953,12 +943,21 @@ bool OverlayStore::Save() const
 		// Not logged here: SetPort alone would reach it once per boot.
 		return false;
 	}
+	json arr = WidgetsJson();
+	if (hold_.Skips(arr.dump())) {
+		return true;
+	}
+	json root = json{{"version", kStoreVersion}, {"port", port_}, {"widgets", std::move(arr)}};
+	return SaveStoreJson(root, path_);
+}
+
+json OverlayStore::WidgetsJson() const
+{
 	json arr = json::array();
 	for (const Widget &w : widgets_) {
 		arr.push_back(w.ToJson());
 	}
-	json root = json{{"version", kStoreVersion}, {"port", port_}, {"widgets", std::move(arr)}};
-	return SaveStoreJson(root, FilePath());
+	return arr;
 }
 
 OverlayStore &Store()

@@ -3,6 +3,7 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "main_channel.hpp"
+#include "multistream/StorePaths.hpp"
 
 #include <obs.hpp>
 
@@ -114,15 +115,17 @@ void Persist()
 }
 
 // Load the persisted {id, durationMs} into g_typeId/g_durationMs, defaulting on
-// absence or any parse failure. Never throws.
-void LoadPersisted()
+// absence or any parse failure. Never throws. False when the file was there but could not
+// be used (it is kept aside), so the defaults must not be saved over it.
+bool LoadPersisted()
 {
 	g_typeId = kDefaultId;
 	g_durationMs = kDefaultDurationMs;
 
-	const std::string raw = Bridge::ReadJsonString(kStoreFile, kStoreKey);
+	bool unusable = false;
+	const std::string raw = Bridge::ReadJsonString(kStoreFile, kStoreKey, &unusable);
 	if (raw.empty()) {
-		return;
+		return !unusable;
 	}
 	try {
 		const json state = json::parse(raw);
@@ -139,14 +142,17 @@ void LoadPersisted()
 	} catch (const std::exception &) {
 		g_typeId = kDefaultId;
 		g_durationMs = kDefaultDurationMs;
+		// The file read but the state in it did not, which leaves it as unusable.
+		return !KeepUnusableStore(MultistreamBasicPath(kStoreFile), "[transition]");
 	}
+	return true;
 }
 
 } // namespace
 
 void Init()
 {
-	LoadPersisted();
+	const bool loaded = LoadPersisted();
 	if (!IsKnownType(g_typeId)) {
 		g_typeId = kDefaultId;
 	}
@@ -168,7 +174,9 @@ void Init()
 
 	g_transition = transition; // adopt the create-ref
 	HostLog("[transition] init '" + g_typeId + "' duration=" + std::to_string(g_durationMs) + "ms");
-	Persist();
+	if (loaded) {
+		Persist();
+	}
 }
 
 void Shutdown()

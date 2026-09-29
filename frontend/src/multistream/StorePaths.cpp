@@ -94,6 +94,26 @@ nlohmann::json JsonFromData(obs_data_t *data)
 	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
 }
 
+// Names a copy KeepUnusableStoreFile made: <stem>.failed-<local time>.json.
+constexpr char kUnusableCopyInfix[] = ".failed-";
+
+// Whether the store file at `absPath` or its ".bak" is on disk, i.e. whether a load that
+// got nothing usable found something rather than a first run.
+bool StoreFileOnDisk(const std::string &absPath)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	return !absPath.empty() &&
+	       (fs::exists(fs::u8path(absPath), ec) || fs::exists(fs::u8path(absPath + ".bak"), ec));
+}
+
+// The one "<file> could not be used" line, so a Keep and a Leave store read alike in the log.
+void LogUnusableStore(const std::string &tag, const std::string &absPath, const std::string &outcome)
+{
+	HostLog(tag + " " + std::filesystem::u8path(absPath).filename().u8string() +
+		" could not be used; running on defaults (" + outcome + ")");
+}
+
 } // namespace
 
 const std::string &BraidcastConfigDir()
@@ -141,7 +161,7 @@ bool ReportSaveResult(bool saved, const std::string &path)
 	return saved;
 }
 
-std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, const std::string &prefix)
+std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath)
 {
 	namespace fs = std::filesystem;
 	const fs::path saved = fs::u8path(absPath);
@@ -150,6 +170,7 @@ std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, c
 		return KeptStoreCopy{};
 	}
 
+	const std::string prefix = UnusableCopyPrefix(absPath);
 	std::error_code ec;
 	for (fs::directory_iterator it(saved.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
 		const std::string name = it->path().filename().u8string();
@@ -171,27 +192,57 @@ std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, c
 	return KeptStoreCopy{name, true};
 }
 
-bool KeepUnusableStore(const std::string &absPath, const std::string &prefix, const std::string &tag)
+std::string UnusableCopyPrefix(const std::string &absPath)
 {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (absPath.empty() ||
-	    (!fs::exists(fs::u8path(absPath), ec) && !fs::exists(fs::u8path(absPath + ".bak"), ec))) {
+	// Store names hold no ".failed-" of their own (fixed names, and collection slugs have no
+	// dots), so this prefix can only ever match copies of this one file.
+	return std::filesystem::u8path(absPath).stem().u8string() + kUnusableCopyInfix;
+}
+
+bool IsUnusableStoreCopy(const std::string &fileName)
+{
+	return fileName.find(kUnusableCopyInfix) != std::string::npos;
+}
+
+bool KeepUnusableStore(const std::string &absPath, const std::string &tag)
+{
+	if (!StoreFileOnDisk(absPath)) {
 		return false;
 	}
-	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(absPath, prefix);
+	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(absPath);
 	const std::string outcome = !kept                ? "a copy could not be written"
 				    : kept->name.empty() ? "nothing in it could be read to keep"
 				    : kept->fresh        ? "kept as " + kept->name
 							 : "already kept as " + kept->name;
-	HostLog(tag + " " + fs::u8path(absPath).filename().u8string() + " could not be read; running on defaults (" +
-		outcome + ")");
+	LogUnusableStore(tag, absPath, outcome);
 	return true;
 }
 
-nlohmann::json LoadStoreJson(const std::string &absPath)
+obs_data_t *LoadStoreData(const std::string &absPath, bool *unusable, const char *tag)
 {
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(absPath.c_str(), "bak");
+	obs_data_t *root = absPath.empty() ? nullptr : obs_data_create_from_json_file_safe(absPath.c_str(), "bak");
+	const bool kept = !root && KeepUnusableStore(absPath, tag);
+	if (unusable) {
+		*unusable = kept;
+	}
+	return root;
+}
+
+nlohmann::json LoadStoreJson(const std::string &absPath, OnUnusable onUnusable, bool *unusable)
+{
+	if (onUnusable == OnUnusable::Keep) {
+		OBSDataAutoRelease root = LoadStoreData(absPath, unusable);
+		return JsonFromData(root);
+	}
+	OBSDataAutoRelease root = absPath.empty() ? nullptr
+						  : obs_data_create_from_json_file_safe(absPath.c_str(), "bak");
+	const bool left = !root && StoreFileOnDisk(absPath);
+	if (left) {
+		LogUnusableStore("[storage]", absPath, "left in place, not copied");
+	}
+	if (unusable) {
+		*unusable = left;
+	}
 	return JsonFromData(root);
 }
 

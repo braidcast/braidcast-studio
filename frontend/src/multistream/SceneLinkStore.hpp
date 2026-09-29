@@ -2,6 +2,8 @@
 
 #include "CanvasSceneLink.hpp"
 
+#include "StorePaths.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -35,4 +37,6 @@ public:
 
 private:
 	CanvasSceneLink links;
+	// Save is const, but the hold records whether a save has happened.
+	mutable UnusableStoreHold hold;
 };

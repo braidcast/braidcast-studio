@@ -41,9 +41,14 @@ void StreamMetaStore::Load()
 {
 	// Read the two stringified-JSON blobs ("channels" / "streams") from
 	// stream_meta.json (key/value envelope like audio_devices.json's "state").
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(FilePath().c_str(), "bak");
+	bool unusable = false;
+	OBSDataAutoRelease root = LoadStoreData(FilePath(), &unusable);
 	channels_ = ParseObjectBlob(root, "channels");
 	streams_ = ParseObjectBlob(root, "streams");
+	// A save with nothing changed (a Settings restore, a stream-meta save of the same bags)
+	// leaves the file alone. The two passes that change it with no user action gate on
+	// LoadedUnusable instead.
+	hold_.AfterLoad(unusable, Serialize());
 }
 
 json StreamMetaStore::ChannelDefaults(const std::string &accountId) const
@@ -73,8 +78,16 @@ void StreamMetaStore::RemoveStreamOverride(const std::string &profileUuid)
 	streams_.erase(profileUuid);
 }
 
+std::string StreamMetaStore::Serialize() const
+{
+	return channels_.dump() + streams_.dump();
+}
+
 bool StreamMetaStore::Save() const
 {
+	if (hold_.Skips(Serialize())) {
+		return true;
+	}
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "channels", channels_.dump().c_str());
 	obs_data_set_string(root, "streams", streams_.dump().c_str());

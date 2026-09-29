@@ -30,7 +30,9 @@ void MaterializeTargetDestinations(const std::string &accountId, const std::stri
 // Call once from bootstrap on the UI thread, after the profile and account stores load
 // and the provider registry is populated. Inert under a smoke/self-test run: those drive
 // the app unattended against the user's real config directory, and this pass writes
-// stream profiles.
+// stream profiles. Also skipped when streams.json, stream_meta.json or the active
+// collection's bindings loaded unusable: the pass would adopt or create against a fallback
+// and save it over the file the user still has.
 void MaterializeTargetDestinationsAtBoot();
 
 // The target one destination claims, as `{"id","name","avatarUrl"}` with empty strings

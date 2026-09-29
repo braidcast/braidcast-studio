@@ -2,6 +2,8 @@
 
 #include "StreamProfile.hpp"
 
+#include "StorePaths.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -17,8 +19,16 @@
 // and on primary removal).
 class StreamProfileStore {
 public:
-	void Load(); // read streams.json (replaces contents; re-points primary if missing)
+	void Load();                        // read streams.json (replaces contents; re-points primary if missing)
+	void Load(const std::string &path); // the same from a specific file
 	bool Save() const;
+	bool Save(const std::string &path) const;
+
+	// Did the last Load find streams.json on disk but unusable? It is left in place, not
+	// copied (it holds stream keys), so the empty list the store then runs on must not be
+	// read as "the user has no destinations": nothing may reclaim an account as unowned
+	// against it. Lasts until the next Load; saving a change does not lift it.
+	bool LoadedUnusable() const { return hold.LoadedUnusable(); }
 
 	// The whole model as JSON, in the SAME shape streams.json holds (the single
 	// serializer; Load/Save route through it). FromJson replaces contents and
@@ -52,4 +62,6 @@ public:
 
 private:
 	std::vector<StreamProfile> profiles;
+	// Save is const, but the hold records whether a save has happened.
+	mutable UnusableStoreHold hold;
 };

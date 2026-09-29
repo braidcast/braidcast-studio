@@ -754,15 +754,43 @@ History::HealthSample SampleFromSnapshot(const Bridge::json &snapshot)
 	return s;
 }
 
+// Remove the bindings routing to a canvas `canvases` does not hold; returns how many.
+// Nothing over an empty store, and nothing while `canvases` loaded unusable: the Default
+// seeded over that file is not the user's set, and pruning against it would delete every
+// binding on their other canvases from a bindings file that is fine. That gate lasts the
+// session, so if the user edits and saves canvases meanwhile, the next launch prunes
+// against the set they saved. A first run (no canvases.json at all) prunes against the
+// seeded Default. The user's own canvas removal prunes through
+// PruneOutputBindingsForCanvas.
+size_t PruneBindingsWithoutCanvas(const CanvasStore &canvases, OutputBindings &model)
+{
+	const auto &defs = canvases.Definitions();
+	if (defs.empty() || canvases.LoadedUnusable()) {
+		return 0;
+	}
+	auto &bindings = model.bindings;
+	const size_t before = bindings.size();
+	bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+				      [&defs](const OutputBinding &b) {
+					      return std::none_of(defs.begin(), defs.end(),
+								  [&b](const CanvasDefinition &d) {
+									  return d.uuid == b.canvasUuid;
+								  });
+				      }),
+		       bindings.end());
+	return before - bindings.size();
+}
+
 void LoadMultistreamModel()
 {
 	g_canvases.Load();
 	// EnsureDefaultEncoders first and unconditionally: it is the one with the side
 	// effect, so it must not sit behind a short-circuit. Load() has already numbered
 	// whatever came back unnumbered; writing that back is what keeps the number stable
-	// against a later reorder.
+	// against a later reorder. Over a canvases.json that could not be used the model is a
+	// seeded fallback, which must not be written over the file the user still has.
 	const bool seededEncoders = g_canvases.EnsureDefaultEncoders();
-	if (seededEncoders || g_canvases.NumbersMigrated()) {
+	if ((seededEncoders || g_canvases.NumbersMigrated()) && !g_canvases.LoadedUnusable()) {
 		g_canvases.Save();
 	}
 	g_streamProfiles.Load();
@@ -993,21 +1021,7 @@ size_t ObsBootstrap::PruneOutputBindingsForCanvas(const std::string &canvasUuid)
 
 size_t ObsBootstrap::ReconcileOutputBindings()
 {
-	const auto &defs = Canvases().Definitions();
-	if (defs.empty()) {
-		return 0;
-	}
-	auto &bindings = OutputBindings().Bindings().bindings;
-	const size_t before = bindings.size();
-	bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
-				      [&defs](const OutputBinding &b) {
-					      return std::none_of(defs.begin(), defs.end(),
-								  [&b](const CanvasDefinition &d) {
-									  return d.uuid == b.canvasUuid;
-								  });
-				      }),
-		       bindings.end());
-	const size_t removed = before - bindings.size();
+	const size_t removed = PruneBindingsWithoutCanvas(Canvases(), OutputBindings().Bindings());
 	if (removed > 0) {
 		OutputBindings().Save();
 		// Loud: this deletes something the user configured. Silence here is what let
@@ -1502,8 +1516,14 @@ bool ObsBootstrap::Start()
 	g_scheduledSetup.metadata.clear = [](const std::string &profileId) {
 		g_streamMeta.RemoveStreamOverride(profileId);
 	};
+	// An entry's overrides are put back when its broadcast ends, so over a stream_meta.json
+	// that could not be used they stay in memory: saving them would write the fallback, not
+	// the user's own change, over that file. Once a change of the user's has saved, the file
+	// is theirs again, and the end-of-broadcast save must land to take the overrides back out.
 	g_scheduledSetup.metadata.save = [] {
-		g_streamMeta.Save();
+		if (!g_streamMeta.HoldArmed()) {
+			g_streamMeta.Save();
+		}
 	};
 
 	// The runner's outside world, injected so the state machine itself stays
@@ -1535,7 +1555,8 @@ bool ObsBootstrap::Start()
 	g_scheduleRunner.canArm = [](const std::string &profileId, std::string &reason) {
 		const StreamProfile *profile = g_streamProfiles.Find(profileId);
 		if (!profile) {
-			reason = "its stream profile was deleted";
+			reason = g_streamProfiles.LoadedUnusable() ? "streams.json could not be read at launch"
+								   : "its stream profile was deleted";
 			return false;
 		}
 		if (BindingForProfile(profileId, false).empty()) {
@@ -1598,6 +1619,7 @@ bool ObsBootstrap::Start()
 	// additional canvas's scene internally, so no follow-up is needed here.
 	if (!SceneCollection::Load()) {
 		CreateDefaultScene();
+		SceneCollection::HoldFallback();
 	}
 
 	// Route channel 0 through the program transition: it wraps the scene just bound
@@ -9706,11 +9728,12 @@ void ObsBootstrap::RunMcpUnreadableConfigSelfTest()
 	const fs::path bak = fs::u8path(path + ".bak");
 	const std::optional<std::string> savedFile = FileUtil::ReadUtf8File(path);
 	const std::optional<std::string> savedBak = FileUtil::ReadUtf8File(path + ".bak");
+	const std::string prefix = UnusableCopyPrefix(path);
 	auto copies = [&] {
 		std::set<fs::path> found;
 		std::error_code ec;
 		for (fs::directory_iterator it(file.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
-			if (it->path().filename().u8string().rfind("mcp.failed-", 0) == 0) {
+			if (it->path().filename().u8string().rfind(prefix, 0) == 0) {
 				found.insert(it->path());
 			}
 		}
@@ -9748,7 +9771,7 @@ void ObsBootstrap::RunMcpUnreadableConfigSelfTest()
 	// check would overwrite the first copy unseen. Under a stamp-free name it would add one.
 	std::error_code ec;
 	if (made.size() == 1) {
-		const fs::path renamed = file.parent_path() / fs::u8path("mcp.failed-selftest.json");
+		const fs::path renamed = file.parent_path() / fs::u8path(prefix + "selftest.json");
 		fs::rename(*made.begin(), renamed, ec);
 		made = {ec ? *made.begin() : renamed};
 	}
@@ -9771,6 +9794,164 @@ void ObsBootstrap::RunMcpUnreadableConfigSelfTest()
 	HostLog(std::string("[selftest] mcp unreadable config -> ") + (ok ? "PASS" : "FAIL") + " (copied aside once=" +
 		(keptOk ? "true" : "false") + ", mcp.json not saved over=" + (untouched ? "true" : "false") +
 		", second load reused the copy=" + (noSecondCopy ? "true" : "false") + ")");
+}
+
+// The shared store load (#30) against throwaway files of its own beside the real stores:
+// LoadStoreJson keeps an unusable file aside once and reports it, a first run and a Leave
+// store copy nothing, a store (bindings, overlays, stream profiles) holds its fallback
+// instead of saving it over the file, and bindings are not pruned against canvases seeded
+// over an unusable canvases.json.
+// Removes every file it wrote.
+void ObsBootstrap::RunStoreKeepAsideSelfTest()
+{
+	namespace fs = std::filesystem;
+	const std::string path = MultistreamBasicPath("selftest_keep_aside.json");
+	const std::string canvasesPath = MultistreamBasicPath("selftest_keep_aside_canvases.json");
+	const std::string canvasesOkPath = MultistreamBasicPath("selftest_keep_aside_canvases_ok.json");
+	const std::string bindingsPath = MultistreamBasicPath("selftest_keep_aside_bindings.json");
+	const std::string overlaysPath = MultistreamBasicPath("selftest_keep_aside_overlays.json");
+	const std::string streamsPath = MultistreamBasicPath("selftest_keep_aside_streams.json");
+	const fs::path dir = fs::u8path(path).parent_path();
+	const std::string badFile = "{ not json";
+	const std::string badBak = "{ not json either";
+
+	auto write = [](const std::string &target, const std::string &bytes) {
+		std::ofstream(fs::u8path(target), std::ios::out | std::ios::binary) << bytes;
+	};
+	auto copiesOf = [&dir](const std::string &target) {
+		const std::string prefix = UnusableCopyPrefix(target);
+		std::set<fs::path> found;
+		std::error_code ec;
+		for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+			if (it->path().filename().u8string().rfind(prefix, 0) == 0) {
+				found.insert(it->path());
+			}
+		}
+		return found;
+	};
+	auto removeAll = [&copiesOf](const std::string &target) {
+		std::error_code ec;
+		for (const fs::path &p : copiesOf(target)) {
+			fs::remove(p, ec);
+		}
+		fs::remove(fs::u8path(target), ec);
+		fs::remove(fs::u8path(target + ".bak"), ec);
+	};
+	const std::vector<const std::string *> written = {&path,         &canvasesPath, &canvasesOkPath,
+							  &bindingsPath, &overlaysPath, &streamsPath};
+	for (const std::string *p : written) {
+		removeAll(*p);
+	}
+
+	// A first run: nothing on disk, nothing reported or copied.
+	bool unusable = true;
+	LoadStoreJson(path, OnUnusable::Keep, &unusable);
+	const bool firstRunOk = !unusable && copiesOf(path).empty();
+
+	// Both files unusable: libobs moves the .bak over the file, so the copy holds its bytes.
+	write(path, badFile);
+	write(path + ".bak", badBak);
+	const nlohmann::json loaded = LoadStoreJson(path, OnUnusable::Keep, &unusable);
+	const std::set<fs::path> made = copiesOf(path);
+	std::string kept;
+	const bool keptOk = unusable && loaded.is_object() && loaded.empty() && made.size() == 1 &&
+			    FileUtil::ReadBinaryFile(*made.begin(), kept) && kept == badBak;
+
+	// Under a stamp-free name a second load that skipped the identical-copy check would add
+	// a copy rather than overwrite the first one unseen.
+	std::error_code ec;
+	bool reusedOk = false;
+	if (made.size() == 1) {
+		fs::rename(*made.begin(), dir / fs::u8path(UnusableCopyPrefix(path) + "selftest.json"), ec);
+		LoadStoreJson(path, OnUnusable::Keep, &unusable);
+		reusedOk = !ec && unusable && copiesOf(path).size() == 1;
+	}
+
+	// A store under a secret or purge rule is reported but never copied.
+	removeAll(path);
+	write(path, badFile);
+	LoadStoreJson(path, OnUnusable::Leave, &unusable);
+	const bool leaveOk = unusable && copiesOf(path).empty();
+
+	// An unusable bindings file: saving the empty fallback is skipped and leaves the file as
+	// it was; the first save of a change writes.
+	write(bindingsPath, badFile);
+	OutputBindingStore bindingStore;
+	bindingStore.Load(bindingsPath);
+	std::string onDisk;
+	const bool heldSaved = bindingStore.Save(bindingsPath);
+	const bool heldOk = heldSaved && FileUtil::ReadUtf8File(bindingsPath, onDisk) && onDisk == badFile;
+	bindingStore.Bindings().Add("selftest-canvas");
+	const bool changeSaved = bindingStore.Save(bindingsPath) && FileUtil::ReadUtf8File(bindingsPath, onDisk) &&
+				 onDisk != badFile;
+
+	// Canvases seeded over an unusable file prune nothing; canvases from disk prune the
+	// binding whose canvas they do not hold.
+	write(canvasesPath, badFile);
+	write(canvasesOkPath, "{\"canvases\": []}");
+	CanvasStore seeded;
+	seeded.Load(canvasesPath);
+	CanvasStore fromDisk;
+	fromDisk.Load(canvasesOkPath);
+	::OutputBindings routes;
+	routes.Add("selftest-other-canvas");
+	const size_t prunedSeeded = PruneBindingsWithoutCanvas(seeded, routes);
+	const size_t prunedFromDisk = PruneBindingsWithoutCanvas(fromDisk, routes);
+	const bool noPruneOk = seeded.LoadedUnusable() && !fromDisk.LoadedUnusable() && prunedSeeded == 0 &&
+			       prunedFromDisk == 1 && routes.bindings.empty();
+
+	// An unusable overlays store on its own file: kept aside, and the server's SetPort at
+	// start does not save the empty store over it; a widget change does.
+	write(overlaysPath, badFile);
+	bool overlayHeldOk = false;
+	bool overlayChangeSaved = false;
+	{
+		Overlay::OverlayStore overlays(overlaysPath);
+		overlays.SetPort(43123);
+		overlayHeldOk = FileUtil::ReadUtf8File(overlaysPath, onDisk) && onDisk == badFile &&
+				copiesOf(overlaysPath).size() == 1;
+		Overlay::Widget widget;
+		widget.id = "selftest-keep-aside";
+		widget.token = "selftest";
+		widget.name = "selftest";
+		widget.type = "labels";
+		overlays.InjectForTest(widget);
+		overlays.SetPort(43123);
+		overlayChangeSaved = FileUtil::ReadUtf8File(overlaysPath, onDisk) && onDisk != badFile;
+	}
+
+	// An unusable streams.json on its own file: reported but not copied, reported for the
+	// session (what gates the orphaned-account reclaim and the boot target reconcile), and
+	// the empty list is not saved over it until a profile changes.
+	write(streamsPath, badFile);
+	StreamProfileStore streams;
+	streams.Load(streamsPath);
+	const bool streamsHeldOk = streams.LoadedUnusable() && copiesOf(streamsPath).empty() &&
+				   streams.Save(streamsPath) && FileUtil::ReadUtf8File(streamsPath, onDisk) &&
+				   onDisk == badFile;
+	StreamProfile added;
+	added.label = "selftest";
+	streams.Add(std::move(added));
+	const bool streamsChangeSaved = streams.Save(streamsPath) && FileUtil::ReadUtf8File(streamsPath, onDisk) &&
+					onDisk != badFile && streams.LoadedUnusable();
+
+	for (const std::string *p : written) {
+		removeAll(*p);
+	}
+
+	const bool ok = firstRunOk && keptOk && reusedOk && leaveOk && heldOk && changeSaved && noPruneOk &&
+			overlayHeldOk && overlayChangeSaved && streamsHeldOk && streamsChangeSaved;
+	auto flag = [](bool b) {
+		return b ? "true" : "false";
+	};
+	HostLog(std::string("[selftest] store keep-aside -> ") + (ok ? "PASS" : "FAIL") +
+		" (first run copies nothing=" + flag(firstRunOk) + ", copied aside once=" + flag(keptOk) +
+		", second load reused the copy=" + flag(reusedOk) + ", Leave copies nothing=" + flag(leaveOk) +
+		", fallback not saved over the file=" + flag(heldOk) + ", a change saves=" + flag(changeSaved) +
+		", no prune against seeded canvases=" + flag(noPruneOk) +
+		", overlays SetPort not saved over the file=" + flag(overlayHeldOk) + ", an overlay change saves=" +
+		flag(overlayChangeSaved) + ", streams.json held and not copied=" + flag(streamsHeldOk) +
+		", a profile change saves and the gate stays=" + flag(streamsChangeSaved) + ")");
 }
 
 void ObsBootstrap::RunDevToolsPortSelfTest()

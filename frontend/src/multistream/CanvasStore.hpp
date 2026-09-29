@@ -19,8 +19,16 @@ class CanvasStore {
 public:
 	CanvasStore() { EnsureDefault(); }
 
-	void Load();       // read canvases.json (replaces contents; re-seeds Default if absent)
-	bool Save() const; // write canvases.json atomically; false on write failure (logged)
+	void Load();                        // read canvases.json (replaces contents; re-seeds Default if absent)
+	void Load(const std::string &path); // the same from a specific file
+	bool Save() const;                  // write canvases.json atomically; false on write failure (logged)
+
+	// Did the last Load find its file on disk but unusable (kept aside by LoadStoreJson)?
+	// The model is then a seeded fallback rather than the user's canvases, so nothing may
+	// write it at boot or prune bindings against it. It lasts until the next Load, i.e. for
+	// the session: a user save does not lift it, and edits made on top of the fallback are
+	// not pruned against either.
+	bool LoadedUnusable() const { return loadedUnusable; }
 
 	// The whole model as JSON, in the SAME shape canvases.json holds (the single
 	// serializer; Load/Save route through it). FromJson replaces contents and
@@ -71,6 +79,7 @@ public:
 private:
 	void EnsureDefault(); // append a 1080p60 Default if none present
 	bool numbersMigrated = false;
+	bool loadedUnusable = false;
 
 	std::vector<CanvasDefinition> definitions;
 };

@@ -2,6 +2,8 @@
 
 #include "OutputBinding.hpp"
 
+#include "StorePaths.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -25,6 +27,12 @@ public:
 	bool Save() const;                  // write the ACTIVE collection's bindings; false on failure (logged)
 	bool Save(const std::string &path) const;
 
+	// Did the last Load find its file on disk but unusable (kept aside)? For the ACTIVE
+	// collection that is the one read at boot or by the last switch. The boot target
+	// reconcile, which would create bindings of its own, waits on it; a save of the user's
+	// own change does not lift it.
+	bool LoadedUnusable() const { return hold.LoadedUnusable(); }
+
 	// The whole model as JSON, in the SAME shape output_bindings.json holds (the
 	// single serializer; Load/Save route through it). FromJson replaces contents,
 	// mirroring Load(). Used by settings.snapshot/settings.restore for the
@@ -44,4 +52,6 @@ public:
 
 private:
 	OutputBindings bindings;
+	// Save is const, but the hold records whether a save has happened.
+	mutable UnusableStoreHold hold;
 };

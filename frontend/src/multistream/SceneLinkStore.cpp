@@ -26,7 +26,10 @@ void SceneLinkStore::Load()
 
 void SceneLinkStore::Load(const std::string &path)
 {
-	FromJson(LoadStoreJson(path));
+	bool unusable = false;
+	FromJson(LoadStoreJson(path, OnUnusable::Keep, &unusable));
+	// The switch flush and the scene and canvas prunes save with no change of their own.
+	hold.AfterLoad(unusable, ToJson().dump());
 }
 
 bool SceneLinkStore::Save() const
@@ -36,5 +39,9 @@ bool SceneLinkStore::Save() const
 
 bool SceneLinkStore::Save(const std::string &path) const
 {
-	return SaveStoreJson(ToJson(), path);
+	const nlohmann::json root = ToJson();
+	if (hold.Skips(root.dump())) {
+		return true;
+	}
+	return SaveStoreJson(root, path);
 }

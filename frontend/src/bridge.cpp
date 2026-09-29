@@ -10185,7 +10185,7 @@ bool MethodLayoutQuarantine(const json & /*params*/, json &result, std::string &
 		error = "failed to resolve layout.json";
 		return false;
 	}
-	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(path, "layout.failed-");
+	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(path);
 	if (!kept) {
 		error = "failed to write a copy of layout.json";
 		return false;
@@ -11142,9 +11142,15 @@ bool MethodVirtualCamSetConfig(const json &params, json &result, std::string &er
 
 bool MethodBrowserDocksList(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	const std::string path = MultistreamBasicPath("browser_docks.json");
 	json arr = json::array();
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	const std::string path = MultistreamBasicPath("browser_docks.json");
+	// Every list re-reads the file, so one that could not be used is kept aside (and logged)
+	// the first time only; later lists read it plainly. UI thread only.
+	static bool keptThisSession = false;
+	bool unusable = false;
+	OBSDataAutoRelease root = keptThisSession ? obs_data_create_from_json_file_safe(path.c_str(), "bak")
+						  : LoadStoreData(path, &unusable);
+	keptThisSession = keptThisSession || unusable;
 	if (root) {
 		OBSDataArrayAutoRelease docks = obs_data_get_array(root, "docks");
 		const size_t count = docks ? obs_data_array_count(docks) : 0;
@@ -12044,17 +12050,10 @@ bool WriteJsonString(const char *file, const char *key, const std::string &value
 	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
-std::string ReadJsonString(const char *file, const char *key)
+std::string ReadJsonString(const char *file, const char *key, bool *unusable)
 {
-	const std::string path = MultistreamBasicPath(file);
-	if (path.empty()) {
-		return std::string();
-	}
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
-	if (!root) {
-		return std::string();
-	}
-	const char *v = obs_data_get_string(root, key);
+	OBSDataAutoRelease root = LoadStoreData(MultistreamBasicPath(file), unusable);
+	const char *v = root ? obs_data_get_string(root, key) : nullptr;
 	return v ? std::string(v) : std::string();
 }
 
@@ -13298,6 +13297,15 @@ void ReconcileOrphanedAccounts()
 	// its owning stream profile was deleted before the delete path cleaned up accounts
 	// (pre-fix leak). All() returns a snapshot copy, and TeardownAccount mutates the
 	// store, so collect the orphan ids first, then tear each down through the shared path.
+	//
+	// Over a streams.json that could not be read every account would count as unowned, and
+	// teardown revokes the grant at the provider and purges the account's history, none of
+	// which a fixed streams.json can bring back. So nothing is reclaimed that session.
+	if (ObsBootstrap::StreamProfiles().LoadedUnusable()) {
+		HostLog("[oauth] orphaned-account reclaim skipped: streams.json could not be used, so no account can be "
+			"shown to be unowned");
+		return;
+	}
 	std::vector<std::string> orphans;
 	for (const auto &entry : OAuth::Accounts().All()) {
 		if (!ObsBootstrap::StreamProfiles().ReferencesAccount(entry.first)) {

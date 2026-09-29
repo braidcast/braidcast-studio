@@ -12,8 +12,6 @@
 
 #include <uuid_util.hpp>
 
-#include <util/platform.h>
-
 #include <algorithm>
 #include <utility>
 
@@ -176,15 +174,14 @@ void StreamInfoPresetStore::Load()
 	presets_.clear();
 
 	const std::string path = FilePath();
-	const json root = LoadStoreJson(path);
+	bool unusable = false;
+	const json root = LoadStoreJson(path, OnUnusable::Keep, &unusable);
 	const json &stored = JsonUtil::Obj(root, "presets");
 	if (!stored.is_array()) {
-		// LoadStoreJson answers with an empty object for a file that is simply not there
-		// (and falls back to the ".bak" copy for a truncated write), so only a file that
-		// exists yet yielded no preset list has actually lost anything.
-		if (os_file_exists(path.c_str())) {
-			HostLog("[storage] stream_info_presets.json unreadable or malformed; the saved stream "
-				"info presets it held are gone");
+		// A file that reads but holds no preset list is kept aside like one that does not
+		// read at all (LoadStoreJson has kept that one). A missing file keeps nothing.
+		if (!unusable) {
+			KeepUnusableStore(path, "[storage]");
 		}
 		return;
 	}

@@ -134,10 +134,12 @@ void GlobalAudioChannels::SeedOrRestore()
 {
 	// Read the saved per-channel map from audio_devices.json (key "state"), matching
 	// the legacy ReadJsonString envelope.
+	constexpr char kTag[] = "[audio] global audio:";
 	const std::string path = MultistreamBasicPath("audio_devices.json");
 	std::string state;
+	bool unusable = false;
 	{
-		OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+		OBSDataAutoRelease root = LoadStoreData(path, &unusable, kTag);
 		if (root) {
 			const char *v = obs_data_get_string(root, "state");
 			state = v ? v : "";
@@ -148,7 +150,7 @@ void GlobalAudioChannels::SeedOrRestore()
 	// file that is there but unusable the seed stays in memory and the file is kept, so a
 	// launch can't replace the user's devices and filters with defaults unasked. Their
 	// first global-audio change saves.
-	auto seedDefaults = [this, &path]() {
+	auto seedDefaults = [this, &path, unusable, &kTag]() {
 		std::string err;
 		const bool desktop = ApplyDevice(1, "default", err);
 		if (!desktop) {
@@ -158,7 +160,9 @@ void GlobalAudioChannels::SeedOrRestore()
 		if (!mic) {
 			HostLog("[audio] global audio: default seed ch3 (Mic/Aux) failed: " + err);
 		}
-		const bool kept = KeepUnusableStore(path, "audio_devices.failed-", "[audio] global audio:");
+		// A file that reads but holds no usable state is kept aside like one that does not
+		// read at all (LoadStoreData has kept that one).
+		const bool kept = unusable || KeepUnusableStore(path, kTag);
 		if (!kept) {
 			Persist();
 		}

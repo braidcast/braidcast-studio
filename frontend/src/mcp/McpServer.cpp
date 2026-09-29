@@ -395,8 +395,8 @@ McpServer::~McpServer()
 
 void McpServer::Load()
 {
-	const std::string path = MultistreamBasicPath("mcp.json");
-	OBSDataAutoRelease root = path.empty() ? nullptr : obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	bool unusable = false;
+	OBSDataAutoRelease root = LoadStoreData(MultistreamBasicPath("mcp.json"), &unusable, "[mcp]");
 	if (!root) {
 		config_ = Config{};
 		config_.token = GenerateToken();
@@ -406,7 +406,7 @@ void McpServer::Load()
 		// paired clients hold. When the .bak was bad too, libobs has already moved it over
 		// mcp.json, so the copy holds the .bak's bytes. The server stays off meanwhile,
 		// since the defaults have it disabled. Only a first run saves.
-		if (!KeepUnusableStore(path, "mcp.failed-", "[mcp]")) {
+		if (!unusable) {
 			Save();
 		}
 		return;
