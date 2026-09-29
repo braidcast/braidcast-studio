@@ -73,9 +73,12 @@ extern bool rehook_gl(void);
 
 extern bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx, uint32_t cy, uint32_t format,
 			       bool flip, uintptr_t handle);
+extern bool capture_init_shtex_ring(struct shtex_ring **data, HWND window, uint32_t cx, uint32_t cy, uint32_t format,
+				    bool flip, const uintptr_t *handles, uint32_t count);
 extern bool capture_init_shmem(struct shmem_data **data, HWND window, uint32_t cx, uint32_t cy, uint32_t pitch,
 			       uint32_t format, bool flip);
 extern void capture_free(void);
+extern void log_frame_gen_capture_fallback(const char *reason);
 
 extern struct hook_info *global_hook_info;
 
@@ -144,8 +147,9 @@ static inline HMODULE load_system_library(const char *name)
 	strcat(base_path, name);
 
 	module = GetModuleHandleA(base_path);
-	if (module)
+	if (module) {
 		return module;
+	}
 
 	return LoadLibraryA(base_path);
 }
@@ -154,8 +158,9 @@ static inline bool capture_alive(void)
 {
 	HANDLE handle = OpenMutexW(SYNCHRONIZE, false, keepalive_name);
 	const bool success = handle != NULL;
-	if (success)
+	if (success) {
 		CloseHandle(handle);
+	}
 	return success;
 }
 
@@ -188,6 +193,12 @@ static inline bool frame_ready(uint64_t interval)
 static inline bool capture_ready(void)
 {
 	return capture_active() && frame_ready(global_hook_info->frame_interval);
+}
+
+static inline bool frame_gen_capture_requested(void)
+{
+	return global_hook_info->bc_magic == BC_HOOK_MAGIC &&
+	       (global_hook_info->bc_flags & BC_FLAG_FRAME_GEN_CAPTURE) != 0;
 }
 
 static inline bool capture_stopped(void)

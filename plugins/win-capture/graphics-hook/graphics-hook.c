@@ -83,16 +83,18 @@ bool init_pipe(void)
 static HANDLE init_event(const wchar_t *name, DWORD pid)
 {
 	HANDLE handle = create_event_plus_id(name, pid);
-	if (!handle)
+	if (!handle) {
 		hlog("Failed to get event '%s': %lu", name, GetLastError());
+	}
 	return handle;
 }
 
 static HANDLE init_mutex(const wchar_t *name, DWORD pid)
 {
 	HANDLE handle = create_mutex_plus_id(name, pid);
-	if (!handle)
+	if (!handle) {
 		hlog("Failed to open mutex '%s': %lu", name, GetLastError());
+	}
 	return handle;
 }
 
@@ -404,14 +406,16 @@ static inline void capture_loop(void)
 {
 	WaitForSingleObject(signal_init, INFINITE);
 
-	while (!attempt_hook())
+	while (!attempt_hook()) {
 		Sleep(40);
+	}
 
 	for (size_t n = 0; !stop_loop; n++) {
 		/* this causes it to check every 4 seconds, but still with
 		 * a small sleep interval in case the thread needs to stop */
-		if (n % 100 == 0)
+		if (n % 100 == 0) {
 			attempt_hook();
+		}
 		Sleep(40);
 	}
 }
@@ -539,17 +543,18 @@ static inline bool init_shared_info(size_t size, HWND window)
 	return true;
 }
 
-bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx, uint32_t cy, uint32_t format, bool flip,
-			uintptr_t handle)
+static bool frame_gen_capture_fallback_logged = false;
+
+void log_frame_gen_capture_fallback(const char *reason)
 {
-	if (!init_shared_info(sizeof(struct shtex_data), window)) {
-		hlog("capture_init_shtex: Failed to initialize memory");
-		return false;
+	if (frame_gen_capture_requested() && !frame_gen_capture_fallback_logged) {
+		hlog("Frame generation capture is not available (%s); capturing as usual", reason);
+		frame_gen_capture_fallback_logged = true;
 	}
+}
 
-	*data = shmem_info;
-	(*data)->tex_handle = (uint32_t)handle;
-
+static bool publish_shtex(HWND window, uint32_t cx, uint32_t cy, uint32_t format, bool flip, uint32_t map_size)
+{
 	global_hook_info->hook_ver_major = HOOK_VER_MAJOR;
 	global_hook_info->hook_ver_minor = HOOK_VER_MINOR;
 	global_hook_info->window = (uint32_t)(uintptr_t)window;
@@ -557,7 +562,7 @@ bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx, uint
 	global_hook_info->format = format;
 	global_hook_info->flip = flip;
 	global_hook_info->map_id = shmem_id_counter;
-	global_hook_info->map_size = sizeof(struct shtex_data);
+	global_hook_info->map_size = map_size;
 	global_hook_info->cx = cx;
 	global_hook_info->cy = cy;
 	global_hook_info->UNUSED_base_cx = cx;
@@ -570,6 +575,42 @@ bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx, uint
 
 	active = true;
 	return true;
+}
+
+bool capture_init_shtex(struct shtex_data **data, HWND window, uint32_t cx, uint32_t cy, uint32_t format, bool flip,
+			uintptr_t handle)
+{
+	log_frame_gen_capture_fallback("this capture path has one texture");
+
+	if (!init_shared_info(sizeof(struct shtex_data), window)) {
+		hlog("capture_init_shtex: Failed to initialize memory");
+		return false;
+	}
+
+	*data = shmem_info;
+	(*data)->tex_handle = (uint32_t)handle;
+
+	return publish_shtex(window, cx, cy, format, flip, sizeof(struct shtex_data));
+}
+
+bool capture_init_shtex_ring(struct shtex_ring **data, HWND window, uint32_t cx, uint32_t cy, uint32_t format,
+			     bool flip, const uintptr_t *handles, uint32_t count)
+{
+	if (!init_shared_info(sizeof(struct shtex_ring), window)) {
+		hlog("capture_init_shtex_ring: Failed to initialize memory");
+		return false;
+	}
+
+	struct shtex_ring *ring = shmem_info;
+	ring->base.tex_handle = (uint32_t)handles[0];
+	ring->magic = SHTEX_RING_MAGIC;
+	ring->slot_count = count;
+	for (uint32_t i = 0; i < count; i++) {
+		ring->tex_handles[i] = (uint32_t)handles[i];
+	}
+	*data = ring;
+
+	return publish_shtex(window, cx, cy, format, flip, sizeof(struct shtex_ring));
 }
 
 static DWORD CALLBACK copy_thread(LPVOID unused)
@@ -715,6 +756,8 @@ bool capture_init_shmem(struct shmem_data **data, HWND window, uint32_t cx, uint
 	uint32_t total_size = aligned_header + aligned_tex * 2 + 32;
 	uintptr_t align_pos;
 
+	log_frame_gen_capture_fallback("this capture path has one texture");
+
 	if (!init_shared_info(total_size, window)) {
 		hlog("capture_init_shmem: Failed to initialize memory");
 		return false;
@@ -728,8 +771,9 @@ bool capture_init_shmem(struct shmem_data **data, HWND window, uint32_t cx, uint
 	align_pos &= ~(32 - 1);
 	align_pos -= (uintptr_t)shmem_info;
 
-	if (align_pos < sizeof(struct shmem_data))
+	if (align_pos < sizeof(struct shmem_data)) {
 		align_pos += 32;
+	}
 
 	(*data)->last_tex = -1;
 	(*data)->tex1_offset = (uint32_t)align_pos;
@@ -769,17 +813,21 @@ static inline void thread_data_free(void)
 
 		SetEvent(thread_data.stop_event);
 		ret = WaitForSingleObject(thread_data.copy_thread, 500);
-		if (ret != WAIT_OBJECT_0)
+		if (ret != WAIT_OBJECT_0) {
 			TerminateThread(thread_data.copy_thread, (DWORD)-1);
+		}
 
 		CloseHandle(thread_data.copy_thread);
 	}
-	if (thread_data.stop_event)
+	if (thread_data.stop_event) {
 		CloseHandle(thread_data.stop_event);
-	if (thread_data.copy_event)
+	}
+	if (thread_data.copy_event) {
 		CloseHandle(thread_data.copy_event);
-	for (size_t i = 0; i < NUM_BUFFERS; i++)
+	}
+	for (size_t i = 0; i < NUM_BUFFERS; i++) {
 		DeleteCriticalSection(&thread_data.mutexes[i]);
+	}
 
 	DeleteCriticalSection(&thread_data.data_mutex);
 
@@ -789,6 +837,7 @@ static inline void thread_data_free(void)
 void capture_free(void)
 {
 	thread_data_free();
+	frame_gen_capture_fallback_logged = false;
 
 	if (shmem_info) {
 		UnmapViewOfFile(shmem_info);
@@ -841,8 +890,9 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID unused1)
 		bool success = DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
 					       &cur_thread, SYNCHRONIZE, false, 0);
 
-		if (!success)
+		if (!success) {
 			DbgOut("[OBS] Failed to get current thread handle");
+		}
 
 		if (!init_signals()) {
 			return false;
@@ -898,8 +948,9 @@ __declspec(dllexport) LRESULT CALLBACK dummy_debug_proc(int code, WPARAM wparam,
 
 		unhook_windows_hook_ex = ms_get_obfuscated_func(user32, "VojeleY`bdgxvM`hhDz", 0x7F55F80C9EE3A213ULL);
 
-		if (unhook_windows_hook_ex)
+		if (unhook_windows_hook_ex) {
 			unhook_windows_hook_ex((HHOOK)msg->lParam);
+		}
 		hooking = false;
 	}
 

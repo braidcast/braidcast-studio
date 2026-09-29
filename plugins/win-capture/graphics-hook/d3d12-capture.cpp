@@ -14,9 +14,38 @@
 
 #define MAX_BACKBUFFERS 8
 
+/* Frame generation submits a real frame and its generated ones within about
+ * 0.6 ms; 4 is the largest multi frame generation factor. */
+constexpr uint32_t kBurstMaxPresents = 4;
+constexpr uint64_t kBurstMaxNs = 2000000;
+/* A burst period this long is a stall, not a display step. */
+constexpr uint64_t kStepMaxPeriodNs = 100000000;
+
 typedef HRESULT(STDMETHODCALLTYPE *PFN_ExecuteCommandLists)(ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 
 static PFN_ExecuteCommandLists RealExecuteCommandLists = nullptr;
+
+struct d3d12_ring {
+	struct shtex_ring *info;
+	ID3D11Texture2D *tex[SHTEX_RING_MAX];
+	IDXGIKeyedMutex *mutex[SHTEX_RING_MAX];
+	uint32_t count;
+	uint32_t next_slot;
+	uint64_t frame_no;
+	uint64_t last_stamp;
+
+	uint64_t canvas_interval;
+	uint64_t last_bucket;
+	bool have_bucket;
+
+	uint64_t burst_start;
+	uint32_t burst_len;
+	uint32_t last_burst_len;
+	uint64_t step;
+
+	volatile LONG presenting;
+	bool overlap_logged;
+};
 
 struct d3d12_data {
 	uint32_t cx;
@@ -39,6 +68,8 @@ struct d3d12_data {
 			HANDLE handle;
 		};
 	};
+
+	struct d3d12_ring ring;
 };
 
 static struct d3d12_data data = {};
@@ -48,8 +79,26 @@ extern ID3D12CommandQueue *dxgi_possible_swap_queues[8];
 extern size_t dxgi_possible_swap_queue_count;
 extern bool dxgi_present_attempted;
 
+static void d3d12_ring_free(void)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	for (UINT i = 0; i < SHTEX_RING_MAX; i++) {
+		if (ring.mutex[i]) {
+			ring.mutex[i]->Release();
+		}
+		if (ring.tex[i]) {
+			ring.tex[i]->Release();
+		}
+	}
+
+	memset(&ring, 0, sizeof(ring));
+}
+
 void d3d12_free(void)
 {
+	d3d12_ring_free();
+
 	if (data.copy_tex) {
 		data.copy_tex->Release();
 	}
@@ -70,15 +119,9 @@ void d3d12_free(void)
 	hlog("----------------- d3d12 capture freed ----------------");
 }
 
-static bool create_d3d12_tex(UINT count)
+static bool create_d3d12_shared_tex(UINT misc_flags, ID3D11Texture2D **tex, HANDLE *handle)
 {
 	HRESULT hr;
-
-	if (count == 0) {
-		return false;
-	}
-
-	data.backbuffer_count = count;
 
 	D3D11_TEXTURE2D_DESC desc11 = {};
 	desc11.Width = data.cx;
@@ -88,31 +131,107 @@ static bool create_d3d12_tex(UINT count)
 	desc11.Format = apply_dxgi_format_typeless(data.format, global_hook_info->allow_srgb_alias);
 	desc11.SampleDesc.Count = 1;
 	desc11.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	desc11.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+	desc11.MiscFlags = misc_flags;
 
-	hr = data.device11->CreateTexture2D(&desc11, nullptr, &data.copy_tex);
+	hr = data.device11->CreateTexture2D(&desc11, nullptr, tex);
 	if (FAILED(hr)) {
-		hlog_hr("create_d3d12_tex: creation of d3d11 copy tex failed", hr);
+		hlog_hr("create_d3d12_shared_tex: creation of d3d11 copy tex failed", hr);
 		return false;
 	}
 
 	IDXGIResource *dxgi_res;
-	hr = data.copy_tex->QueryInterface(&dxgi_res);
+	hr = (*tex)->QueryInterface(&dxgi_res);
 	if (FAILED(hr)) {
-		hlog_hr("create_d3d12_tex: failed to query "
+		hlog_hr("create_d3d12_shared_tex: failed to query "
 			"IDXGIResource interface from texture",
 			hr);
+		(*tex)->Release();
+		*tex = nullptr;
 		return false;
 	}
 
-	hr = dxgi_res->GetSharedHandle(&data.handle);
+	hr = dxgi_res->GetSharedHandle(handle);
 	dxgi_res->Release();
 	if (FAILED(hr)) {
-		hlog_hr("create_d3d12_tex: failed to get shared handle", hr);
+		hlog_hr("create_d3d12_shared_tex: failed to get shared handle", hr);
+		(*tex)->Release();
+		*tex = nullptr;
 		return false;
 	}
 
 	return true;
+}
+
+static bool create_d3d12_tex(UINT count)
+{
+	if (count == 0) {
+		return false;
+	}
+
+	data.backbuffer_count = count;
+
+	return create_d3d12_shared_tex(D3D11_RESOURCE_MISC_SHARED, &data.copy_tex, &data.handle);
+}
+
+enum class ring_init_result { ok, fallback, failed };
+
+static ring_init_result d3d12_ring_init(HWND window, UINT count)
+{
+	struct d3d12_ring &ring = data.ring;
+	uintptr_t handles[SHTEX_RING_MAX] = {};
+	UINT made = 0;
+
+	for (; made < SHTEX_RING_MAX; made++) {
+		HANDLE handle;
+		if (!create_d3d12_shared_tex(D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, &ring.tex[made], &handle)) {
+			break;
+		}
+
+		HRESULT hr = ring.tex[made]->QueryInterface(&ring.mutex[made]);
+		if (FAILED(hr)) {
+			hlog_hr("d3d12_ring_init: failed to query IDXGIKeyedMutex", hr);
+			ring.tex[made]->Release();
+			ring.tex[made] = nullptr;
+			break;
+		}
+
+		/* Nothing else can hold a slot yet, so a failure here means the
+		 * keyed mutex does not work on this device. */
+		hr = ring.mutex[made]->AcquireSync(0, 0);
+		if (hr == S_OK) {
+			hr = ring.mutex[made]->ReleaseSync(0);
+		} else if (SUCCEEDED(hr)) {
+			hr = E_FAIL;
+		}
+		if (FAILED(hr)) {
+			hlog_hr("d3d12_ring_init: keyed mutex unusable", hr);
+			ring.mutex[made]->Release();
+			ring.mutex[made] = nullptr;
+			ring.tex[made]->Release();
+			ring.tex[made] = nullptr;
+			break;
+		}
+
+		handles[made] = (uintptr_t)handle;
+	}
+
+	if (made < SHTEX_RING_MAX) {
+		char reason[64];
+		snprintf(reason, sizeof(reason), "created %u of %u slot textures", made, (UINT)SHTEX_RING_MAX);
+		log_frame_gen_capture_fallback(reason);
+		d3d12_ring_free();
+		return ring_init_result::fallback;
+	}
+
+	data.backbuffer_count = count;
+	ring.count = SHTEX_RING_MAX;
+	ring.canvas_interval = global_hook_info->bc_canvas_interval_ns;
+
+	if (!capture_init_shtex_ring(&ring.info, window, data.cx, data.cy, data.format, false, handles, ring.count)) {
+		return ring_init_result::failed;
+	}
+
+	return ring_init_result::ok;
 }
 
 static bool d3d12_init_11on12(ID3D12Device *device)
@@ -186,6 +305,25 @@ static bool d3d12_shtex_init(ID3D12Device *device, HWND window, UINT count)
 	if (!d3d12_init_11on12(device)) {
 		return false;
 	}
+
+	if (count > 0 && frame_gen_capture_requested()) {
+		if (global_hook_info->capture_overlay) {
+			log_frame_gen_capture_fallback("third-party overlay capture is on");
+		} else if (!global_hook_info->bc_canvas_interval_ns) {
+			log_frame_gen_capture_fallback("the canvas frame interval is unknown");
+		} else {
+			switch (d3d12_ring_init(window, count)) {
+			case ring_init_result::ok:
+				hlog("d3d12 frame generation capture successful: %u slots", data.ring.count);
+				return true;
+			case ring_init_result::failed:
+				return false;
+			case ring_init_result::fallback:
+				break;
+			}
+		}
+	}
+
 	if (!create_d3d12_tex(count)) {
 		return false;
 	}
@@ -276,45 +414,165 @@ static inline void d3d12_copy_texture(ID3D11Resource *dst, ID3D11Resource *src)
 	}
 }
 
-static inline void d3d12_shtex_capture(IDXGISwapChain *swap)
+static inline UINT d3d12_backbuffer_index(IDXGISwapChain *swap)
 {
-	if (!data.device11on12) {
-		return;
-	}
-
-	bool dxgi_1_4 = data.dxgi_1_4;
-	UINT cur_idx;
-
-	if (dxgi_1_4) {
+	if (data.dxgi_1_4) {
 		IDXGISwapChain3 *swap3 = reinterpret_cast<IDXGISwapChain3 *>(swap);
-		cur_idx = swap3->GetCurrentBackBufferIndex();
-	} else {
-		cur_idx = data.cur_backbuffer;
+		return swap3->GetCurrentBackBufferIndex();
 	}
+
+	return data.cur_backbuffer;
+}
+
+static inline void d3d12_advance_backbuffer(void)
+{
+	if (!data.dxgi_1_4) {
+		if (++data.cur_backbuffer >= data.backbuffer_count) {
+			data.cur_backbuffer = 0;
+		}
+	}
+}
+
+/* The back buffer is wrapped for this one copy and released before returning:
+ * a reference held past the Present keeps the game's swap chain alive. A
+ * keyed mutex held on dst is released before the flush that submits the copy. */
+static bool d3d12_copy_backbuffer(IDXGISwapChain *swap, ID3D11Texture2D *dst, IDXGIKeyedMutex *dst_mutex)
+{
+	bool copied = false;
 
 	ID3D12Resource *backbuffer12;
-	if (SUCCEEDED(swap->GetBuffer(cur_idx, IID_PPV_ARGS(&backbuffer12)))) {
+	if (SUCCEEDED(swap->GetBuffer(d3d12_backbuffer_index(swap), IID_PPV_ARGS(&backbuffer12)))) {
 		D3D11_RESOURCE_FLAGS rf11 = {};
 		ID3D11Resource *backbuffer;
 		if (SUCCEEDED(data.device11on12->CreateWrappedResource(
 			    backbuffer12, &rf11, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT,
 			    IID_PPV_ARGS(&backbuffer)))) {
 			data.device11on12->AcquireWrappedResources(&backbuffer, 1);
-			d3d12_copy_texture(data.copy_tex, backbuffer);
+			d3d12_copy_texture(dst, backbuffer);
 			data.device11on12->ReleaseWrappedResources(&backbuffer, 1);
+			if (dst_mutex) {
+				dst_mutex->ReleaseSync(0);
+			}
 			data.context11->Flush();
 
-			if (!dxgi_1_4) {
-				if (++data.cur_backbuffer >= data.backbuffer_count) {
-					data.cur_backbuffer = 0;
-				}
-			}
+			d3d12_advance_backbuffer();
 
 			backbuffer->Release();
+			copied = true;
 		}
 
 		backbuffer12->Release();
 	}
+
+	return copied;
+}
+
+static inline void d3d12_shtex_capture(IDXGISwapChain *swap)
+{
+	if (!data.device11on12) {
+		return;
+	}
+
+	d3d12_copy_backbuffer(swap, data.copy_tex, nullptr);
+}
+
+static bool d3d12_ring_acquire_slot(uint32_t *slot)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	for (uint32_t i = 0; i < ring.count; i++) {
+		const uint32_t candidate = (ring.next_slot + i) % ring.count;
+		if (ring.mutex[candidate]->AcquireSync(0, 0) == S_OK) {
+			*slot = candidate;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t stamp)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	uint32_t slot;
+	if (!d3d12_ring_acquire_slot(&slot)) {
+		return false;
+	}
+
+	struct shtex_ring *info = ring.info;
+	InterlockedIncrement((volatile LONG *)&info->seq[slot]);
+
+	if (!d3d12_copy_backbuffer(swap, ring.tex[slot], ring.mutex[slot])) {
+		ring.mutex[slot]->ReleaseSync(0);
+		InterlockedIncrement((volatile LONG *)&info->seq[slot]);
+		return false;
+	}
+
+	InterlockedExchange64((volatile LONG64 *)&info->show_ns[slot], (LONG64)stamp);
+	InterlockedExchange64((volatile LONG64 *)&info->frame_no[slot], (LONG64)++ring.frame_no);
+	InterlockedIncrement((volatile LONG *)&info->seq[slot]);
+
+	ring.last_stamp = stamp;
+	ring.next_slot = (slot + 1) % ring.count;
+	return true;
+}
+
+static void d3d12_ring_update_step(uint64_t period, uint32_t size)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	if (size != ring.last_burst_len || period > kStepMaxPeriodNs) {
+		ring.step = 0;
+		ring.last_burst_len = size;
+		return;
+	}
+
+	const uint64_t sample = period / size;
+	ring.step = ring.step ? (ring.step * 7 + sample) / 8 : sample;
+}
+
+static void d3d12_ring_capture(IDXGISwapChain *swap)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	if (!data.device11on12 || !capture_active()) {
+		return;
+	}
+
+	if (InterlockedIncrement(&ring.presenting) > 1 && !ring.overlap_logged) {
+		hlog("Frame generation capture: Presents overlapped on two threads");
+		ring.overlap_logged = true;
+	}
+
+	const uint64_t t = os_gettime_ns();
+
+	if (ring.burst_len == 0 || ring.burst_len >= kBurstMaxPresents || t - ring.burst_start > kBurstMaxNs) {
+		if (ring.burst_len > 0) {
+			d3d12_ring_update_step(t - ring.burst_start, ring.burst_len);
+		}
+
+		ring.burst_start = t;
+		ring.burst_len = 0;
+	}
+
+	const uint32_t k = ring.burst_len++;
+
+	uint64_t stamp = ring.burst_start + k * ring.step;
+	if (stamp <= ring.last_stamp) {
+		stamp = ring.last_stamp + 1;
+	}
+
+	/* A canvas tick shows at most one frame per interval, so this is the only
+	 * rate bound the ring needs: stamps only grow, so each canvas interval of
+	 * show time gets at most one copy however fast the game presents. */
+	const uint64_t bucket = stamp / ring.canvas_interval;
+	if ((!ring.have_bucket || bucket > ring.last_bucket) && d3d12_ring_copy(swap, stamp)) {
+		ring.last_bucket = bucket;
+		ring.have_bucket = true;
+	}
+
+	InterlockedDecrement(&ring.presenting);
 }
 
 void d3d12_capture(void *swap_ptr, void *)
@@ -327,7 +585,9 @@ void d3d12_capture(void *swap_ptr, void *)
 	if (capture_should_init()) {
 		d3d12_init(swap);
 	}
-	if (data.handle != nullptr && capture_ready()) {
+	if (data.ring.count) {
+		d3d12_ring_capture(swap);
+	} else if (data.handle != nullptr && capture_ready()) {
 		d3d12_shtex_capture(swap);
 	}
 }

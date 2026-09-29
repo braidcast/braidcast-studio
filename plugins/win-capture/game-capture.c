@@ -42,6 +42,8 @@
 #define SETTING_HOOK_RATE            "hook_rate"
 #define SETTING_RGBA10A2_SPACE       "rgb10a2_space"
 #define SETTINGS_COMPAT_INFO         "compat_info"
+#define SETTING_EXPERIMENTAL         "experimental"
+#define SETTING_FRAME_GEN_CAPTURE    "frame_gen_capture"
 
 /* deprecated */
 #define SETTING_ANY_FULLSCREEN   "capture_any_fullscreen"
@@ -76,6 +78,9 @@
 #define TEXT_RGBA10A2_SPACE        obs_module_text("GameCapture.Rgb10a2Space")
 #define TEXT_RGBA10A2_SPACE_SRGB   obs_module_text("GameCapture.Rgb10a2Space.Srgb")
 #define TEXT_RGBA10A2_SPACE_2100PQ obs_module_text("GameCapture.Rgb10a2Space.2100PQ")
+#define TEXT_EXPERIMENTAL          obs_module_text("GameCapture.Experimental")
+#define TEXT_FRAME_GEN_CAPTURE     obs_module_text("GameCapture.FrameGenCapture")
+#define TEXT_FRAME_GEN_CAPTURE_TT  obs_module_text("GameCapture.FrameGenCapture.TT")
 
 #define TEXT_MODE_ANY            TEXT_ANY_FULLSCREEN
 #define TEXT_MODE_WINDOW         obs_module_text("GameCapture.CaptureWindow")
@@ -112,6 +117,7 @@ struct game_capture_config {
 	enum hook_rate hook_rate;
 	bool is_10a2_2100pq;
 	bool capture_audio;
+	bool frame_gen_capture;
 };
 
 typedef DPI_AWARENESS_CONTEXT(WINAPI *PFN_SetThreadDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
@@ -188,6 +194,16 @@ struct game_capture {
 		struct shtex_data *shtex_data;
 		void *data;
 	};
+	uint32_t data_size;
+
+	/* In ring mode ring_tex owns the slot textures, texture borrows the
+	 * one currently drawn and holds its keyed mutex, and ring views data. */
+	struct shtex_ring *ring;
+	gs_texture_t *ring_tex[SHTEX_RING_MAX];
+	uint32_t ring_count;
+	uint64_t ring_frame_no;
+	bool frame_gen_requested;
+	uint64_t ring_read_delay_ns;
 
 	void (*copy_texture)(struct game_capture *);
 
@@ -313,6 +329,34 @@ static inline float hook_rate_to_float(enum hook_rate rate)
 	}
 }
 
+static void destroy_ring_textures(gs_texture_t **textures, uint32_t count)
+{
+	for (uint32_t i = 0; i < count; i++) {
+		gs_texture_release_sync(textures[i], 0);
+		gs_texture_destroy(textures[i]);
+		textures[i] = NULL;
+	}
+}
+
+static void free_capture_textures(struct game_capture *gc)
+{
+	gs_texrender_destroy(gc->extra_texrender);
+	gc->extra_texrender = NULL;
+	gs_texture_destroy(gc->extra_texture);
+	gc->extra_texture = NULL;
+
+	if (gc->ring_count) {
+		destroy_ring_textures(gc->ring_tex, gc->ring_count);
+		gc->ring = NULL;
+		gc->ring_count = 0;
+		gc->ring_frame_no = 0;
+		gc->copy_texture = NULL;
+	} else {
+		gs_texture_destroy(gc->texture);
+	}
+	gc->texture = NULL;
+}
+
 static void stop_capture(struct game_capture *gc)
 {
 	ipc_pipe_server_free(&gc->pipe);
@@ -330,6 +374,13 @@ static void stop_capture(struct game_capture *gc)
 	gc->hook_ready_seen = false;
 
 	if (gc->global_hook_info) {
+		/* Another source on the same game may still want the ring; only the
+		 * source that asked for it withdraws the request. */
+		if (gc->frame_gen_requested) {
+			gc->global_hook_info->bc_magic = 0;
+			gc->global_hook_info->bc_flags = 0;
+			gc->frame_gen_requested = false;
+		}
 		UnmapViewOfFile(gc->global_hook_info);
 		gc->global_hook_info = NULL;
 	}
@@ -337,6 +388,8 @@ static void stop_capture(struct game_capture *gc)
 		UnmapViewOfFile(gc->data);
 		gc->data = NULL;
 	}
+	gc->data_size = 0;
+	gc->ring = NULL;
 
 	if (gc->app_sid) {
 		LocalFree(gc->app_sid);
@@ -356,12 +409,7 @@ static void stop_capture(struct game_capture *gc)
 	close_handle(&gc->texture_mutexes[1]);
 
 	obs_enter_graphics();
-	gs_texrender_destroy(gc->extra_texrender);
-	gc->extra_texrender = NULL;
-	gs_texture_destroy(gc->extra_texture);
-	gc->extra_texture = NULL;
-	gs_texture_destroy(gc->texture);
-	gc->texture = NULL;
+	free_capture_textures(gc);
 	obs_leave_graphics();
 
 	if (gc->active) {
@@ -465,6 +513,7 @@ static inline void get_config(struct game_capture_config *cfg, obs_data_t *setti
 	cfg->hook_rate = (enum hook_rate)obs_data_get_int(settings, SETTING_HOOK_RATE);
 	cfg->is_10a2_2100pq = strcmp(obs_data_get_string(settings, SETTING_RGBA10A2_SPACE), "2100pq") == 0;
 	cfg->capture_audio = obs_data_get_bool(settings, SETTING_CAPTURE_AUDIO);
+	cfg->frame_gen_capture = obs_data_get_bool(settings, SETTING_FRAME_GEN_CAPTURE);
 }
 
 static inline int s_cmp(const char *str1, const char *str2)
@@ -493,6 +542,9 @@ static inline bool capture_needs_reset(struct game_capture_config *cfg1, struct 
 		return true;
 
 	} else if (cfg1->capture_overlays != cfg2->capture_overlays) {
+		return true;
+
+	} else if (cfg1->frame_gen_capture != cfg2->frame_gen_capture) {
 		return true;
 	}
 
@@ -762,34 +814,33 @@ static inline bool init_texture_mutexes(struct game_capture *gc)
 	return true;
 }
 
-/* if there's already a hook in the process, then signal and start */
-static inline bool attempt_existing_hook(struct game_capture *gc)
+static inline bool open_existing_hook(struct game_capture *gc)
 {
 	gc->hook_restart = open_event_gc(gc, EVENT_CAPTURE_RESTART);
-	if (gc->hook_restart) {
-		debug("existing hook found, signaling process: %s", gc->config.executable);
-		SetEvent(gc->hook_restart);
-		return true;
+	return gc->hook_restart != NULL;
+}
+
+static uint64_t canvas_frame_interval_ns(void)
+{
+	struct obs_video_info ovi;
+
+	if (!obs_get_video_info(&ovi)) {
+		return 0;
 	}
 
-	return false;
+	return util_mul_div64(ovi.fps_den, 1000000000ULL, ovi.fps_num);
 }
 
 static inline void reset_frame_interval(struct game_capture *gc)
 {
-	struct obs_video_info ovi;
-	uint64_t interval = 0;
+	uint64_t interval = canvas_frame_interval_ns();
 
-	if (obs_get_video_info(&ovi)) {
-		interval = util_mul_div64(ovi.fps_den, 1000000000ULL, ovi.fps_num);
-
-		/* Always limit capture framerate to some extent.  If a game
-		 * running at 900 FPS is being captured without some sort of
-		 * limited capture interval, it will dramatically reduce
-		 * performance. */
-		if (!gc->config.limit_framerate) {
-			interval /= 2;
-		}
+	/* Always limit capture framerate to some extent.  If a game
+	 * running at 900 FPS is being captured without some sort of
+	 * limited capture interval, it will dramatically reduce
+	 * performance. */
+	if (!gc->config.limit_framerate) {
+		interval /= 2;
 	}
 
 	gc->global_hook_info->frame_interval = interval;
@@ -821,6 +872,11 @@ static inline bool init_hook_info(struct game_capture *gc)
 	gc->global_hook_info->UNUSED_use_scale = false;
 	gc->global_hook_info->allow_srgb_alias = true;
 	reset_frame_interval(gc);
+
+	gc->global_hook_info->bc_flags = gc->config.frame_gen_capture ? BC_FLAG_FRAME_GEN_CAPTURE : 0;
+	gc->frame_gen_requested = gc->config.frame_gen_capture;
+	gc->global_hook_info->bc_canvas_interval_ns = canvas_frame_interval_ns();
+	gc->global_hook_info->bc_magic = BC_HOOK_MAGIC;
 
 	obs_enter_graphics();
 	if (!gs_shared_texture_available()) {
@@ -1063,16 +1119,21 @@ static bool init_hook(struct game_capture *gc)
 	if (!init_pipe(gc)) {
 		return false;
 	}
-	if (!attempt_existing_hook(gc)) {
-		if (!inject_hook(gc)) {
-			return false;
-		}
+	const bool existing_hook = open_existing_hook(gc);
+	if (!existing_hook && !inject_hook(gc)) {
+		return false;
 	}
 	if (!init_texture_mutexes(gc)) {
 		return false;
 	}
 	if (!init_hook_info(gc)) {
 		return false;
+	}
+	/* An existing hook initializes on the restart signal, so it must see the
+	 * hook info written above. */
+	if (existing_hook) {
+		debug("existing hook found, signaling process: %s", gc->config.executable);
+		SetEvent(gc->hook_restart);
 	}
 	if (!init_events(gc)) {
 		return false;
@@ -1288,6 +1349,7 @@ static inline enum capture_result init_capture_data(struct game_capture *gc)
 		UnmapViewOfFile(gc->data);
 		gc->data = NULL;
 	}
+	gc->ring = NULL;
 
 	CloseHandle(gc->hook_data_map);
 
@@ -1314,11 +1376,13 @@ static inline enum capture_result init_capture_data(struct game_capture *gc)
 		return CAPTURE_FAIL;
 	}
 
-	gc->data = MapViewOfFile(gc->hook_data_map, FILE_MAP_ALL_ACCESS, 0, 0, gc->global_hook_info->map_size);
+	const uint32_t map_size = gc->global_hook_info->map_size;
+	gc->data = MapViewOfFile(gc->hook_data_map, FILE_MAP_ALL_ACCESS, 0, 0, map_size);
 	if (!gc->data) {
 		warn("init_capture_data: failed to map data view: %lu", GetLastError());
 		return CAPTURE_FAIL;
 	}
+	gc->data_size = map_size;
 
 	return CAPTURE_SUCCESS;
 }
@@ -1568,12 +1632,7 @@ static inline bool init_shmem_capture(struct game_capture *gc)
 	const enum gs_color_format format = convert_16bit ? GS_BGRA : convert_format(dxgi_format);
 
 	obs_enter_graphics();
-	gs_texrender_destroy(gc->extra_texrender);
-	gc->extra_texrender = NULL;
-	gs_texture_destroy(gc->extra_texture);
-	gc->extra_texture = NULL;
-	gs_texture_destroy(gc->texture);
-	gc->texture = NULL;
+	free_capture_textures(gc);
 	gs_texture_t *const texture = gs_texture_create(gc->cx, gc->cy, format, 1, NULL, GS_DYNAMIC);
 	obs_leave_graphics();
 
@@ -1610,16 +1669,137 @@ static inline bool init_shmem_capture(struct game_capture *gc)
 	return success;
 }
 
+static uint32_t shtex_ring_slot_count(struct game_capture *gc)
+{
+	if (gc->data_size < sizeof(struct shtex_ring)) {
+		return 0;
+	}
+
+	const struct shtex_ring *const ring = gc->data;
+	const uint32_t count = ring->slot_count;
+	if (ring->magic != SHTEX_RING_MAGIC || count > SHTEX_RING_MAX) {
+		return 0;
+	}
+
+	return count;
+}
+
+static bool open_ring_textures(const struct shtex_ring *ring, uint32_t count, gs_texture_t **textures)
+{
+	for (uint32_t i = 0; i < count; i++) {
+		textures[i] = gs_texture_open_shared(ring->tex_handles[i]);
+		if (!textures[i]) {
+			destroy_ring_textures(textures, i);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool read_ring_slot(const struct shtex_ring *ring, uint32_t slot, LONG *seq, uint64_t *show_ns,
+			   uint64_t *frame_no)
+{
+	const volatile LONG *const seq_ptr = (const volatile LONG *)&ring->seq[slot];
+
+	for (int attempt = 0; attempt < 2; attempt++) {
+		const LONG before = ReadAcquire(seq_ptr);
+		if (before & 1) {
+			continue;
+		}
+
+		const uint64_t show = (uint64_t)ReadAcquire64((const volatile LONG64 *)&ring->show_ns[slot]);
+		const uint64_t frame = (uint64_t)ReadAcquire64((const volatile LONG64 *)&ring->frame_no[slot]);
+		if (ReadAcquire(seq_ptr) == before) {
+			*seq = before;
+			*show_ns = show;
+			*frame_no = frame;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* Draws the newest slot whose show time is at least one canvas interval old,
+ * which lets every copy of a frame generation burst become due in order. With
+ * nothing drawn yet, the newest published slot is taken at once, so a start or
+ * a hook resize does not leave the source empty for that interval. */
+static void pick_ring_slot(struct game_capture *gc)
+{
+	if (!gc->ring || !gc->ring_count) {
+		return;
+	}
+
+	uint64_t target = UINT64_MAX;
+	if (gc->texture) {
+		const uint64_t now = obs_get_video_frame_time();
+		if (now <= gc->ring_read_delay_ns) {
+			return;
+		}
+		target = now - gc->ring_read_delay_ns;
+	}
+
+	uint32_t best = SHTEX_RING_MAX;
+	LONG best_seq = 0;
+	uint64_t best_show_ns = 0;
+	uint64_t best_frame_no = 0;
+	for (uint32_t i = 0; i < gc->ring_count; i++) {
+		LONG seq;
+		uint64_t show_ns;
+		uint64_t frame_no;
+		if (gc->ring_tex[i] == gc->texture || !read_ring_slot(gc->ring, i, &seq, &show_ns, &frame_no)) {
+			continue;
+		}
+		if (!show_ns || show_ns > target || frame_no <= gc->ring_frame_no) {
+			continue;
+		}
+		if (best == SHTEX_RING_MAX || show_ns > best_show_ns) {
+			best = i;
+			best_seq = seq;
+			best_show_ns = show_ns;
+			best_frame_no = frame_no;
+		}
+	}
+
+	if (best == SHTEX_RING_MAX) {
+		return;
+	}
+
+	gs_texture_t *const texture = gc->ring_tex[best];
+	if (gs_texture_acquire_sync(texture, 0, 0) != 0) {
+		return;
+	}
+
+	/* The hook may have rewritten the slot between the read and the acquire. */
+	if (ReadAcquire((const volatile LONG *)&gc->ring->seq[best]) != best_seq) {
+		gs_texture_release_sync(texture, 0);
+		return;
+	}
+
+	if (gc->texture) {
+		gs_texture_release_sync(gc->texture, 0);
+	}
+	gc->texture = texture;
+	gc->ring_frame_no = best_frame_no;
+}
+
 static inline bool init_shtex_capture(struct game_capture *gc)
 {
+	const uint32_t ring_count = shtex_ring_slot_count(gc);
+	const uint64_t ring_read_delay_ns = ring_count ? canvas_frame_interval_ns() : 0;
+	gs_texture_t *ring_tex[SHTEX_RING_MAX] = {0};
+
 	obs_enter_graphics();
-	gs_texrender_destroy(gc->extra_texrender);
-	gc->extra_texrender = NULL;
-	gs_texture_destroy(gc->extra_texture);
-	gc->extra_texture = NULL;
-	gs_texture_destroy(gc->texture);
-	gc->texture = NULL;
-	gs_texture_t *const texture = gs_texture_open_shared(gc->shtex_data->tex_handle);
+	free_capture_textures(gc);
+	gs_texture_t *texture = NULL;
+	if (ring_count) {
+		if (open_ring_textures(gc->data, ring_count, ring_tex)) {
+			texture = ring_tex[0];
+		}
+	} else {
+		texture = gs_texture_open_shared(gc->shtex_data->tex_handle);
+	}
 	bool success = texture != NULL;
 	if (success) {
 		enum gs_color_format format = gs_texture_get_color_format(texture);
@@ -1647,10 +1827,21 @@ static inline bool init_shtex_capture(struct game_capture *gc)
 		}
 
 		if (success) {
-			gc->texture = texture;
+			if (ring_count) {
+				memcpy(gc->ring_tex, ring_tex, sizeof(ring_tex));
+				gc->ring = gc->data;
+				gc->ring_count = ring_count;
+				gc->ring_frame_no = 0;
+				gc->ring_read_delay_ns = ring_read_delay_ns;
+				gc->copy_texture = pick_ring_slot;
+			} else {
+				gc->texture = texture;
+			}
 			gc->linear_sample = linear_sample;
 			gc->extra_texture = extra_texture;
 			gc->extra_texrender = extra_texrender;
+		} else if (ring_count) {
+			destroy_ring_textures(ring_tex, ring_count);
 		} else {
 			gs_texture_destroy(texture);
 		}
@@ -1687,6 +1878,15 @@ static bool start_capture(struct game_capture *gc)
 		}
 
 		info("shared texture capture successful");
+	}
+
+	if (gc->ring_count) {
+		info("frame generation capture: %" PRIu32 " slots", gc->ring_count);
+	} else if (gc->config.frame_gen_capture) {
+		warn("frame generation capture is on, but the game's hook provides one texture. "
+		     "Possible causes: the game holds an older hook, the game is not Direct3D 12, "
+		     "the hook could not create the ring, or another source on this game turned the "
+		     "setting off");
 	}
 
 	return true;
@@ -2159,6 +2359,7 @@ static void game_capture_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, SETTING_ANTI_CHEAT_HOOK, true);
 	obs_data_set_default_int(settings, SETTING_HOOK_RATE, (int)HOOK_RATE_NORMAL);
 	obs_data_set_default_string(settings, SETTING_RGBA10A2_SPACE, RGBA10A2_SPACE_SRGB);
+	obs_data_set_default_bool(settings, SETTING_FRAME_GEN_CAPTURE, false);
 }
 
 static bool mode_callback(obs_properties_t *ppts, obs_property_t *p, obs_data_t *settings)
@@ -2330,6 +2531,11 @@ static obs_properties_t *game_capture_properties(void *data)
 				    OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, TEXT_RGBA10A2_SPACE_SRGB, RGBA10A2_SPACE_SRGB);
 	obs_property_list_add_string(p, TEXT_RGBA10A2_SPACE_2100PQ, RGBA10A2_SPACE_2100PQ);
+
+	obs_properties_t *experimental = obs_properties_create();
+	p = obs_properties_add_bool(experimental, SETTING_FRAME_GEN_CAPTURE, TEXT_FRAME_GEN_CAPTURE);
+	obs_property_set_long_description(p, TEXT_FRAME_GEN_CAPTURE_TT);
+	obs_properties_add_group(ppts, SETTING_EXPERIMENTAL, TEXT_EXPERIMENTAL, OBS_GROUP_NORMAL, experimental);
 
 	return ppts;
 }
