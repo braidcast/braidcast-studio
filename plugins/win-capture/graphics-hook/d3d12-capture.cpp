@@ -563,10 +563,12 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 		stamp = ring.last_stamp + 1;
 	}
 
-	/* A canvas tick shows at most one frame per interval, so this is the only
-	 * rate bound the ring needs: stamps only grow, so each canvas interval of
-	 * show time gets at most one copy however fast the game presents. */
-	const uint64_t bucket = stamp / ring.canvas_interval;
+	/* The only rate bound the ring needs: stamps only grow, so each half canvas
+	 * interval of show time gets at most one copy however fast the game presents
+	 * (the legacy limiter's rate). One copy per full interval is not enough: the
+	 * display's show times drift in phase against the canvas ticks, and a tick
+	 * then finds no new frame (45 distinct/s at 4x on a 60 fps canvas). */
+	const uint64_t bucket = stamp / (ring.canvas_interval / 2);
 	if ((!ring.have_bucket || bucket > ring.last_bucket) && d3d12_ring_copy(swap, stamp)) {
 		ring.last_bucket = bucket;
 		ring.have_bucket = true;
