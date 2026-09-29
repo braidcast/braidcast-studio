@@ -10,7 +10,7 @@
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
-  import Icon from "$lib/ui/Icon.svelte";
+  import FeedJumpChip from "$lib/ui/FeedJumpChip.svelte";
   import ChatOrigin from "$lib/ui/ChatOrigin.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
@@ -695,13 +695,7 @@
     </div>
 
     {#if !feed.autoStick && feed.rows.length > 0}
-      <button
-        class="jump"
-        aria-label={feed.unseen > 0 ? `Jump to latest, ${feed.unseen} new` : undefined}
-        onclick={feed.jumpToLatest}
-        ><Icon name="jump-down" size={11} />
-        {feed.unseen > 0 ? `${feed.unseen} new` : "Jump to latest"}</button
-      >
+      <FeedJumpChip unseen={feed.unseen} onclick={feed.jumpToLatest} />
     {/if}
   </div>
 
@@ -890,24 +884,6 @@
     width: auto;
     vertical-align: middle;
     margin: 0 1px;
-  }
-
-  .jump {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: 8px;
-    z-index: 2;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 12px;
-    font-size: 10px;
-    font-family: var(--font-ui);
-    color: var(--color-accent-ink);
-    background: var(--color-accent);
-    border: 0;
-    cursor: pointer;
   }
 
   /* The selector sits on the base surface, between the feed it filters and the

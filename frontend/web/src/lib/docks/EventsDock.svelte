@@ -9,7 +9,7 @@
   import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import EmptyState from "$lib/ui/EmptyState.svelte";
-  import Icon from "$lib/ui/Icon.svelte";
+  import FeedJumpChip from "$lib/ui/FeedJumpChip.svelte";
   import IconButton, { ICONBTN_ROW } from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
@@ -518,13 +518,7 @@
   </div>
 
   {#if !feed.autoStick && feed.rows.length > 0}
-    <button
-      class="jump"
-      aria-label={feed.unseen > 0 ? `Jump to latest, ${feed.unseen} new` : undefined}
-      onclick={feed.jumpToLatest}
-      ><Icon name="jump-down" size={11} />
-      {feed.unseen > 0 ? `${feed.unseen} new` : "Jump to latest"}</button
-    >
+    <FeedJumpChip unseen={feed.unseen} onclick={feed.jumpToLatest} />
   {/if}
 
   <div class="footer">
@@ -543,6 +537,7 @@
     font-family: var(--font-ui);
     min-height: 0;
     position: relative;
+    --feedjump-bottom: 46px;
   }
   .bar {
     flex: 0 0 auto;
@@ -686,23 +681,6 @@
     letter-spacing: 0.06em;
     font-weight: 400;
     color: var(--color-dim);
-  }
-  .jump {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: 46px;
-    z-index: 2;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 12px;
-    font-size: 10px;
-    font-family: var(--font-ui);
-    color: var(--color-accent-ink);
-    background: var(--color-accent);
-    border: 0;
-    cursor: pointer;
   }
 
   .footer {
