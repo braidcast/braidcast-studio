@@ -20,6 +20,7 @@
 
 #include "bridge.hpp"
 #include "diag/capture_rate_sampler.hpp"
+#include "gpu_safe_mode.hpp"
 #include "log.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -42,6 +43,19 @@ constexpr const char *kAsyncName = "caprate-async";
 // find them, as it has to for a Shorts destination.
 constexpr const char *kCanvasDxgiName = "caprate-canvas-dxgi";
 constexpr const char *kGameName = "caprate-game";
+// An overlay: a browser source whose page repaints on every animation frame, so
+// CEF paints at its full windowless rate. Its rows are diagnostics only.
+constexpr const char *kBrowserName = "caprate-browser";
+constexpr const char *kBrowserSourceId = "browser_source";
+// No '#' or '%': a data: URL would read them as a fragment and an escape.
+constexpr const char *kBrowserUrl =
+	"data:text/html,<body><script>let on=0;(function paint(){on^=1;"
+	"document.body.style.background=on?'red':'blue';requestAnimationFrame(paint)})()</script></body>";
+// A page animating every frame paints about once per canvas frame; this share of
+// the main rate leaves room for CEF's own pacing.
+constexpr double kBrowserMinShare = 0.5;
+// Chromium's own report of its GPU process dying, in CEF's debug log.
+constexpr const char *kCefGpuCrashLine = "GPU process exited unexpectedly";
 
 // win-capture's display_capture_method values.
 constexpr int kMethodDxgi = 1;
@@ -348,6 +362,10 @@ struct State {
 	int sessionLinesBefore = 0;
 	Clock::time_point sessionBegan;
 	std::string sessionLine;
+	// Overlay rows must reach diagnostics.get alone, never stats.get.
+	bool browserInCaptures = false;
+	bool overlayKeyInStats = false;
+	bool overlayKeyMissing = false;
 
 	int64_t lastSampledAtMs = -1;
 	std::map<Phase, std::vector<Sample>> samples;
@@ -520,6 +538,15 @@ bool CanvasSetup(State &st)
 	return st.canvasScene != nullptr;
 }
 
+OBSSourceAutoRelease CreateBrowser(const char *name)
+{
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "url", kBrowserUrl);
+	obs_data_set_int(settings, "width", 64);
+	obs_data_set_int(settings, "height", 64);
+	return obs_source_create_private(kBrowserSourceId, name, settings);
+}
+
 OBSSourceAutoRelease CreateMonitorCapture(const State &st, const char *name, int method)
 {
 	OBSDataAutoRelease settings = obs_data_create();
@@ -570,8 +597,20 @@ void Poll(State &st)
 		st.lastHalfRateCaptures = result["captures"];
 	}
 	Sample sample;
+	st.overlayKeyInStats = st.overlayKeyInStats || result.contains("overlayPaints");
 	for (const json &row : result["captures"]) {
+		st.browserInCaptures = st.browserInCaptures || row.value("kind", "") == "browserPaint";
 		sample[row.value("name", "")] = row;
+	}
+	// Same UI-thread turn as stats.get, so both read the same sampler tick.
+	json diag;
+	if (!Bridge::Dispatch("diagnostics.get", json(nullptr), diag, err) || !diag.is_object() ||
+	    !diag.contains("overlayPaints") || !diag["overlayPaints"].is_array()) {
+		st.overlayKeyMissing = true;
+	} else {
+		for (const json &row : diag["overlayPaints"]) {
+			sample[row.value("name", "")] = row;
+		}
 	}
 	st.samples[st.phase].push_back(std::move(sample));
 }
@@ -708,7 +747,8 @@ bool Setup(State &st)
 	OBSSourceAutoRelease async = obs_source_create_private(kAsyncId, kAsyncName, nullptr);
 	OBSSourceAutoRelease canvasDxgi = CreateMonitorCapture(st, kCanvasDxgiName, kMethodDxgi);
 	OBSSourceAutoRelease game = CreateGameCapture(kGameName);
-	if (!wgc || !dxgi || !async || !canvasDxgi || !game) {
+	OBSSourceAutoRelease browser = CreateBrowser(kBrowserName);
+	if (!wgc || !dxgi || !async || !canvasDxgi || !game || !browser) {
 		st.exitCode = 3;
 		st.failures.push_back("could not create the test sources");
 		return false;
@@ -718,12 +758,19 @@ bool Setup(State &st)
 	Place(st, kAsyncName, async);
 	PlaceOnCanvas(st, kCanvasDxgiName, canvasDxgi);
 	PlaceOnCanvas(st, kGameName, game);
+	Place(st, kBrowserName, browser);
 	st.producer = std::make_unique<Producer>();
 	st.producer->Start(async);
 
 	Say("up: mainFps=" + Fmt(st.mainFps) + " canvasFps=" + Fmt(st.canvasFps) +
 	    " refreshHz=" + std::to_string(st.refreshHz) + " monitor=" + st.monitorId);
 	return true;
+}
+
+bool AllStatus(const std::vector<json> &rows, const char *status)
+{
+	return !rows.empty() && std::all_of(rows.begin(), rows.end(),
+					    [status](const json &r) { return r.value("status", "") == status; });
 }
 
 // Change the screen about 30 times a second: half a 60 fps canvas.
@@ -744,17 +791,52 @@ void CheckFullRate(State &st)
 	Check(st, !async.empty() && !AnyFlag(async, "below"),
 	      "async steady 30/s: input " + Fmt(Median(Numbers(async, "inputFps"))) + " rendered " +
 		      Fmt(Median(Numbers(async, "renderedFps"))) + ", never below");
+
+	const std::vector<json> browser = RowsOf(st, Phase::FullRate, kBrowserName, 2);
+	const double paints = Median(Numbers(browser, "rate"));
+	const double wantPaints = kBrowserMinShare * st.mainFps;
+	const std::string what = std::string("overlay paints: ") + kBrowserName + " median " + Fmt(paints) + "/s";
+	OBSDataAutoRelease privateData = obs_get_private_data();
+	const bool sharedTextures = obs_data_get_bool(privateData, BrowserHwAccel::kPrivateDataKey);
+	const int gpuCrashes = SelfTest::CountCefLogLines(kCefGpuCrashLine);
+	if (AllStatus(browser, "ok") && paints == 0.0 && sharedTextures && gpuCrashes > 0) {
+		// Observed with shared textures on and CEF's GPU process crashing at boot:
+		// CEF called OnPaint (type PET_VIEW, sharing_available set) and never
+		// OnAcceleratedPaint, so no frame reached the source.
+		Inconclusive(st, what + ": shared textures on and CEF's GPU process crashed " +
+					 std::to_string(gpuCrashes) +
+					 " time(s) this launch, so no frame reached the source");
+	} else {
+		Check(st, AllStatus(browser, "ok") && paints >= wantPaints && !AnyFlag(browser, "below"),
+		      what + " >= " + Fmt(wantPaints) + ", never below");
+	}
+}
+
+// A browser row is a rate and nothing more, in every phase: no fraction, lock, lock
+// note or "below", whatever its cadence.
+void CheckBrowserRowsRateOnly(State &st)
+{
+	size_t rows = 0;
+	bool rateOnly = true;
+	for (const auto &[phase, samples] : st.samples) {
+		for (const json &r : RowsOf(st, phase, kBrowserName)) {
+			rows++;
+			const auto null = [&r](const char *key) {
+				return r.contains(key) && r[key].is_null();
+			};
+			rateOnly = rateOnly && r.value("kind", "") == "browserPaint" && null("fraction") &&
+				   null("lockedFraction") && null("note") && !r.value("below", true) &&
+				   !r.value("inGrace", true);
+		}
+	}
+	Check(st, rows > 0 && rateOnly,
+	      std::string("browser rows carry a rate only (") + std::to_string(rows) +
+		      " rows: no fraction, lock, note, below or grace)");
 }
 
 bool Near(double a, double b)
 {
 	return std::fabs(a - b) < 0.01;
-}
-
-bool AllStatus(const std::vector<json> &rows, const char *status)
-{
-	return !rows.empty() && std::all_of(rows.begin(), rows.end(),
-					    [status](const json &r) { return r.value("status", "") == status; });
 }
 
 // Whether the test canvas's root is the only one that reaches `name`: not Main, not
@@ -1093,6 +1175,7 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 			// Hiding the WGC source frees its session, so the moving-cursor check
 			// sees DXGI's own filtering.
 			Hide(st.placed[kWgcName]);
+			Hide(st.placed[kBrowserName]);
 			const RECT &rc = st.monitorRect;
 			st.cursor = std::make_unique<CursorMover>();
 			st.cursor->Start(POINT{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2});
@@ -1106,6 +1189,8 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 			const std::vector<json> rows = RowsOf(st, Phase::Hide, kWgcName, 1);
 			Check(st, rows.empty() || rows.back().value("status", "") != "ok",
 			      "hidden WGC source stops reading a rate");
+			Check(st, RowsOf(st, Phase::Hide, kBrowserName, 1).empty(),
+			      "a hidden browser source is not reported");
 			st.cursor->Stop();
 			obs_source_set_deinterlace_mode(st.placed[kAsyncName].source, OBS_DEINTERLACE_MODE_DISABLE);
 			HalfCadence(st);
@@ -1173,7 +1258,13 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 			      "session line reports the non-Default canvas's source");
 			Check(st, SelfTest::CountSessionLogLines("'caprate-game' idle (never counted)") >= 1,
 			      "session line names the showing, unhooked game capture");
+			Check(st, SelfTest::CountSessionLogLines("'caprate-browser' paint median") >= 1,
+			      "session line reports the overlay's paint rate");
 		}
+		Check(st, !st.browserInCaptures && !st.overlayKeyInStats,
+		      "browser rows stay out of stats.get (the Stats panel's feed)");
+		Check(st, !st.overlayKeyMissing, "diagnostics.get always carries overlayPaints");
+		CheckBrowserRowsRateOnly(st);
 		WriteSummary(st);
 		Enter(st, Phase::Done);
 		return true;

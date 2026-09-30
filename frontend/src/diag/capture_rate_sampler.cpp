@@ -60,6 +60,34 @@ nlohmann::json OptionalNumber(const std::optional<double> &v)
 	return v ? nlohmann::json(*v) : nlohmann::json(nullptr);
 }
 
+nlohmann::json RowJson(const Row &r)
+{
+	nlohmann::json note = nullptr;
+	if (r.lockedFraction) {
+		// A rate, never a cause: the screen may simply update at that pace.
+		note = std::string("delivering ") + r.lockedFraction + " of canvas rate";
+	}
+	return nlohmann::json{
+		{"uuid", r.uuid},
+		{"name", r.name},
+		{"kind", KindName(r.kind)},
+		{"status", StatusName(r.status)},
+		{"refFps", OptionalNumber(r.refFps)},
+		{"rate", OptionalNumber(r.rate)},
+		{"fraction", OptionalNumber(r.fraction)},
+		{"inputFps", OptionalNumber(r.inputFps)},
+		{"renderedFps", OptionalNumber(r.renderedFps)},
+		{"below", r.below},
+		{"lockedFraction", r.lockedFraction ? nlohmann::json(r.lockedFraction) : nlohmann::json(nullptr)},
+		{"note", note},
+		{"inGrace", r.inGrace},
+		{"sinceReset",
+		 {{"liveSec", r.sinceReset.liveSec},
+		  {"belowSec", r.sinceReset.belowSec},
+		  {"lockedSec", r.sinceReset.lockedSec}}},
+	};
+}
+
 } // namespace
 
 bool HoldsSource(obs_weak_source_t *weak, obs_source_t *source)
@@ -162,37 +190,25 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 	lastSampleNs_ = nowNs;
 }
 
-nlohmann::json Sampler::Payload() const
+nlohmann::json Sampler::RowsPayload(bool overlays) const
 {
 	nlohmann::json rows = nlohmann::json::array();
 	for (const Row &r : tracker_.Rows()) {
-		nlohmann::json note = nullptr;
-		if (r.lockedFraction) {
-			// A rate, never a cause: the screen may simply update at that pace.
-			note = std::string("delivering ") + r.lockedFraction + " of canvas rate";
+		if ((r.kind == Kind::BrowserPaint) == overlays) {
+			rows.push_back(RowJson(r));
 		}
-		rows.push_back(nlohmann::json{
-			{"uuid", r.uuid},
-			{"name", r.name},
-			{"kind", KindName(r.kind)},
-			{"status", StatusName(r.status)},
-			{"refFps", OptionalNumber(r.refFps)},
-			{"rate", OptionalNumber(r.rate)},
-			{"fraction", OptionalNumber(r.fraction)},
-			{"inputFps", OptionalNumber(r.inputFps)},
-			{"renderedFps", OptionalNumber(r.renderedFps)},
-			{"below", r.below},
-			{"lockedFraction",
-			 r.lockedFraction ? nlohmann::json(r.lockedFraction) : nlohmann::json(nullptr)},
-			{"note", note},
-			{"inGrace", r.inGrace},
-			{"sinceReset",
-			 {{"liveSec", r.sinceReset.liveSec},
-			  {"belowSec", r.sinceReset.belowSec},
-			  {"lockedSec", r.sinceReset.lockedSec}}},
-		});
 	}
 	return rows;
+}
+
+nlohmann::json Sampler::Payload() const
+{
+	return RowsPayload(false);
+}
+
+nlohmann::json Sampler::OverlayPayload() const
+{
+	return RowsPayload(true);
 }
 
 void Sampler::Watch(uint64_t nowNs)

@@ -1351,7 +1351,7 @@ bool ObsBootstrap::Start()
 	// reference, so the local one is ours to release.
 	{
 		OBSDataAutoRelease privateData = obs_data_create();
-		obs_data_set_bool(privateData, "BrowserHWAccel", hwAccel.enable);
+		obs_data_set_bool(privateData, BrowserHwAccel::kPrivateDataKey, hwAccel.enable);
 		obs_set_private_data(privateData);
 	}
 	if (hwAccel.crashDetected) {

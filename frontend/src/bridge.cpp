@@ -12860,11 +12860,17 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 // environment at boot and drives a mandatory indicator, because a debug port with
 // no visible sign is how someone opts in once, forgets, and streams for months
 // with it open.
+//
+// overlayPaints is each browser source's paint rate from the last capture-rate
+// sample. It lives here rather than in stats.get because overlay rates are
+// diagnostics, never the Stats panel. Empty unless an output is live or
+// stats.watchCaptures holds a lease.
 bool MethodDiagnosticsGet(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	result = json{{"debug", Log::DebugEnabled()},
 		      {"logPath", SessionLog::CurrentPath()},
-		      {"devToolsPort", DevToolsPort::Active()}};
+		      {"devToolsPort", DevToolsPort::Active()},
+		      {"overlayPaints", ObsBootstrap::CaptureRates().OverlayPayload()}};
 	return true;
 }
 

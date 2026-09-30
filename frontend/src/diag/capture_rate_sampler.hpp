@@ -44,8 +44,13 @@ public:
 	// starts clean.
 	void Idle();
 
-	// The last sample's rows, shaped for stats.get; an empty array while idle.
+	// The last sample's capture rows, shaped for stats.get's `captures`, which
+	// the Stats panel renders; an empty array while idle. Never browser rows.
 	nlohmann::json Payload() const;
+
+	// The last sample's browser-source paint rows, same shape, for
+	// diagnostics.get's `overlayPaints`: diagnostics only, never the Stats panel.
+	nlohmann::json OverlayPayload() const;
 
 	// stats.watchCaptures: sample for kLeaseNs from now even with nothing live.
 	void Watch(uint64_t nowNs);
@@ -78,6 +83,7 @@ private:
 	};
 
 	bool CanvasLive(const std::string &canvasUuid) const;
+	nlohmann::json RowsPayload(bool overlays) const;
 
 	Tracker tracker_;
 	std::map<std::string, Held> held_;

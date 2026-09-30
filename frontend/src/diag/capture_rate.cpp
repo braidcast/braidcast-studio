@@ -106,17 +106,18 @@ bool IsDisplayRate(Kind kind)
 	return kind == Kind::Wgc || kind == Kind::Dxgi;
 }
 
-// Phase 1 measures display capture and async sources.
-bool IsMeasured(Kind kind)
+// Kinds that deliver a frame only when something changed (C2), so their rate is
+// a fact about the content, never a fault, and never reads "below".
+bool IsChangeRate(Kind kind)
 {
-	return IsDisplayRate(kind) || kind == Kind::Async;
+	return IsDisplayRate(kind) || kind == Kind::BrowserPaint;
 }
 
-// Overlay paint counts go to diagnostics only. The game hook's kind still gets a
-// row, so a game capture never drops out of the stats or the session line.
-bool IsReported(Kind kind)
+// The game hook's kind is not measured yet, but still gets a row, so a game
+// capture never drops out of the stats or the session line.
+bool IsMeasured(Kind kind)
 {
-	return kind != Kind::BrowserPaint;
+	return IsChangeRate(kind) || kind == Kind::Async;
 }
 
 Status StatusOf(const SourceInput &src)
@@ -140,6 +141,8 @@ const char *LineLabel(Kind kind)
 		return "DXGI";
 	case Kind::Wgc:
 		return "WGC";
+	case Kind::BrowserPaint:
+		return "paint";
 	default:
 		return KindName(kind);
 	}
@@ -324,17 +327,23 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 
 	std::optional<double> sessionRate;
 	std::optional<double> sessionInput;
-	if (r.status == Status::Ok && IsDisplayRate(r.kind)) {
-		// Capped: WGC can land two frames in one pump, and the canvas shows one.
+	if (r.status == Status::Ok && IsChangeRate(r.kind)) {
+		// Capped at what the canvas could show, one frame per tick: WGC can land two
+		// frames in one pump, and a browser set to a custom rate above the canvas
+		// paints frames the canvas never shows.
 		const double shown = std::min(static_cast<double>(dDelivered), expected);
 		r.rate = shown / dt;
-		if (r.refFps && expected > 0.0) {
-			r.fraction = shown / expected;
-		}
-		r.inGrace = inGrace;
-		const bool eligible = r.refFps && !inGrace && mostlyLive && r.fraction && *r.fraction >= kMinLockRatio;
-		UpdateLock(e, r.fraction, eligible);
 		sessionRate = r.rate;
+		// The lock note is for display capture only; an overlay reports its rate.
+		if (IsDisplayRate(r.kind)) {
+			if (r.refFps && expected > 0.0) {
+				r.fraction = shown / expected;
+			}
+			r.inGrace = inGrace;
+			const bool eligible = r.refFps && !inGrace && mostlyLive && r.fraction &&
+					      *r.fraction >= kMinLockRatio;
+			UpdateLock(e, r.fraction, eligible);
+		}
 	} else if (r.status == Status::Ok && r.kind == Kind::Async) {
 		r.inputFps = dDelivered / dt;
 		r.renderedFps = dNew / dt;
@@ -382,7 +391,7 @@ void Tracker::Sample(const SampleInput &in)
 	const bool gapOk = in.dtSec > 0.0 && in.dtSec <= kMaxSampleGapSec;
 	std::set<std::string> seen;
 	for (const SourceInput &src : in.sources) {
-		if (!IsReported(src.counts.kind) || !seen.insert(src.uuid).second) {
+		if (!seen.insert(src.uuid).second) {
 			continue;
 		}
 		Entry &e = entries_[src.uuid];

@@ -1254,6 +1254,18 @@ export interface OutputStat {
   durationMs: number;
 }
 
+/** One browser source's paint rate, as diagnostics.get's `overlayPaints` reports it.
+ * Diagnostics only: the Stats panel does not render overlay rates. `rate` is paints
+ * per second, capped at what the canvas could show, and null unless `status` is "ok". */
+export interface OverlayPaintRow {
+  uuid: string;
+  name: string;
+  kind: "browserPaint";
+  status: "ok" | "unmeasurable" | "idle";
+  refFps: number | null;
+  rate: number | null;
+}
+
 /** One sample taken by the host's stats sampler: pushed on stats.changed, and
  * echoed by stats.get. */
 export interface Stats {
@@ -2484,7 +2496,13 @@ export interface ObsMethods {
   // read from CefSettings at CefInitialize, so it is fixed for the session: no event
   // carries it and one read is enough. debug.changed does NOT include it -- the port
   // is env-gated at boot and the persisted debug toggle deliberately cannot open it.
-  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number };
+  "diagnostics.get": {
+    debug: boolean;
+    logPath: string;
+    devToolsPort: number;
+    /** Empty unless an output is live or stats.watchCaptures holds a lease. */
+    overlayPaints?: OverlayPaintRow[];
+  };
   "diagnostics.setDebug": { debug: boolean };
   "diagnostics.openLogFolder": { ok: boolean };
 }

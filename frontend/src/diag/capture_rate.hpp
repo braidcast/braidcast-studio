@@ -18,10 +18,13 @@
 //     capture lag.
 //   - expected = live ticks x min(1, ref / main fps), where ref is the best frame
 //     rate among LIVE canvases reaching the source. No live canvas, no rule.
-//   - WGC and DXGI report only when the screen changes, so a low rate there is a
-//     fact about the screen, never a fault. They show a rate and, when it holds
-//     steady at a simple fraction of the canvas, a neutral lock note. Only async
-//     sources, whose producer rate is known, can read "below".
+//   - WGC and DXGI report only when the screen changes, and a browser source only
+//     when its page repaints, so a low rate there is a fact about the content,
+//     never a fault. They show a rate; display capture adds a neutral lock note
+//     when it holds steady at a simple fraction of the canvas. Only async sources,
+//     whose producer rate is known, can read "below".
+//   - Browser (overlay) rows go to the session line and diagnostics.get only,
+//     never stats.get or the Stats panel; the sampler hands them out separately.
 //
 // UI thread only, like its owner.
 namespace CaptureRate {
@@ -106,8 +109,8 @@ struct Row {
 	Kind kind = Kind::None;
 	Status status = Status::Idle;
 	std::optional<double> refFps;
-	// WGC / DXGI: frames shown per second, and that as a share of what the canvas
-	// could show over the same ticks.
+	// WGC / DXGI / browser paint: frames shown per second. WGC / DXGI also give
+	// that as a share of what the canvas could show over the same ticks.
 	std::optional<double> rate;
 	std::optional<double> fraction;
 	// Async: frames the producer delivered and frames that reached the render.

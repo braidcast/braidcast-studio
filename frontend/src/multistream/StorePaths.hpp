@@ -23,6 +23,10 @@ const std::string &BraidcastConfigDir();
 // through, so portable-mode redirection lives in exactly one place.
 std::string BraidcastConfigPath(const char *relative);
 
+// CEF's own debug log, under the config base (BraidcastConfigPath). Where the CEF
+// GPU-process crash signature lands.
+inline constexpr char kCefDebugLogFile[] = "cef_debug.log";
+
 // True when a marker file of this name sits next to the executable. The OBS-style
 // portable-marker idiom -- a file's mere presence beside the exe flips a mode --
 // shared by the portable-config marker here and the GPU-disable override marker in

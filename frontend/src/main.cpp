@@ -794,7 +794,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// millisecond timestamps to correlate against the "[gpudiag]" sampler timeline.
 	// Severity is left at the default (INFO): the crash lines already emit at
 	// WARNING/ERROR, and raising to VERBOSE would flood the log and perturb timing.
-	const std::string cefLog = BraidcastConfigPath("cef_debug.log");
+	const std::string cefLog = BraidcastConfigPath(kCefDebugLogFile);
 	if (!cefLog.empty()) {
 		CefString(&settings.log_file).FromString(cefLog);
 	}

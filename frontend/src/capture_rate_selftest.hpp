@@ -7,19 +7,25 @@
 //
 // Drives real monitor captures (one WGC, one DXGI, and a second DXGI sharing the
 // first one's duplicator) against a full-screen window that repaints on DwmFlush at
-// a chosen cadence, plus a private async source fed by its own producer thread, and
-// reads the rows back through stats.get -- the payload the Stats panel and the MCP
-// server read. Checks, in order:
+// a chosen cadence, a private async source fed by its own producer thread, and a
+// browser source whose page repaints every frame. It reads capture rows back through
+// stats.get -- the payload the Stats panel and the MCP server read -- and the browser
+// source's paint rows through diagnostics.get, where overlay rates live instead.
+// Checks, in order:
 //   A  full cadence: display captures deliver >= 0.9 x min(main fps, change rate),
-//      and a second DXGI source joining the shared duplicator shows no spike;
+//      a second DXGI source joining the shared duplicator shows no spike, and the
+//      browser source paints at >= half the main rate;
 //   B  half cadence: about 1/2, locked at 1/2 after grace, never a warning;
 //      bursty async input reads "below" while steady 30/s input never does;
 //   C  static screen, still and then with the cursor moving over it (the WGC
 //      source hidden): DXGI stays <= 5/s (pointer-only updates are not frames),
-//      and a deinterlaced async source reads unmeasurable;
+//      a deinterlaced async source reads unmeasurable, and the browser source,
+//      hidden, is not reported;
 //   then a WGC re-show and a WGC->DXGI method switch (grace again, no spike), a
 //   save/remove/load of the DXGI source (same uuid, no spike), and the session log
-//   line written by SessionBegin/SessionEnd.
+//   line written by SessionBegin/SessionEnd, which names the browser source's paint
+//   rate. Browser rows arrive only in diagnostics.get's `overlayPaints`: never in
+//   stats.get, and never carrying a fraction, a lock or a "below".
 //
 // The Default canvas is treated as live through the sampler's test override, since
 // the reference rate comes only from live canvases and this run must not broadcast.

@@ -104,11 +104,11 @@ static void test_lag_is_not_async_below(void **)
 	}
 }
 
-// C2: display-rate sources only ever report a rate. A static desktop delivering
-// nothing, or a 30 fps one, is never "below".
+// C2: display-rate sources only ever report a rate. A static desktop or page
+// delivering nothing, or a 30 fps one, is never "below".
 static void test_display_capture_is_never_below(void **)
 {
-	for (Kind kind : {Kind::Wgc, Kind::Dxgi}) {
+	for (Kind kind : {Kind::Wgc, Kind::Dxgi, Kind::BrowserPaint}) {
 		for (uint32_t rate : {0u, 5u, 15u, 30u}) {
 			Tracker t;
 			Feed f("disp", kind);
@@ -662,6 +662,31 @@ static void test_removed_source_keeps_its_sums(void **)
 	assert_non_null(strstr(line.c_str(), "'Gone' DXGI median 60.0/s"));
 }
 
+// An overlay's paint rate is a rate and nothing more: a steady half cadence gets
+// no fraction and no lock note, and the session line names its median, which is
+// the answer to "does this overlay really paint at 60".
+static void test_browser_paint_reports_a_rate_only(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed overlay("Alerts", Kind::BrowserPaint);
+	Prime(t, overlay);
+	for (int s = 0; s < 30; s++) {
+		Step(t, overlay, 60, 30, 30);
+		const Row *r = RowFor(t, "Alerts");
+		assert_non_null(r);
+		assert_int_equal((int)r->status, (int)Status::Ok);
+		assert_true(std::fabs(*r->rate - 30.0) < 0.01);
+		assert_false(r->fraction.has_value());
+		assert_null(r->lockedFraction);
+		assert_false(r->inGrace);
+		assert_false(r->below);
+	}
+	const std::string line = t.SessionEnd(30ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Alerts' paint median 30.0/s (ref 60)"));
+	assert_null(strstr(line.c_str(), "locked"));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -691,6 +716,7 @@ int main(void)
 		cmocka_unit_test(test_repeated_session_begin_keeps_the_session),
 		cmocka_unit_test(test_grace_restarts_on_going_live),
 		cmocka_unit_test(test_lock_ends_with_the_broadcast),
+		cmocka_unit_test(test_browser_paint_reports_a_rate_only),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

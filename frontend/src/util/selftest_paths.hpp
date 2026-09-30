@@ -35,6 +35,12 @@ const char *ResultName(int exitCode);
 // session log handler flushes every message, so a line emitted moments ago is already counted.
 int CountSessionLogLines(const std::string &needle);
 
+// The same count over CEF's own debug log (kCefDebugLogFile), where Chromium reports what it
+// never tells the host through an API, such as its GPU process dying. Counts only lines stamped
+// at or after this process started, so a stale line from an earlier launch never counts. -1 if
+// the log cannot be read.
+int CountCefLogLines(const std::string &needle);
+
 // How long a BRAIDCAST_SELFTEST_STREAM mode waits after arming before touching anything, so
 // startup -- module loads, the first scene, the UI's own first bridge calls -- has settled and
 // does not land inside a measurement.

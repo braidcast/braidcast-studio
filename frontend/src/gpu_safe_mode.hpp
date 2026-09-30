@@ -73,8 +73,11 @@ bool SoftwareRendering();
 // the probe so an encoder or plugin fault cannot misattribute itself here.
 namespace BrowserHwAccel {
 
+// The libobs private-data key obs-browser reads its hardware-acceleration switch from.
+inline constexpr char kPrivateDataKey[] = "BrowserHWAccel";
+
 struct BootDecision {
-	// Effective value to publish to obs-browser as "BrowserHWAccel".
+	// Effective value to publish to obs-browser under kPrivateDataKey.
 	bool enable = false;
 	// This boot consumed a surviving sentinel. The caller turns the stored setting
 	// off: that setting IS the latch, so the Settings checkbox stays an honest
