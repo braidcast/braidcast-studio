@@ -62,6 +62,7 @@ constexpr const char *kSideFiles[] = {"-wal", "-shm"};
 // Why stored chat is removed, as logged.
 constexpr const char *kOffReason = "chat history is off";
 constexpr const char *kAbandonedReason = "it cannot be kept current this launch";
+constexpr const char *kSessionReason = "chat history is kept for this session only";
 
 constexpr int kBusyTimeoutMs = 3000;
 
@@ -289,10 +290,11 @@ ChatArchive::~ChatArchive()
 	ReleaseLock();
 }
 
-void ChatArchive::Open(const Options &options, Seed &seed)
+void ChatArchive::Open(const Options &options, Seed &seed, SeqRaise raiseSeq)
 {
 	const auto started = std::chrono::steady_clock::now();
 	options_ = options;
+	raiseSeq_ = std::move(raiseSeq);
 	const bool unknownSetting = options.unknownSetting.has_value();
 	// An unknown setting runs as 7 days, the longest a known one keeps chat, bar the rows.
 	retention_ = unknownSetting ? Retention::SevenDays : options.retention;
@@ -304,7 +306,8 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 	bool opened = false;
 	if (retention_ == Retention::Off) {
 		SetStatus(ArchiveStatus::Off, {});
-		RemoveOrOwe(kOffReason);
+		// Off was not chosen this launch, so a store another instance holds is its to manage.
+		RemoveOrOwe(kOffReason, false);
 	} else if (OpenStore()) {
 		opened = true;
 		Sweep();
@@ -332,7 +335,7 @@ void ChatArchive::Open(const Options &options, Seed &seed)
 		// with its quarantined copies, rather than outlive them; the lock is still held.
 		// The ring keeps what was seeded from it.
 		CloseStore();
-		RemoveOrOwe(kAbandonedReason);
+		RemoveOrOwe(kAbandonedReason, true);
 		ReleaseLock();
 	}
 	const auto ms =
@@ -392,7 +395,6 @@ void ChatArchive::EnqueueRedact(const Redaction &redaction)
 
 void ChatArchive::EnqueueClear(uint64_t belowSeq)
 {
-	RaiseTo(clearedBelow_, belowSeq);
 	EnqueueControl(Clear{belowSeq});
 }
 
@@ -406,16 +408,23 @@ void ChatArchive::PurgeAccount(const std::string &accountId)
 void ChatArchive::EnqueueControl(Op op)
 {
 	bool started = true;
+	bool overflowed = false;
 	{
 		std::lock_guard<std::mutex> lock(queueMutex_);
 		if (stopped_) {
 			return;
 		}
 		if (NothingToReachLocked()) {
-			return;
+			// No writer runs to take it, but a store another instance held at Open may still
+			// be adopted later; it is kept for that (with no writer, missed_ is this lock's).
+			overflowed = KeepMissed(op);
+		} else {
+			PushControlLocked(std::move(op));
+			started = StartWriterLocked();
 		}
-		PushControlLocked(std::move(op));
-		started = StartWriterLocked();
+	}
+	if (overflowed) {
+		LogMissedOverflow();
 	}
 	if (!started) {
 		LogDegraded(StatusDetail());
@@ -424,11 +433,14 @@ void ChatArchive::EnqueueControl(Op op)
 
 void ChatArchive::PushControlLocked(Op op)
 {
-	// A reader applies a queued redaction or purge to what it reads until the writer has.
+	// A reader applies a queued redaction, purge or Clear to what it reads until the writer
+	// has.
 	if (const Redaction *redaction = std::get_if<Redaction>(&op)) {
 		pending_.push_back(*redaction);
 	} else if (const Purge *purge = std::get_if<Purge>(&op)) {
 		pending_.push_back(*purge);
+	} else if (const Clear *clear = std::get_if<Clear>(&op)) {
+		pending_.push_back(*clear);
 	}
 	PushLocked(std::move(op));
 	++controlsQueued_;
@@ -510,9 +522,9 @@ bool ChatArchive::NothingToReachLocked() const
 	return mode_ == Retention::Off && !writer_.joinable() && owedRemoval_.empty();
 }
 
-void ChatArchive::RemoveOrOwe(const std::string &why)
+void ChatArchive::RemoveOrOwe(const std::string &why, bool oweWhileLocked)
 {
-	SetOwedRemoval(RemoveStoreFiles(why) ? why : std::string());
+	SetOwedRemoval(RemoveStoreFiles(why, oweWhileLocked) ? why : std::string());
 }
 
 bool ChatArchive::RemoveWhatIsOwed()
@@ -524,7 +536,7 @@ bool ChatArchive::RemoveWhatIsOwed()
 	if (why.empty()) {
 		return false;
 	}
-	RemoveOrOwe(why);
+	RemoveOrOwe(why, true);
 	return true;
 }
 
@@ -538,6 +550,11 @@ void ChatArchive::SetOwedRemoval(std::string why)
 {
 	std::lock_guard<std::mutex> lock(queueMutex_);
 	owedRemoval_ = std::move(why);
+}
+
+void ChatArchive::FailWrites(bool fail)
+{
+	failWrites_.store(fail, std::memory_order_release);
 }
 
 void ChatArchive::FailWriterStart(bool fail)
@@ -617,7 +634,6 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 		std::lock_guard<std::mutex> lock(queueMutex_);
 		pending = pending_;
 	}
-	const uint64_t clearedBelow = clearedBelow_.load(std::memory_order_acquire);
 
 	std::lock_guard<std::mutex> lock(readMutex_);
 	if (!readDb_) {
@@ -627,6 +643,13 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 			return std::nullopt;
 		}
 		return out;
+	}
+	// Bounds read once the store is published, so a store adopted since the copy lifts them.
+	const uint64_t clearedBelow = ClearedBelow(pending);
+	for (PendingOp &op : pending) {
+		if (Redaction *redaction = std::get_if<Redaction>(&op)) {
+			redaction->belowSeq = ReachBelow(redaction->belowSeq);
+		}
 	}
 	std::string sql = "SELECT seq, rx, deleted, body, dest, msg_id, author_id, account_id, ts FROM messages "
 			  "WHERE seq < ?1 AND seq >= ?2";
@@ -689,6 +712,23 @@ std::optional<std::vector<json>> ChatArchive::ReadOlder(uint64_t beforeSeq, size
 	return out;
 }
 
+uint64_t ChatArchive::ReachBelow(uint64_t belowSeq) const
+{
+	const uint64_t foreign = foreignMax_.load(std::memory_order_acquire);
+	return foreign > 0 ? std::max(belowSeq, foreign + 1) : belowSeq;
+}
+
+uint64_t ChatArchive::ClearedBelow(const std::deque<PendingOp> &pending) const
+{
+	uint64_t below = 0;
+	for (const PendingOp &op : pending) {
+		if (const Clear *clear = std::get_if<Clear>(&op)) {
+			below = std::max(below, ReachBelow(clear->belowSeq));
+		}
+	}
+	return below;
+}
+
 bool ChatArchive::Readable() const
 {
 	if (Active()) {
@@ -713,12 +753,14 @@ std::string ChatArchive::StatusDetail() const
 json ChatArchive::StatusJson(std::chrono::milliseconds settle)
 {
 	json out{{"moderatedPlatforms", options_.moderatedPlatforms}};
+	std::deque<PendingOp> pending;
 	{
 		std::unique_lock<std::mutex> lock(queueMutex_);
 		const uint64_t queued = controlsQueued_;
 		idle_.wait_for(lock, settle, [&] { return controlsDone_ >= queued; });
 		out["status"] = StatusName(status_);
 		out["detail"] = statusDetail_;
+		pending = pending_;
 	}
 	bool onDisk = false;
 	if (!options_.path.empty()) {
@@ -734,7 +776,7 @@ json ChatArchive::StatusJson(std::chrono::milliseconds settle)
 			// Rows a queued Clear has already hidden from readers are not counted either.
 			Statement stmt(readDb_, "SELECT count(*) FROM messages WHERE seq >= ?1");
 			if (stmt) {
-				stmt.Bind(1, SqlSeq(clearedBelow_.load(std::memory_order_acquire)));
+				stmt.Bind(1, SqlSeq(ClearedBelow(pending)));
 				if (stmt.Step() == SQLITE_ROW) {
 					rows = sqlite3_column_int64(stmt.get(), 0);
 				}
@@ -874,16 +916,17 @@ void ChatArchive::Apply(std::vector<Op> &batch)
 	Commit(run);
 }
 
-void ChatArchive::Commit(std::vector<Op> &ops)
+bool ChatArchive::Commit(std::vector<Op> &ops, bool queued)
 {
 	if (ops.empty()) {
-		return;
+		return true;
 	}
 	size_t pendingCount = 0;
 	bool dropsHistory = false; // a Clear or a purge, which also owe the quarantined copies
 	for (const Op &op : ops) {
-		pendingCount += std::holds_alternative<Redaction>(op) || std::holds_alternative<Purge>(op) ? 1 : 0;
-		dropsHistory = dropsHistory || std::holds_alternative<Clear>(op) || std::holds_alternative<Purge>(op);
+		const bool drops = std::holds_alternative<Clear>(op) || std::holds_alternative<Purge>(op);
+		dropsHistory = dropsHistory || drops;
+		pendingCount += drops || std::holds_alternative<Redaction>(op) ? 1 : 0;
 	}
 	bool degraded = false;
 	{
@@ -896,12 +939,18 @@ void ChatArchive::Commit(std::vector<Op> &ops)
 			  ops.end());
 	}
 
+	bool committed = true;
 	if (db_.IsOpen() && !ops.empty()) {
 		int64_t countDelta = 0;
 		uint64_t maxSeq = 0;
 		bool rewrote = false;
-		bool committed = TryCommit(ops, countDelta, maxSeq, rewrote);
-		for (size_t attempt = 0; !committed && attempt < std::size(kRetryBackoff); ++attempt) {
+		// The self-test's failure stands for one that outlasted every retry.
+		const bool failing = failWrites_.load(std::memory_order_acquire);
+		committed = !failing && TryCommit(ops, countDelta, maxSeq, rewrote);
+		if (failing) {
+			writeError_ = "self-test";
+		}
+		for (size_t attempt = 0; !committed && !failing && attempt < std::size(kRetryBackoff); ++attempt) {
 			DBG(LogCat::Chat, "chat-archive: commit failed (%s); retrying", writeError_.c_str());
 			std::this_thread::sleep_for(kRetryBackoff[attempt]);
 			countDelta = 0;
@@ -918,6 +967,14 @@ void ChatArchive::Commit(std::vector<Op> &ops)
 		} else {
 			DegradeFromWriter("chat.db write failed: " + writeError_);
 		}
+	} else if (!db_.IsOpen() && !degraded) {
+		bool overflowed = false;
+		for (const Op &op : ops) {
+			overflowed = KeepMissed(op) || overflowed;
+		}
+		if (overflowed) {
+			LogMissedOverflow();
+		}
 	}
 	// Off: everything this build may remove goes, the quarantined copies with it, and so,
 	// whatever the mode, does a store an earlier try left owing. Otherwise a Clear or a
@@ -925,11 +982,12 @@ void ChatArchive::Commit(std::vector<Op> &ops)
 	if (!RemoveWhatIsOwed() && dropsHistory) {
 		WithStoreLock([this] { DeleteQuarantined(true); });
 	}
-	if (pendingCount > 0) {
+	if (queued && pendingCount > 0) {
 		std::lock_guard<std::mutex> lock(queueMutex_);
 		pending_.erase(pending_.begin(),
 			       pending_.begin() + static_cast<std::ptrdiff_t>(std::min(pendingCount, pending_.size())));
 	}
+	return committed;
 }
 
 bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uint64_t &maxSeq, bool &rewrote)
@@ -953,8 +1011,16 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 			std::to_string(seq) + "): " + sqlite3_errstr(rc));
 		return false;
 	};
+	const uint64_t foreignMax = foreignMax_.load(std::memory_order_relaxed); // the writer's own
 	for (const Op &op : ops) {
 		if (const Row *row = std::get_if<Row>(&op)) {
+			if (row->seq <= foreignMax) {
+				// Admitted before the store was adopted, with a seq among the rows another
+				// launch stored: it would take one's key, or sit inside that launch's order.
+				// It stays in the ring only, like a row admitted before persistence came on.
+				maxSeq = std::max(maxSeq, row->seq);
+				continue;
+			}
 			sqlite3_reset(insert_);
 			sqlite3_clear_bindings(insert_);
 			sqlite3_bind_int64(insert_, 1, SqlSeq(row->seq));
@@ -989,7 +1055,8 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 				continue;
 			}
 			// Queue order already keeps rows admitted after the op out of reach; the seq
-			// bound states it in the query as Redaction::Matches does.
+			// bound states it in the query as Redaction::Matches does, lifted over the rows
+			// of a store adopted after the op was issued (ReachBelow).
 			std::string sql = "SELECT seq, body FROM messages WHERE dest = ?1 AND seq < ?2";
 			if (redaction->action == ModerationAction::Delete) {
 				sql += " AND msg_id = ?3";
@@ -1004,7 +1071,7 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 				return fail();
 			}
 			select.Bind(1, redaction->dest);
-			select.Bind(2, SqlSeq(redaction->belowSeq));
+			select.Bind(2, SqlSeq(ReachBelow(redaction->belowSeq)));
 			if (redaction->action != ModerationAction::ClearAll) {
 				select.Bind(3, redaction->action == ModerationAction::Delete ? redaction->msgId
 											     : redaction->authorId);
@@ -1046,11 +1113,12 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 				rewrote = true;
 			}
 		} else if (const Clear *clear = std::get_if<Clear>(&op)) {
-			Statement del(db, "DELETE FROM messages WHERE seq < ?1");
+			Statement del(db, clear->receivedBy ? "DELETE FROM messages WHERE rx <= ?1"
+							    : "DELETE FROM messages WHERE seq < ?1");
 			if (!del) {
 				return fail();
 			}
-			del.Bind(1, SqlSeq(clear->belowSeq));
+			del.Bind(1, clear->receivedBy ? *clear->receivedBy : SqlSeq(ReachBelow(clear->belowSeq)));
 			if (del.Step() != SQLITE_DONE) {
 				return fail();
 			}
@@ -1077,6 +1145,7 @@ bool ChatArchive::TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uin
 
 void ChatArchive::ApplyMode(Retention retention)
 {
+	const Retention before = retention_;
 	retention_ = retention;
 	if (retention == Retention::Off) {
 		if (db_.IsOpen()) {
@@ -1085,10 +1154,16 @@ void ChatArchive::ApplyMode(Retention retention)
 			Checkpoint();
 			CloseStore();
 		}
+		sessionKeepsThrough_ = 0;
 		SetStatus(ArchiveStatus::Off, {});
-		RemoveOrOwe(kOffReason);
+		RemoveOrOwe(kOffReason, true);
 		ReleaseLock();
 		return;
+	}
+	if (retention == Retention::Session && before == Retention::SevenDays) {
+		// The one move to This session the user confirms: it deletes what earlier launches
+		// stored, what a late open kept included.
+		sessionKeepsThrough_ = 0;
 	}
 	if (!db_.IsOpen()) {
 		if (IsDegraded()) {
@@ -1097,38 +1172,143 @@ void ChatArchive::ApplyMode(Retention retention)
 			RemoveWhatIsOwed();
 			return;
 		}
-		if (!OpenStore()) {
+		if (!OpenStore(false)) {
 			StopPersisting();
 			// The copies set aside still age out, and This session still removes them all.
 			WithStoreLock([this] { SweepQuarantined(); });
+			if (retention == Retention::Session && before == Retention::SevenDays) {
+				// The user confirmed deleting what earlier launches stored; a store that
+				// opens later (Session to 7 days, say) must not bring it back.
+				SetOwedRemoval(kSessionReason);
+			}
 			return;
 		}
-		SetOwedRemoval({}); // the file an Off could not remove is the live store again
-		// The store was not open when this launch seeded its seqs: an Off could not
-		// remove it, or it could not be opened then. Rows found in it may share a seq with
-		// this launch's, which would collide on the key.
-		if (count_ > 0) {
-			HostLog("[chat-archive] removing " + std::to_string(count_) +
-				" row(s) this launch did not start from");
-			db_.Exec("DELETE FROM messages");
-			count_ = 0;
-			Checkpoint();
+		if (!AdoptStore(before)) {
+			StopPersisting();
 		}
+		return;
 	}
 	Sweep();
 }
 
-void ChatArchive::Sweep()
+bool ChatArchive::AdoptStore(Retention before)
+{
+	// The store was not open when this launch seeded its seqs: another instance held it, or
+	// Off had closed it. What it holds is kept, since moving to a keeping mode deletes
+	// nothing the user was not asked about, unless a removal the user confirmed this launch
+	// (Off, or 7 days to This session) is still owed.
+	const std::string owed = OwedRemoval();
+	if (!owed.empty() && count_ > 0) {
+		HostLog("[chat-archive] removing " + std::to_string(count_) + " row(s) (" + owed + ")");
+		if (!db_.Exec("DELETE FROM messages")) {
+			DegradeFromWriter("chat.db write failed: " + db_.LastError());
+			return GiveUpAdoption(owed);
+		}
+		count_ = 0;
+		Checkpoint();
+	}
+	SetOwedRemoval({}); // the file a removal could not reach is the live store again
+	const auto storedMax = static_cast<uint64_t>(
+		std::max<int64_t>(0, db_.ScalarInt("SELECT coalesce(max(seq), 0) FROM messages")));
+	// Every seq bound issued before this point now reaches the stored rows too (ReachBelow),
+	// and a row queued with a seq among them is not written (TryCommit).
+	foreignMax_.store(storedMax, std::memory_order_release);
+	if (retention_ == Retention::Session && before != Retention::SevenDays) {
+		// Moving to This session from Off asks nothing, so it deletes nothing: what another
+		// instance stored stays for this launch, still under the age and platform limits and
+		// Clear, and goes at the next launch's open, as an earlier launch's rows do.
+		sessionKeepsThrough_ = storedMax;
+	}
+	// What this launch removed while no store was open reaches the one it now has. The rows
+	// are kept only if it does: otherwise the store goes, as the removals would have it.
+	std::vector<Op> missed;
+	if (missed_.clearedAt) {
+		missed.push_back(Clear{0, missed_.clearedAt});
+	}
+	for (std::string &accountId : missed_.purgedAccounts) {
+		missed.push_back(Purge{std::move(accountId)});
+	}
+	for (Redaction &redaction : missed_.redactions) {
+		missed.push_back(std::move(redaction));
+	}
+	missed_ = {};
+	if (!Commit(missed, false)) {
+		return GiveUpAdoption(kAbandonedReason);
+	}
+	if (raiseSeq_) {
+		raiseSeq_(storedMax);
+	}
+	// Nothing is read before retention has run: the age and row limits, and an earlier
+	// launch's rows on a platform whose moderation is not honored.
+	if (!Sweep()) {
+		DegradeFromWriter("chat.db retention sweep failed");
+		return GiveUpAdoption({});
+	}
+	if (count_ > 0) {
+		HostLog("[chat-archive] kept " + std::to_string(count_) +
+			" row(s) this launch did not start from; its seqs continue above " + std::to_string(storedMax));
+	}
+	return OpenReader();
+}
+
+bool ChatArchive::GiveUpAdoption(const std::string &removal)
+{
+	CloseStore();
+	if (!removal.empty()) {
+		RemoveOrOwe(removal, true);
+	}
+	ReleaseLock();
+	return false;
+}
+
+bool ChatArchive::KeepMissed(const Op &op)
+{
+	if (std::holds_alternative<Clear>(op)) {
+		missed_.clearedAt = TimeUtil::NowMs();
+	} else if (const Purge *purge = std::get_if<Purge>(&op)) {
+		std::vector<std::string> &accounts = missed_.purgedAccounts;
+		if (std::find(accounts.begin(), accounts.end(), purge->accountId) == accounts.end()) {
+			accounts.push_back(purge->accountId);
+		}
+	} else if (const Redaction *redaction = std::get_if<Redaction>(&op)) {
+		Redaction kept = *redaction;
+		// Replayed later, an author-wide removal is bounded by the time it was seen, as one
+		// read out of a platform's history is (SafeToReplay): it must not reach what the
+		// author said after it, which the store may hold.
+		if (kept.action != ModerationAction::Delete && !kept.beforeTs) {
+			kept.beforeTs = TimeUtil::NowMs();
+		}
+		bool overflowed = false;
+		if (missed_.redactions.size() >= kMaxMissedRedactions) {
+			missed_.redactions.pop_front();
+			overflowed = !missed_.overflowed;
+			missed_.overflowed = true;
+		}
+		missed_.redactions.push_back(std::move(kept));
+		return overflowed;
+	}
+	return false;
+}
+
+void ChatArchive::LogMissedOverflow()
+{
+	HostLog("[chat-archive] more than " + std::to_string(kMaxMissedRedactions) +
+		" moderator removals while chat.db was closed; the oldest will not reach it if it opens later");
+}
+
+bool ChatArchive::Sweep()
 {
 	nextSweep_ = std::chrono::steady_clock::now() + kSweepInterval;
 	SweepQuarantined();
 	if (!db_.IsOpen()) {
-		return;
+		return true;
 	}
 	sqlite3 *db = db_.Handle();
-	if (!db_.Exec("BEGIN IMMEDIATE")) {
-		HostLog("[chat-archive] retention sweep could not start: " + db_.LastError());
-		return;
+	const bool failing = failWrites_.load(std::memory_order_acquire); // the self-test's failure
+	if (failing || !db_.Exec("BEGIN IMMEDIATE")) {
+		HostLog("[chat-archive] retention sweep could not start: " +
+			(failing ? std::string("self-test") : db_.LastError()));
+		return false;
 	}
 	int64_t removed = 0;
 	bool ok = true;
@@ -1149,23 +1329,26 @@ void ChatArchive::Sweep()
 		removed += sqlite3_changes(db);
 	};
 	run("DELETE FROM messages WHERE rx < ?1", [&](Statement &s) { s.Bind(1, TimeUtil::NowMs() - kRetentionMs); });
-	if (retention_ == Retention::Session) {
-		run("DELETE FROM messages WHERE launch_id != ?1", [&](Statement &s) { s.Bind(1, options_.launchId); });
-	} else {
-		// Rows of an earlier launch survive only on a platform whose moderation is honored.
-		std::string sql = "DELETE FROM messages WHERE launch_id != ?1";
-		if (!options_.moderatedPlatforms.empty()) {
-			sql += " AND platform NOT IN (";
-			for (size_t i = 0; i < options_.moderatedPlatforms.size(); ++i) {
-				sql += (i ? ", ?" : "?") + std::to_string(i + 2);
-			}
-			sql += ")";
+	// Rows of an earlier launch survive only on a platform whose moderation is honored.
+	std::string sql = "DELETE FROM messages WHERE launch_id != ?1";
+	if (!options_.moderatedPlatforms.empty()) {
+		sql += " AND platform NOT IN (";
+		for (size_t i = 0; i < options_.moderatedPlatforms.size(); ++i) {
+			sql += (i ? ", ?" : "?") + std::to_string(i + 2);
 		}
-		run(sql, [&](Statement &s) {
+		sql += ")";
+	}
+	run(sql, [&](Statement &s) {
+		s.Bind(1, options_.launchId);
+		for (size_t i = 0; i < options_.moderatedPlatforms.size(); ++i) {
+			s.Bind(static_cast<int>(i + 2), options_.moderatedPlatforms[i]);
+		}
+	});
+	if (retention_ == Retention::Session) {
+		// Under This session they survive on no platform, bar what a late open kept.
+		run("DELETE FROM messages WHERE launch_id != ?1 AND seq > ?2", [&](Statement &s) {
 			s.Bind(1, options_.launchId);
-			for (size_t i = 0; i < options_.moderatedPlatforms.size(); ++i) {
-				s.Bind(static_cast<int>(i + 2), options_.moderatedPlatforms[i]);
-			}
+			s.Bind(2, SqlSeq(sessionKeepsThrough_));
 		});
 	}
 	run("DELETE FROM messages WHERE seq < (SELECT seq FROM messages ORDER BY seq DESC LIMIT 1 OFFSET ?1)",
@@ -1174,13 +1357,14 @@ void ChatArchive::Sweep()
 		const std::string cause = ok ? db_.LastError() : sqlite3_errmsg(db);
 		db_.Exec("ROLLBACK");
 		HostLog("[chat-archive] retention sweep failed: " + cause);
-		return;
+		return false;
 	}
 	count_ -= removed;
 	if (removed > 0) {
 		DBG(LogCat::Chat, "chat-archive: retention removed %lld row(s)", static_cast<long long>(removed));
 		Checkpoint();
 	}
+	return true;
 }
 
 void ChatArchive::Checkpoint()
@@ -1202,22 +1386,16 @@ void ChatArchive::Checkpoint()
 	DBG(LogCat::Chat, "chat-archive: checkpoint busy; the next one truncates the WAL");
 }
 
-bool ChatArchive::OpenStore()
+bool ChatArchive::OpenStore(bool publishReader)
 {
 	if (!AcquireLock()) {
 		SetStatus(ArchiveStatus::Disabled, "chat.db is in use by another Braidcast");
 		return false;
 	}
-	const auto giveUp = [this](ArchiveStatus status, std::string detail) {
-		SetStatus(status, std::move(detail));
-		db_.Close();
-		ReleaseLock();
-		return false;
-	};
 
 	bool opened = db_.Open(options_.path, kChatLadder);
 	if (!opened && db_.NewerSchema()) {
-		return giveUp(ArchiveStatus::NewerSchema, db_.LastError());
+		return GiveUpStore(ArchiveStatus::NewerSchema, db_.LastError());
 	}
 	bool corrupt = !opened && IsCorruptFile(db_.LastErrorCode());
 	if (opened) {
@@ -1237,7 +1415,7 @@ bool ChatArchive::OpenStore()
 	std::string setAside;
 	if (!opened) {
 		if (!corrupt) {
-			return giveUp(ArchiveStatus::Disabled, db_.LastError());
+			return GiveUpStore(ArchiveStatus::Disabled, db_.LastError());
 		}
 		if (retention_ == Retention::Session) {
 			recovered = DiscardCorrupt();
@@ -1246,11 +1424,11 @@ bool ChatArchive::OpenStore()
 			recovered = !setAside.empty();
 		}
 		if (!recovered) {
-			return giveUp(ArchiveStatus::Disabled,
-				      "chat.db is unreadable and could not be moved out of the way");
+			return GiveUpStore(ArchiveStatus::Disabled,
+					   "chat.db is unreadable and could not be moved out of the way");
 		}
 		if (!db_.Open(options_.path, kChatLadder)) {
-			return giveUp(ArchiveStatus::Disabled, db_.LastError());
+			return GiveUpStore(ArchiveStatus::Disabled, db_.LastError());
 		}
 	}
 	// Best effort: deleted and redacted rows are overwritten in the main file, while the
@@ -1261,29 +1439,35 @@ bool ChatArchive::OpenStore()
 			       "author_id, ts, rx, launch_id, deleted, body) "
 			       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '', ?11)",
 			       -1, &insert_, nullptr) != SQLITE_OK) {
-		sqlite3_finalize(insert_);
-		insert_ = nullptr;
-		return giveUp(ArchiveStatus::Disabled, sqlite3_errmsg(db_.Handle()));
+		return GiveUpStore(ArchiveStatus::Disabled, sqlite3_errmsg(db_.Handle()));
 	}
 	count_ = db_.ScalarInt("SELECT count(*) FROM messages");
+	SetStatus(recovered ? ArchiveStatus::Recovered : ArchiveStatus::Ok, setAside);
+	return !publishReader || OpenReader();
+}
 
+bool ChatArchive::OpenReader()
+{
 	sqlite3 *reader = nullptr;
 	if (sqlite3_open_v2(options_.path.c_str(), &reader, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nullptr) !=
 	    SQLITE_OK) {
 		const std::string cause = reader ? sqlite3_errmsg(reader) : "out of memory";
 		sqlite3_close_v2(reader);
-		sqlite3_finalize(insert_);
-		insert_ = nullptr;
-		return giveUp(ArchiveStatus::Disabled, cause);
+		return GiveUpStore(ArchiveStatus::Disabled, cause);
 	}
 	sqlite3_busy_timeout(reader, kBusyTimeoutMs);
 	sqlite3_exec(reader, "PRAGMA query_only = ON", nullptr, nullptr, nullptr);
-	{
-		std::lock_guard<std::mutex> lock(readMutex_);
-		readDb_ = reader;
-	}
-	SetStatus(recovered ? ArchiveStatus::Recovered : ArchiveStatus::Ok, setAside);
+	std::lock_guard<std::mutex> lock(readMutex_);
+	readDb_ = reader;
 	return true;
+}
+
+bool ChatArchive::GiveUpStore(ArchiveStatus status, std::string detail)
+{
+	SetStatus(status, std::move(detail));
+	CloseStore();
+	ReleaseLock();
+	return false;
 }
 
 void ChatArchive::CloseStore()
@@ -1437,7 +1621,7 @@ std::string ChatArchive::Quarantine()
 	return name;
 }
 
-bool ChatArchive::RemoveStoreFiles(const std::string &why)
+bool ChatArchive::RemoveStoreFiles(const std::string &why, bool countLocked)
 {
 	const fs::path db = fs::u8path(options_.path);
 	std::error_code ec;
@@ -1458,8 +1642,8 @@ bool ChatArchive::RemoveStoreFiles(const std::string &why)
 		DeleteQuarantined(true);
 	});
 	if (!locked) {
-		// Another instance's to manage: not retried from here.
 		HostLog("[chat-archive] chat.db is in use by another Braidcast; left in place");
+		return countLocked;
 	}
 	return left;
 }

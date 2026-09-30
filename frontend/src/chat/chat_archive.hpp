@@ -57,6 +57,8 @@ struct sqlite3_stmt;
 //     together, and neither is ever held with the ring lock.
 //   - The writer thread owns the write connection and holds no lock while it does I/O.
 //     It takes readMutex_ only to close or reopen the read connection.
+//   - When the writer opens a store the launch did not start from, it calls the SeqRaise
+//     hook, which takes ChatHistory's ring lock, holding no lock of its own.
 //   - queueMutex_ is a leaf.
 //   - Shutdown runs on the main thread once the CEF message loop has returned and the chat
 //     transports are stopped. It joins the writer, which first commits everything queued.
@@ -110,7 +112,9 @@ const char *DeletedMark(ModerationAction action);
 // It reaches only messages admitted before it: seq below `belowSeq`, the ring's next seq
 // when the op was applied, and, when the op carries one, a time at or before `beforeTs`
 // (ModerationOp). A user's first line after a timeout ends, or anything said after a clear,
-// is a later message and stays.
+// is a later message and stays. The one exception is a store the archive opens after boot:
+// its rows carry another launch's seqs, so an op issued before it was adopted reaches all
+// of them (ChatArchive::ReachBelow).
 struct Redaction {
 	std::string dest;
 	ModerationAction action = ModerationAction::Delete;
@@ -153,6 +157,9 @@ public:
 	// can hand the dropped queue back to be freed outside the ring lock.
 	struct Clear {
 		uint64_t belowSeq;
+		// Set on a Clear made while no store was open, replayed on the store opened later:
+		// it then removes every row received (`rx`) by this time instead.
+		std::optional<int64_t> receivedBy;
 	};
 	struct Purge {
 		std::string accountId;
@@ -198,10 +205,16 @@ public:
 	ChatArchive(const ChatArchive &) = delete;
 	ChatArchive &operator=(const ChatArchive &) = delete;
 
+	// Raise the ring's next seq above `storedMax` under the ring lock. The writer calls it
+	// when it opens a store this launch did not seed from (it could not be opened at boot,
+	// or Off had closed it) and keeps the rows it finds there, so no seq issued after it
+	// can land on one of them.
+	using SeqRaise = std::function<void(uint64_t storedMax)>;
+
 	// Open chat.db, set a corrupt one aside, apply retention, fill `seed`, and start the
 	// writer. Synchronous; call once, before anything is admitted. With retention Off it
 	// creates nothing, and removes what an earlier launch stored.
-	void Open(const Options &options, Seed &seed);
+	void Open(const Options &options, Seed &seed, SeqRaise raiseSeq = {});
 
 	// `frame` (unstamped) as a row, or nothing when it cannot be serialized -- the message
 	// is then kept in memory only, and logged, rather than failing a batch.
@@ -210,7 +223,8 @@ public:
 	// The ring-lock calls (see above). Each is a no-op once Shutdown has begun.
 	void Enqueue(Row row);
 	void EnqueueRedact(const Redaction &redaction);
-	// Remove every row admitted before `belowSeq`, the ring's next seq at the Clear.
+	// Remove every row admitted before `belowSeq`, the ring's next seq at the Clear, and,
+	// when issued before a store opened after boot was adopted, every row stored there.
 	void EnqueueClear(uint64_t belowSeq);
 	// Change the mode. `lastIssuedSeq` is the newest seq the ring has issued: turning
 	// persistence on marks everything up to it as settled, since none of it was queued.
@@ -261,6 +275,9 @@ public:
 	// Make every later attempt to start the writer thread fail, as running out of threads
 	// would.
 	void FailWriterStart(bool fail);
+	// Make every later commit and retention sweep fail at once, as a store that stopped
+	// taking writes would once its retries ran out.
+	void FailWrites(bool fail);
 
 	// The ring may grow past its cap while the writer catches up, up to this many rows.
 	// Past it the archive degrades. Each held message costs about 3 KB as a parsed frame in
@@ -270,7 +287,19 @@ public:
 
 private:
 	// What a reader must apply to rows it reads while the writer has not yet.
-	using PendingOp = std::variant<Redaction, Purge>;
+	using PendingOp = std::variant<Redaction, Purge, Clear>;
+
+	// The control ops no store could take, kept to be replayed on a store opened later
+	// (AdoptStore): a Clear as the time of the last one, a purge by account, and the
+	// redactions, the oldest dropped past kMaxMissedRedactions. The writer's, bar while Off
+	// since Open, when no writer runs and EnqueueControl keeps them under queueMutex_.
+	struct Missed {
+		std::optional<int64_t> clearedAt;
+		std::vector<std::string> purgedAccounts;
+		std::deque<Redaction> redactions;
+		bool overflowed = false;
+	};
+	static constexpr size_t kMaxMissedRedactions = 4096;
 
 	void PushLocked(Op op);
 	// Queue a control op (anything but a Row) to be written at once.
@@ -287,11 +316,12 @@ private:
 	bool StartWriterLocked();
 	bool IsDegraded() const;
 	// Off since Open, with nothing left on disk that this build may remove: no writer runs,
-	// and a control op has nothing to reach.
+	// and a control op has nothing to reach now (it is kept in Missed for a later adoption).
 	bool NothingToReachLocked() const;
 	// RemoveStoreFiles for `why`; when a file stays, the removal is owed another try
-	// (RemoveWhatIsOwed).
-	void RemoveOrOwe(const std::string &why);
+	// (RemoveWhatIsOwed). A store another instance holds is owed too, when `oweWhileLocked`:
+	// a removal the user confirmed this launch must still reach it once that instance exits.
+	void RemoveOrOwe(const std::string &why, bool oweWhileLocked);
 	// With the store closed: under Off, everything this build may remove; otherwise a
 	// removal an earlier try owes. False when there was nothing to try.
 	bool RemoveWhatIsOwed();
@@ -299,21 +329,53 @@ private:
 	void SetOwedRemoval(std::string why);
 	void WriterLoop();
 	void Apply(std::vector<Op> &batch);
-	// Write `ops` (no SetMode) as one transaction, retrying a failed commit.
-	void Commit(std::vector<Op> &ops);
+	// Write `ops` (no SetMode) as one transaction, retrying a failed commit. `queued` is
+	// false for ops replayed from Missed, which are no longer in pending_. False when the
+	// commit failed (the archive is then degraded).
+	bool Commit(std::vector<Op> &ops, bool queued = true);
 	bool TryCommit(const std::vector<Op> &ops, int64_t &countDelta, uint64_t &maxSeq, bool &rewrote);
 	void ApplyMode(Retention retention);
-	void Sweep();
+	// A store opened after boot, with its reader not yet published: keep its rows (unless a
+	// removal the user confirmed this launch is owed), replay the Missed ops, raise the
+	// ring's seqs past it, sweep, then publish the reader. False, with the store closed and
+	// nothing published, when any step fails: a failed replay also removes the store, since
+	// what it holds is then not what the user left. `before` is the mode being left.
+	bool AdoptStore(Retention before);
+	// Close the store AdoptStore could not adopt and release the lock; with a `removal`
+	// reason, remove it (or owe that) first.
+	bool GiveUpAdoption(const std::string &removal);
+	// Keep a control op no store could take in Missed. True when it is the first to push an
+	// old redaction out (LogMissedOverflow, outside any lock).
+	bool KeepMissed(const Op &op);
+	static void LogMissedOverflow();
+	// The seq bound a Clear or redaction reaches below. One issued before the open store was
+	// adopted reaches every row stored there too: those seqs are another launch's, and say
+	// nothing about when the rows were admitted against this launch's bound. A live
+	// author-wide removal issued in the moments before the adoption, with no time of its own,
+	// may so reach a line the other instance stored after it: over-removal, the safe side.
+	uint64_t ReachBelow(uint64_t belowSeq) const;
+	// The seq below which the Clears in `pending` hide every stored row, 0 when there are none.
+	uint64_t ClearedBelow(const std::deque<PendingOp> &pending) const;
+	// The retention pass. False when it could not run or commit.
+	bool Sweep();
 	void Checkpoint();
 
-	bool OpenStore();
+	// Open chat.db for writing, and, when `publishReader`, the read connection with it.
+	bool OpenStore(bool publishReader = true);
+	// Open the read connection and publish it to readers; on failure the store is given up
+	// (Disabled) as a failed OpenStore leaves it.
+	bool OpenReader();
+	// A store that cannot be used this launch: set `status`, close what is open, release the
+	// lock. Always false.
+	bool GiveUpStore(ArchiveStatus status, std::string detail);
 	void CloseStore();
 	bool AcquireLock();
 	void ReleaseLock();
 	// Remove chat.db and its -wal/-shm (RemoveOwnStore) and every quarantined copy, holding
 	// the lock file for it; nothing while another instance holds that. `why` is logged. True
-	// when a file this build may remove is still there, to be tried again.
-	bool RemoveStoreFiles(const std::string &why);
+	// when a file this build may remove is still there, to be tried again, counting a store
+	// another instance holds when `countLocked`.
+	bool RemoveStoreFiles(const std::string &why, bool countLocked);
 	// Remove chat.db and its -wal/-shm, unless it is, or may be, a newer build's; `why` is
 	// logged. True when it stays although it is not known to be a newer build's.
 	bool RemoveOwnStore(const std::string &why);
@@ -348,6 +410,11 @@ private:
 	int64_t count_ = 0;
 	std::string writeError_; // why the last commit failed
 	std::chrono::steady_clock::time_point nextSweep_{};
+	SeqRaise raiseSeq_;
+	Missed missed_;
+	// This session's sweep leaves an earlier launch's rows at or below this seq: those a late
+	// open kept on a move to This session the user was not asked to confirm (from Off).
+	uint64_t sessionKeepsThrough_ = 0;
 
 	// The read connection, opened after any quarantine and closed only under readMutex_.
 	std::mutex readMutex_;
@@ -357,7 +424,7 @@ private:
 	std::condition_variable wake_;
 	std::condition_variable idle_;
 	OpQueue ops_;
-	std::deque<PendingOp> pending_; // queued redactions and purges, in queue order
+	std::deque<PendingOp> pending_; // queued redactions, purges and Clears, in queue order
 	std::chrono::steady_clock::time_point firstQueuedAt_{};
 	// The mode last asked for (Open, SetRetention).
 	Retention mode_ = Retention::Off;
@@ -380,7 +447,11 @@ private:
 
 	std::atomic<bool> active_{false};
 	std::atomic<uint64_t> persistedSeq_{0};
-	std::atomic<uint64_t> clearedBelow_{0};
+	// The newest seq stored in a store opened after boot, when it was adopted (0 otherwise).
+	// Rows at or below it were written by another launch or instance, in a seq order this
+	// launch's does not continue. Written by the writer before the reader is published.
+	std::atomic<uint64_t> foreignMax_{0};
+	std::atomic<bool> failWrites_{false};
 	std::thread writer_;
 };
 

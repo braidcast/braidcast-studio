@@ -67,6 +67,16 @@ bool Add(Chat::ChatHistory &history, const OAuth::DestinationId &dest, const std
 	return history.Add(dest, frame);
 }
 
+// A kick message from `authorId`, said at platform time `ts`.
+bool AddFrom(Chat::ChatHistory &history, const OAuth::DestinationId &dest, const std::string &id,
+	     const std::string &authorId, int64_t ts)
+{
+	json frame = Frame(dest, id, "kick");
+	frame["author"]["id"] = authorId;
+	frame["ts"] = ts;
+	return history.Add(dest, frame);
+}
+
 // Every message a dock can reach, walked page by page from the newest back to the start
 // the way the dock does. Returned oldest-first; `ordered` is false when a page repeats a
 // seq or goes backwards, and `unreadable` is set when the walk stopped at a page that
@@ -245,6 +255,52 @@ struct Launch {
 	Launch &operator=(const Launch &) = delete;
 };
 
+// A second launch on `path` while a first ("L1", 7 days) holds it, so the second's store
+// can open only once the first has gone.
+struct Contended {
+	Launch first;
+	Chat::ChatArchive archive;
+	Chat::ChatHistory history{&archive};
+
+	explicit Contended(const std::string &path) : first(path, Chat::Retention::SevenDays, "L1") {}
+	~Contended() { archive.Shutdown(); }
+	Contended(const Contended &) = delete;
+	Contended &operator=(const Contended &) = delete;
+
+	// Boots the second launch; true when that leaves its store closed.
+	bool Boot(const Chat::ChatArchive::Options &options)
+	{
+		first.archive.WaitIdle(kIdleWait);
+		history.OpenArchive(options);
+		const Chat::ArchiveStatus status = archive.Status();
+		return status == Chat::ArchiveStatus::Disabled || status == Chat::ArchiveStatus::Off;
+	}
+	void Release()
+	{
+		first.archive.WaitIdle(kIdleWait);
+		first.archive.Shutdown();
+	}
+	void Move(Chat::Retention to)
+	{
+		history.SetRetention(to);
+		archive.WaitIdle(kIdleWait);
+	}
+};
+
+// Each row's id and `deleted` mark, oldest first, as ReadOlder serves them.
+std::string Marks(Chat::ChatArchive &archive)
+{
+	const std::optional<std::vector<json>> rows = archive.ReadOlder(UINT64_MAX, 100, Feed::Filter{});
+	if (!rows) {
+		return "unreadable";
+	}
+	std::string out;
+	for (auto it = rows->rbegin(); it != rows->rend(); ++it) {
+		out += (out.empty() ? "" : ",") + it->value("id", "") + "=" + it->value("deleted", "");
+	}
+	return out;
+}
+
 } // namespace
 
 void ObsBootstrap::RunChatArchiveSelfTest()
@@ -384,18 +440,6 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 				archive.Enqueue(std::move(*row));
 			}
 		};
-		// Each row's id and `deleted` mark, oldest first, as ReadOlder serves them.
-		const auto marks = [&] {
-			const std::optional<std::vector<json>> rows = archive.ReadOlder(UINT64_MAX, 10, Feed::Filter{});
-			if (!rows) {
-				return std::string("unreadable");
-			}
-			std::string out;
-			for (auto it = rows->rbegin(); it != rows->rend(); ++it) {
-				out += (out.empty() ? "" : ",") + it->value("id", "") + "=" + it->value("deleted", "");
-			}
-			return out;
-		};
 		enqueue(1);
 		enqueue(2);
 		enqueue(3);
@@ -404,10 +448,10 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		archive.EnqueueRedact(
 			{OAuth::DestinationKey(kTwitch), Chat::ModerationAction::ClearUser, "", "author-x", 3});
 		enqueue(4);
-		const std::string pending = marks();
+		const std::string pending = Marks(archive);
 		archive.HoldWrites(false);
 		archive.WaitIdle(kIdleWait);
-		const std::string committed = marks();
+		const std::string committed = Marks(archive);
 		const std::string stored = Column(path, "SELECT msg_id || '=' || deleted FROM messages ORDER BY seq");
 		archive.Shutdown();
 		const bool ok = pending == "b1=user,b2=user,b3=" && committed == "b1=user,b2=user,b3=,b4=" &&
@@ -435,17 +479,6 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 				archive.Enqueue(std::move(*row));
 			}
 		};
-		const auto marks = [&] {
-			const std::optional<std::vector<json>> rows = archive.ReadOlder(UINT64_MAX, 10, Feed::Filter{});
-			if (!rows) {
-				return std::string("unreadable");
-			}
-			std::string out;
-			for (auto it = rows->rbegin(); it != rows->rend(); ++it) {
-				out += (out.empty() ? "" : ",") + it->value("id", "") + "=" + it->value("deleted", "");
-			}
-			return out;
-		};
 		enqueue("t1", 100);
 		enqueue("t2", 150);
 		enqueue("t3", 151);
@@ -456,10 +489,10 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 				      seq + 1};
 		timed.beforeTs = 150;
 		archive.EnqueueRedact(timed);
-		const std::string pending = marks();
+		const std::string pending = Marks(archive);
 		archive.HoldWrites(false);
 		archive.WaitIdle(kIdleWait);
-		const std::string committed = marks();
+		const std::string committed = Marks(archive);
 		const std::string stored = Column(path, "SELECT msg_id || '=' || deleted FROM messages ORDER BY seq");
 		archive.Shutdown();
 		const std::string want = "t1=user,t2=user,t3=,t4=";
@@ -1034,6 +1067,316 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 			       " purged " + std::to_string(purged) + " paged " + std::to_string(paged) + " cleared " +
 			       std::to_string(cleared) + " keeps " + std::to_string(keeps) + " off " +
 			       std::to_string(offRemoves));
+	}
+
+	// A store that opens after boot keeps what another instance stored there. The first
+	// launch holds chat.db, so the second boots with it Disabled, admits a few messages, and
+	// removes an account; once the first has exited it moves to 7 days. The first launch's
+	// rows stay, bar the removed account's; a row admitted before the store opened whose seq
+	// falls among the stored ones stays in the ring only; new seqs sit above the stored
+	// maximum; and paging reaches both sets in seq order, each once, the stored rows once the
+	// held ones below them have left the ring.
+	{
+		const std::string path = dbPath("late-open");
+		const auto count = [&](const std::string &where) {
+			return Scalar(path, "SELECT count(*) FROM messages WHERE " + where);
+		};
+		Contended c(path);
+		for (const std::string &id : ids("a", 0, 4)) {
+			Add(c.first.history, kKickA, id, "kick");
+		}
+		Add(c.first.history, kKickB, "gone", "kick");
+		const bool disabled = c.Boot(TestOptions(path, Chat::Retention::Session, "L2"));
+		const int64_t storedMax = Scalar(path, "SELECT max(seq) FROM messages");
+		for (const std::string &id : ids("b", 0, 3)) {
+			Add(c.history, kKickA, id, "kick");
+		}
+		c.archive.PurgeAccount(kKickB.accountId);
+		c.archive.WaitIdle(kIdleWait);
+		c.Release();
+
+		// The writer is held, so the store opens only after w0 is admitted: w0's seq (4) is
+		// one the first launch stored.
+		c.archive.HoldWrites(true);
+		c.history.SetRetention(Chat::Retention::SevenDays);
+		Add(c.history, kKickA, "w0", "kick");
+		c.archive.HoldWrites(false);
+		c.archive.WaitIdle(kIdleWait);
+		for (const std::string &id : ids("n", 0, 3)) {
+			Add(c.history, kKickA, id, "kick");
+		}
+		c.archive.WaitIdle(kIdleWait);
+		const bool kept = c.archive.Status() == Chat::ArchiveStatus::Ok && count("launch_id = 'L1'") == 4 &&
+				  count("msg_id = 'gone'") == 0 && count("msg_id = 'w0'") == 0 &&
+				  count("launch_id = 'L2'") == 3 &&
+				  Scalar(path, "SELECT min(seq) FROM messages WHERE launch_id = 'L2'") > storedMax;
+		// The ring still holds b0..w0 at seqs the store also uses, so the walk stops at them.
+		const Walk held = WalkAll(c.history, 2);
+		const std::vector<std::string> heldWant{"b0", "b1", "b2", "w0", "n0", "n1", "n2"};
+
+		for (const std::string &id : ids("f", 0, 1000)) {
+			Add(c.history, kKickA, id, "kick");
+		}
+		c.archive.WaitIdle(kIdleWait);
+		Add(c.history, kKickA, "f1000", "kick"); // the ring gives up its settled front
+		c.archive.WaitIdle(kIdleWait);
+		const Walk turned = WalkAll(c.history, 37);
+		std::vector<std::string> turnedWant = ids("a", 0, 4);
+		for (const std::string &id : ids("n", 0, 3)) {
+			turnedWant.push_back(id);
+		}
+		for (const std::string &id : ids("f", 0, 1001)) {
+			turnedWant.push_back(id);
+		}
+
+		c.history.Clear();
+		c.archive.WaitIdle(kIdleWait);
+		const bool cleared = count("1") == 0;
+		const bool ok = disabled && kept && held.ordered && !held.unreadable && held.ids == heldWant &&
+				turned.ordered && !turned.unreadable && turned.ids == turnedWant && cleared;
+		Report("late open keeps rows", ok,
+		       "stored max " + std::to_string(storedMax) + ", held " + Joined(held.ids) + ", turned " +
+			       std::to_string(turned.ids.size()) + " of " + std::to_string(turnedWant.size()) +
+			       ", disabled " + std::to_string(disabled) + " kept " + std::to_string(kept) +
+			       " cleared " + std::to_string(cleared));
+	}
+
+	// Which late opens delete. None of the moves the user is not asked to confirm (Off to
+	// either, the unknown setting to 7 days) does. 7 days or the unknown setting to This
+	// session asks, and removes what the other instance stored. So does a move the user
+	// confirmed while the other instance held the store (to Off, or 7 days to This session,
+	// whose open failed): the removal is owed, and a later move to 7 days makes it.
+	{
+		using R = Chat::Retention;
+		const auto left = [&](const std::string &name, R boot, bool unknown, const std::vector<R> &whileHeld,
+				      R to) {
+			const std::string path = dbPath(name);
+			Contended c(path);
+			Add(c.first.history, kKickA, "x0", "kick");
+			Add(c.first.history, kKickA, "x1", "kick");
+			auto options = TestOptions(path, boot, "L2");
+			if (unknown) {
+				options.unknownSetting = "7D";
+			}
+			const bool closed = c.Boot(options);
+			for (R move : whileHeld) {
+				c.Move(move);
+			}
+			c.Release();
+			c.Move(to);
+			const int64_t rows = Scalar(path, "SELECT count(*) FROM messages WHERE launch_id = 'L1'");
+			return closed ? rows : -1;
+		};
+		struct Case {
+			std::string name;
+			int64_t rows;
+			int64_t want;
+		};
+		const std::vector<Case> cases{
+			{"off>7d", left("late-off-7d", R::Off, false, {}, R::SevenDays), 2},
+			{"off>session", left("late-off-session", R::Off, false, {}, R::Session), 2},
+			{"unknown>7d", left("late-unknown-7d", R::SevenDays, true, {}, R::SevenDays), 2},
+			{"7d>session", left("late-7d-session", R::SevenDays, false, {}, R::Session), 0},
+			{"unknown>session", left("late-unknown-session", R::SevenDays, true, {}, R::Session), 0},
+			{"7d>off>7d", left("late-owed-off", R::SevenDays, false, {R::Off}, R::SevenDays), 0},
+			{"7d>session>7d", left("late-owed-session", R::SevenDays, false, {R::Session}, R::SevenDays),
+			 0},
+		};
+		bool ok = true;
+		std::string detail;
+		for (const Case &each : cases) {
+			ok = ok && each.rows == each.want;
+			detail += (detail.empty() ? "" : ", ") + each.name + " " + std::to_string(each.rows);
+		}
+		Report("late open deletes only when asked", ok, detail);
+	}
+
+	// What a launch booted with Off removed while the other held the store reaches the store
+	// once it opens: an account purge; a moderator's delete by id, which reaches the stored
+	// copy whatever its seq; and an author-wide removal, bounded by when it was seen (x-late
+	// was said after it). The removals kept are capped at the newest 4096, so the oldest, the
+	// delete of a1, is dropped.
+	{
+		const std::string path = dbPath("late-missed");
+		Contended c(path);
+		AddFrom(c.first.history, kKickA, "a0", "author-a0", 1000);
+		AddFrom(c.first.history, kKickA, "a1", "author-a1", 1000);
+		AddFrom(c.first.history, kKickA, "x-early", "author-x", 1000);
+		AddFrom(c.first.history, kKickA, "x-late", "author-x", TimeUtil::NowMs() + 10 * 60 * 1000);
+		Add(c.first.history, kKickB, "p0", "kick");
+		const bool closed = c.Boot(TestOptions(path, Chat::Retention::Off, "L2"));
+		c.archive.PurgeAccount(kKickB.accountId);
+		c.history.Redact({kKickA, Chat::ModerationAction::Delete, "a1", ""});
+		for (int i = 0; i < 4094; ++i) {
+			c.history.Redact({kKickA, Chat::ModerationAction::Delete, "none" + std::to_string(i), ""});
+		}
+		c.history.Redact({kKickA, Chat::ModerationAction::Delete, "a0", ""});
+		c.history.Redact({kKickA, Chat::ModerationAction::ClearUser, "", "author-x"});
+		const bool quiet = !c.archive.WriterStarted();
+		c.Release();
+		c.Move(Chat::Retention::SevenDays);
+		const std::string marks = Marks(c.archive);
+		const bool ok = closed && quiet && marks == "a0=message,a1=,x-early=user,x-late=";
+		Report("late open replays what it missed", ok, marks + ", quiet " + std::to_string(quiet));
+	}
+
+	// A Clear made while the store was closed reaches the rows received before it, not the
+	// one the other instance received after (c2); and a Clear made after the move but before
+	// the store opened, whose bound (2) is below every stored seq, still reaches them all.
+	{
+		const std::string missedPath = dbPath("late-clear");
+		Contended missed(missedPath);
+		Add(missed.first.history, kKickA, "c0", "kick");
+		Add(missed.first.history, kKickA, "c1", "kick");
+		const bool missedClosed = missed.Boot(TestOptions(missedPath, Chat::Retention::Off, "L2"));
+		std::this_thread::sleep_for(20ms);
+		missed.history.Clear();
+		std::this_thread::sleep_for(20ms);
+		Add(missed.first.history, kKickA, "c2", "kick");
+		missed.Release();
+		missed.Move(Chat::Retention::SevenDays);
+		const std::string afterMissed = Marks(missed.archive);
+
+		const std::string windowPath = dbPath("late-clear-window");
+		Contended window(windowPath);
+		for (const std::string &id : ids("d", 0, 6)) {
+			Add(window.first.history, kKickA, id, "kick");
+		}
+		const bool windowClosed = window.Boot(TestOptions(windowPath, Chat::Retention::Session, "L2"));
+		Add(window.history, kKickA, "b0", "kick");
+		window.Release();
+		window.archive.HoldWrites(true);
+		window.history.SetRetention(Chat::Retention::SevenDays);
+		window.history.Clear();
+		window.archive.HoldWrites(false);
+		window.archive.WaitIdle(kIdleWait);
+		const std::string afterWindow = Marks(window.archive);
+		const int64_t windowRows = Scalar(windowPath, "SELECT count(*) FROM messages");
+		const bool ok = missedClosed && afterMissed == "c2=" && windowClosed && afterWindow.empty() &&
+				windowRows == 0;
+		Report("late open replays a Clear", ok,
+		       afterMissed + " | " + afterWindow + " | " + std::to_string(windowRows) + " rows");
+	}
+
+	// A mode changed twice around another instance's run: 7 days, then Off (which removes
+	// this launch's store); the other instance stores x0 and x1 and exits; 7 days again keeps
+	// them, this launch's seqs continuing above theirs; and a confirmed move to This session
+	// then removes them, keeping this launch's.
+	{
+		const std::string path = dbPath("late-twice");
+		Launch second(path, Chat::Retention::SevenDays, "L2");
+		Add(second.history, kKickA, "own0", "kick");
+		second.archive.WaitIdle(kIdleWait);
+		second.history.SetRetention(Chat::Retention::Off);
+		second.archive.WaitIdle(kIdleWait);
+		const bool removed = !Exists(path);
+		{
+			Launch other(path, Chat::Retention::SevenDays, "L1");
+			Add(other.history, kKickA, "x0", "kick");
+			Add(other.history, kKickA, "x1", "kick");
+		}
+		const int64_t storedMax = Scalar(path, "SELECT max(seq) FROM messages");
+		second.history.SetRetention(Chat::Retention::SevenDays);
+		second.archive.WaitIdle(kIdleWait);
+		Add(second.history, kKickA, "own1", "kick");
+		second.archive.WaitIdle(kIdleWait);
+		const std::string kept = Marks(second.archive);
+		const bool above = Scalar(path, "SELECT seq FROM messages WHERE msg_id = 'own1'") > storedMax;
+		second.history.SetRetention(Chat::Retention::Session);
+		second.archive.WaitIdle(kIdleWait);
+		const std::string session = Marks(second.archive);
+		const bool ok = removed && kept == "x0=,x1=,own1=" && above && session == "own1=";
+		Report("late open after a mode changed twice", ok,
+		       kept + " | " + session + ", removed " + std::to_string(removed) + " above " +
+			       std::to_string(above));
+	}
+
+	// Moving to This session from Off asks nothing, so what the other instance stored stays
+	// for the launch, through a later sweep too, and goes at the next launch's open.
+	{
+		const std::string path = dbPath("late-session-keeps");
+		std::string adopted;
+		std::string swept;
+		bool closed = false;
+		{
+			Contended c(path);
+			Add(c.first.history, kKickA, "x0", "kick");
+			closed = c.Boot(TestOptions(path, Chat::Retention::Off, "L2"));
+			c.Release();
+			c.Move(Chat::Retention::Session);
+			adopted = Marks(c.archive);
+			c.Move(Chat::Retention::Session); // sweeps again
+			swept = Marks(c.archive);
+		}
+		Launch next(path, Chat::Retention::Session, "L3");
+		const std::string nextLaunch = Marks(next.archive);
+		const bool ok = closed && adopted == "x0=" && swept == "x0=" && nextLaunch.empty();
+		Report("late open to this session keeps for the launch", ok,
+		       adopted + " | " + swept + " | " + nextLaunch);
+	}
+
+	// Nothing is served from an adopted store before its replay and retention sweep have run:
+	// a reader polling throughout never sees the purged account's row or an earlier launch's
+	// row on a platform whose moderation is not honored. When either step fails nothing is
+	// served at all: a failed replay removes the store, which no longer holds what the user
+	// left; a failed sweep leaves it for the next launch.
+	{
+		const std::string path = dbPath("late-reader");
+		Contended c(path);
+		Add(c.first.history, kKickA, "keep", "kick");
+		Add(c.first.history, kKickB, "purged", "kick");
+		Add(c.first.history, kTwitch, "unmoderated", "twitch");
+		const bool closed = c.Boot(TestOptions(path, Chat::Retention::Off, "L2"));
+		c.archive.PurgeAccount(kKickB.accountId);
+		c.Release();
+		std::atomic<bool> stop{false};
+		std::atomic<int> leaked{0};
+		std::atomic<int> served{0};
+		std::thread reader([&] {
+			while (!stop.load()) {
+				const std::string marks = Marks(c.archive);
+				if (marks.find("purged") != std::string::npos ||
+				    marks.find("unmoderated") != std::string::npos) {
+					++leaked;
+				}
+				if (marks == "keep=") {
+					++served;
+				}
+			}
+		});
+		c.Move(Chat::Retention::SevenDays);
+		std::this_thread::sleep_for(20ms);
+		stop.store(true);
+		reader.join();
+		const bool ordered = closed && leaked.load() == 0 && served.load() > 0;
+
+		const auto failing = [&](const std::string &name, bool purge, bool &left) {
+			const std::string failPath = dbPath(name);
+			Contended f(failPath);
+			Add(f.first.history, kKickA, "k0", "kick");
+			Add(f.first.history, kKickB, "k1", "kick");
+			const bool fClosed = f.Boot(TestOptions(failPath, Chat::Retention::Off, "L2"));
+			if (purge) {
+				f.archive.PurgeAccount(kKickB.accountId);
+			}
+			f.Release();
+			f.archive.FailWrites(true);
+			f.Move(Chat::Retention::SevenDays);
+			left = Exists(failPath);
+			return fClosed && f.archive.Status() == Chat::ArchiveStatus::Degraded &&
+			       Marks(f.archive).empty() && WalkAll(f.history).ids.empty();
+		};
+		bool replayLeft = true;
+		bool sweepLeft = false;
+		const bool replayRefused = failing("late-fail-replay", true, replayLeft);
+		const bool sweepRefused = failing("late-fail-sweep", false, sweepLeft);
+		const bool ok = ordered && replayRefused && !replayLeft && sweepRefused && sweepLeft;
+		Report("late open serves only a swept store", ok,
+		       std::to_string(served.load()) + " reads served, " + std::to_string(leaked.load()) +
+			       " leaked; replay failure " + (replayRefused ? "served nothing" : "served") +
+			       (replayLeft ? ", store left" : ", store removed") + "; sweep failure " +
+			       (sweepRefused ? "served nothing" : "served") +
+			       (sweepLeft ? ", store kept" : ", store gone"));
 	}
 
 	// Recovered names the copy it set aside only while that copy is there: a Clear takes it,

@@ -61,7 +61,7 @@ void ChatHistory::OpenArchive(const ChatArchive::Options &options)
 		return;
 	}
 	ChatArchive::Seed seed;
-	archive_->Open(options, seed);
+	archive_->Open(options, seed, [this](uint64_t storedMax) { RaiseSeqAbove(storedMax); });
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (ChatArchive::Seed::Entry &entry : seed.rows) {
 		std::string key = HeldKey(entry.dest, Field(entry.frame, "id"));
@@ -72,6 +72,12 @@ void ChatHistory::OpenArchive(const ChatArchive::Options &options)
 		messages_.push_back({seq, std::move(entry.dest), std::move(key), std::move(entry.frame)});
 	}
 	nextSeq_ = std::max(nextSeq_, seed.nextSeq);
+}
+
+void ChatHistory::RaiseSeqAbove(uint64_t storedMax)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	nextSeq_ = std::max(nextSeq_, storedMax + 1);
 }
 
 bool ChatHistory::Add(const OAuth::DestinationId &dest, json &message)
@@ -177,7 +183,9 @@ ChatPage ChatHistory::Page(std::optional<uint64_t> beforeSeq, size_t limit, cons
 	}
 	// The ring ran out: the rest comes from disk, starting below everything the ring holds.
 	// Every message older than the ring's oldest was committed before it left the ring, or,
-	// while the retention setting is unknown, was never going to be.
+	// while the retention setting is unknown, was never going to be. A store opened late may
+	// hold another launch's rows at or above it; they wait for the held ones to leave
+	// (RaiseSeqAbove), since a seq both carry cannot be paged past once.
 	if (readArchive && newestFirst.size() <= limit) {
 		const uint64_t below = beforeSeq ? std::min(*beforeSeq, ringOldest) : ringOldest;
 		std::optional<std::vector<json>> older =

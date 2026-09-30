@@ -37,7 +37,8 @@
 // plus the send workers' local echo); Page runs on the bridge's async lane; Clear and
 // SetRetention on TID_UI. All take mutex_, which may then take the archive's queue lock
 // and nothing else, and none does I/O while holding it: Page reads the archive after
-// releasing it.
+// releasing it. The archive's writer takes mutex_ too (RaiseSeqAbove), holding none of
+// the archive's locks.
 namespace Chat {
 
 using json = nlohmann::json;
@@ -103,6 +104,11 @@ private:
 
 	// Move the messages past kCap that may leave into `out`, oldest first.
 	void EvictLocked(std::deque<Held> &out);
+	// The archive's SeqRaise: every seq issued from here on is above `storedMax`, the newest
+	// in a store the writer opened late. Messages already held keep theirs; the ring still
+	// runs in ascending seq, and a page reads the store only below the ring's oldest, so the
+	// stored rows at or above a held one's seq are reached once it has left the ring.
+	void RaiseSeqAbove(uint64_t storedMax);
 
 	ChatArchive *const archive_ = nullptr;
 	mutable std::mutex mutex_;
