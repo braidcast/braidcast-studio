@@ -2511,6 +2511,124 @@ void ObsBootstrap::RunSettingsSelfTest()
 		}
 	}
 
+	// 6b2a) InnerTube live reactions, offline: counts read as numbers or numeric strings, a
+	// bucket without reactionsData keeps its total, a missing total is the per-emoji sum, a
+	// payload that is not an object and a non-fountain entity are skipped, and an emoji id that
+	// could forge a log line is logged as "?".
+	{
+		using Chat::YouTubeInnerTube::DecodeReactionBuckets;
+		const char *grin = "\xF0\x9F\x98\x84";          // U+1F604
+		const char *heart = "\xE2\x9D\xA4\xEF\xB8\x8F"; // U+2764 U+FE0F
+		const json fountain = {
+			{"key", "selftest"},
+			{"reactionBuckets",
+			 json::array({
+				 json{{"totalReactions", 6},
+				      {"duration", {{"seconds", "1"}}},
+				      {"intensityScore", 0.75},
+				      {"reactionsData",
+				       json::array({{{"unicodeEmojiId", grin}, {"reactionCount", 6}}})}},
+				 json{{"totalReactions", "9"},
+				      {"duration", {{"seconds", 2}}},
+				      {"reactionsData",
+				       json::array({{{"unicodeEmojiId", grin}, {"reactionCount", "6"}},
+						    {{"unicodeEmojiId", heart}, {"reactionCount", 3}}})}},
+				 json{{"totalReactions", 4}, {"duration", {{"seconds", "1"}}}},
+				 json{{"reactionsData",
+				       json::array({{{"unicodeEmojiId", "x\ny"}, {"reactionCount", 2}}, "junk"})}},
+				 "not a bucket",
+			 })}};
+		const json response = {
+			{"frameworkUpdates",
+			 {{"entityBatchUpdate",
+			   {{"mutations",
+			     json::array({json{{"payload", "not an object"}},
+					  json{{"payload", {{"liveChatItemEntity", {{"key", "k"}}}}}},
+					  json{{"payload", {{"emojiFountainDataEntity", fountain}}}}})}}}}}};
+		const auto buckets = DecodeReactionBuckets(response);
+		const std::string raw = Chat::YouTubeInnerTube::DescribeReactionBuckets(buckets);
+		const std::string expectedRaw =
+			std::string("6:") + grin + "6, 9/2s:" + grin + "6 " + heart + "3, 4, 2:?2";
+		const bool okReactions = buckets.size() == 4 && buckets[0].total == 6 && buckets[0].seconds == 1 &&
+					 buckets[0].intensity == 0.75 && buckets[0].emojis.size() == 1 &&
+					 buckets[0].emojis[0].first == grin && buckets[0].emojis[0].second == 6 &&
+					 buckets[1].total == 9 && buckets[1].seconds == 2 &&
+					 buckets[1].emojis.size() == 2 && buckets[1].emojis[0].second == 6 &&
+					 buckets[1].emojis[1].first == heart && buckets[1].emojis[1].second == 3 &&
+					 buckets[2].total == 4 && buckets[2].emojis.empty() && buckets[3].total == 2 &&
+					 buckets[3].seconds == 0 && buckets[3].emojis.size() == 1 &&
+					 buckets[3].emojis[0].first == "?" && raw == expectedRaw &&
+					 DecodeReactionBuckets(json::array()).empty() &&
+					 DecodeReactionBuckets(json{{"responseContext", {}}}).empty() &&
+					 DecodeReactionBuckets(json{{"frameworkUpdates", "x"}}).empty();
+
+		// Edges: a count above the 1e9 cap or below zero is unreadable (a total then falls back to
+		// the per-emoji sum), a non-finite intensity is 0, and every refused character (DEL, NEL,
+		// LRM, U+2028, RLO, the isolates) or an over-long id makes the label "?" while ZWJ and the
+		// U+202F right next to the refused range pass.
+		const auto wrap = [](const json &reactionBuckets) {
+			return json{{"frameworkUpdates",
+				     {{"entityBatchUpdate",
+				       {{"mutations",
+					 json::array({json{{"payload",
+							    {{"emojiFountainDataEntity",
+							      {{"reactionBuckets", reactionBuckets}}}}}}})}}}}}};
+		};
+		const char *coder = "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB"; // U+1F469 ZWJ U+1F4BB
+		const char *narrowSpace = "a\xE2\x80\xAF";                          // U+202F
+		json labels = json::array();
+		for (const char *label :
+		     {"a\x7F", "a\xC2\x85", "\xE2\x80\x8E", "\xE2\x80\xA8", "\xE2\x80\xAE", "\xE2\x81\xA6",
+		      "\xE2\x81\xA9", "0123456789abcdef0123456789abcdefX", coder, narrowSpace}) {
+			labels.push_back(json{{"unicodeEmojiId", label}, {"reactionCount", 1}});
+		}
+		const auto edges = DecodeReactionBuckets(wrap(json::array({
+			json{{"totalReactions", 1000000000},
+			     {"intensityScore", "inf"},
+			     {"reactionsData",
+			      json::array({{{"unicodeEmojiId", grin}, {"reactionCount", 1000000001}}})}},
+			json{{"totalReactions", 1000000001},
+			     {"intensityScore", "nan"},
+			     {"reactionsData", json::array({{{"unicodeEmojiId", grin}, {"reactionCount", -5}},
+							    {{"unicodeEmojiId", heart}, {"reactionCount", "3"}}})}},
+			json{{"totalReactions", -4}, {"duration", {{"seconds", -1}}}, {"intensityScore", "0.5"}},
+			json{{"reactionsData", labels}},
+			json{{"reactionsData",
+			      json::array({{{"unicodeEmojiId", grin}, {"reactionCount", 1000000000}},
+					   {{"unicodeEmojiId", heart}, {"reactionCount", 1000000000}}})}},
+		})));
+		bool labelsOk = edges.size() == 5 && edges[3].emojis.size() == 10 && edges[3].total == 10 &&
+				edges[4].total == 1000000000;
+		for (size_t i = 0; labelsOk && i < 10; ++i) {
+			labelsOk = edges[3].emojis[i].first ==
+				   (i < 8 ? std::string("?") : labels[i]["unicodeEmojiId"].get<std::string>());
+		}
+		const bool okEdges = labelsOk && edges[0].emojis.size() == 1 && edges[1].emojis.size() == 2 &&
+				     edges[0].total == 1000000000 && edges[0].intensity == 0.0 &&
+				     edges[0].emojis[0].second == 0 && edges[1].total == 3 &&
+				     edges[1].intensity == 0.0 && edges[1].emojis[0].second == 0 &&
+				     edges[1].emojis[1].second == 3 && edges[2].total == 0 && edges[2].seconds == 0 &&
+				     edges[2].intensity == 0.5;
+
+		// The raw line stops at a bucket boundary once the next "123456" (plus ", ") would pass
+		// 800 characters: 100 fit in 798, and the other 100 are counted instead.
+		json many = json::array();
+		for (int i = 0; i < 200; ++i) {
+			many.push_back(json{{"totalReactions", 123456}});
+		}
+		const std::string cut =
+			Chat::YouTubeInnerTube::DescribeReactionBuckets(DecodeReactionBuckets(wrap(many)));
+		const std::string cutTail = " +100 more";
+		const bool okCut = cut.size() == 798 + cutTail.size() &&
+				   cut.compare(cut.size() - cutTail.size(), cutTail.size(), cutTail) == 0 &&
+				   cut.compare(cut.size() - cutTail.size() - 6, 6, "123456") == 0;
+
+		HostLog(std::string("[selftest] youtube-reactions -> ") +
+			(okReactions && okEdges && okCut ? "OK" : "FAIL") + " (decode " + (okReactions ? "1" : "0") +
+			", edges " + (okEdges ? "1" : "0") + ", cut " + (okCut ? "1" : "0") + "; " +
+			std::to_string(buckets.size()) + " buckets: " + raw + ")");
+	}
+
 	// 6b3) Twitch IRC chat lines, offline: a USERNOTICE renders Twitch's own system-msg (plus
 	// the chatter's words, emotes resolved, when there are any), a shared-chat mirror of another
 	// channel's notice renders nothing, a cheer's line carries its bits as `paid`, a /me line

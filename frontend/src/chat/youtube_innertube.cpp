@@ -1,11 +1,15 @@
 #include "youtube_innertube.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "../log.hpp"
 #include "chat_transport.hpp" // BuildChatMessage -- the shared normalized-frame assembler
@@ -837,6 +841,222 @@ const struct ModerationKind {
 	{"removeChatItemByAuthorAction", ModerationAction::ClearUser, "externalChannelId"},
 };
 
+// No real one-second bucket comes near this, and refusing anything above it keeps a session's
+// running sum from ever overflowing.
+constexpr int64_t kMaxBucketReactions = 1000000000;
+
+// Emoji ids are echoed into the log verbatim, so one longer than any emoji sequence or carrying a
+// character that can forge or visually reorder a log line is logged as "?" -- its count still
+// counts.
+constexpr size_t kMaxReactionLabelBytes = 32;
+
+// The UTF-8 encodings refused in a label, as a lead-byte prefix plus an inclusive range for the
+// final byte: U+0085 NEL; U+200E/200F (LRM/RLM); U+2028-202E (line/paragraph separators and the
+// bidi embeddings and overrides); U+2066-2069 (bidi isolates). U+200D (ZWJ) sits between them on
+// purpose, since multi-person and profession emoji are joined with it. The input is valid UTF-8
+// (the JSON parser guarantees it), so a byte-sequence match is an exact code-point match.
+const struct LabelRefusal {
+	const char *prefix;
+	unsigned char first;
+	unsigned char last;
+} kLabelRefusals[] = {
+	{"\xC2", 0x85, 0x85},
+	{"\xE2\x80", 0x8E, 0x8F},
+	{"\xE2\x80", 0xA8, 0xAE},
+	{"\xE2\x81", 0xA6, 0xA9},
+};
+
+// Both reaction lists (a poll's raw buckets, a tally's per-emoji breakdown) stop at an entry
+// boundary past this, so a line stays inside Log::Debug's 1 KB buffer and is never cut through
+// the middle of an emoji's UTF-8 bytes.
+constexpr size_t kMaxReactionListChars = 800;
+
+constexpr std::chrono::seconds kReactionWindow{60};
+
+// A reaction count as a number or numeric string; `fallback` when absent, unreadable, negative
+// or implausibly large.
+int64_t ReactionCount(const json &node, const char *key, int64_t fallback = 0)
+{
+	const int64_t value = NumLoose(node, key, fallback);
+	return value < 0 || value > kMaxBucketReactions ? fallback : value;
+}
+
+double ReactionIntensity(const json &bucket)
+{
+	const json &raw = Obj(bucket, "intensityScore");
+	double value = 0.0;
+	if (raw.is_number()) {
+		value = raw.get<double>();
+	} else if (raw.is_string()) {
+		value = std::strtod(raw.get_ref<const std::string &>().c_str(), nullptr);
+	}
+	return std::isfinite(value) && value >= 0.0 ? value : 0.0;
+}
+
+bool IsLogSafeLabel(const std::string &id)
+{
+	if (id.empty() || id.size() > kMaxReactionLabelBytes) {
+		return false;
+	}
+	for (size_t i = 0; i < id.size(); ++i) {
+		const unsigned char c = static_cast<unsigned char>(id[i]);
+		if (c < 0x20 || c == 0x7F) {
+			return false;
+		}
+		for (const LabelRefusal &refusal : kLabelRefusals) {
+			const size_t len = std::char_traits<char>::length(refusal.prefix);
+			if (i + len < id.size() && id.compare(i, len, refusal.prefix) == 0) {
+				const unsigned char next = static_cast<unsigned char>(id[i + len]);
+				if (next >= refusal.first && next <= refusal.last) {
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+std::string ReactionLabel(const json &entry)
+{
+	const std::string id = Str(entry, "unicodeEmojiId");
+	return IsLogSafeLabel(id) ? id : std::string("?");
+}
+
+// `pieces` joined with ", ", stopping at a piece boundary once the next would pass
+// kMaxReactionListChars and saying how many were left out.
+std::string JoinCapped(const std::vector<std::string> &pieces)
+{
+	std::string out;
+	for (size_t i = 0; i < pieces.size(); ++i) {
+		const size_t separator = out.empty() ? 0 : 2;
+		if (out.size() + separator + pieces[i].size() > kMaxReactionListChars) {
+			out += (out.empty() ? "+" : " +") + std::to_string(pieces.size() - i) + " more";
+			break;
+		}
+		out += (separator ? ", " : "") + pieces[i];
+	}
+	return out;
+}
+
+// Reactions summed over a span of polls (a minute, or the whole run).
+struct ReactionTally {
+	int64_t total = 0;
+	// The bucket with the highest rate, kept as its own count and duration rather than divided
+	// out, so a 1-reaction bucket over 2 s reads "1/2s" instead of rounding to "0/s".
+	int64_t peakTotal = 0;
+	int64_t peakSeconds = 1;
+	int polls = 0;
+	std::vector<std::pair<std::string, int64_t>> perEmoji;
+
+	void Add(const std::vector<ReactionBucket> &buckets)
+	{
+		for (const ReactionBucket &bucket : buckets) {
+			total += bucket.total;
+			const int64_t seconds = std::max<int64_t>(bucket.seconds, 1);
+			// Cross-multiplied rather than divided; both counts are capped at
+			// kMaxBucketReactions, so the products fit.
+			if (bucket.total * peakSeconds > peakTotal * seconds) {
+				peakTotal = bucket.total;
+				peakSeconds = seconds;
+			}
+			for (const auto &emoji : bucket.emojis) {
+				auto it = std::find_if(perEmoji.begin(), perEmoji.end(),
+						       [&](const auto &seen) { return seen.first == emoji.first; });
+				if (it == perEmoji.end()) {
+					perEmoji.push_back(emoji);
+				} else {
+					it->second += emoji.second;
+				}
+			}
+		}
+		++polls;
+	}
+
+	// "😄 280, ❤️ 32", most frequent first.
+	std::string Breakdown() const
+	{
+		std::vector<std::pair<std::string, int64_t>> sorted = perEmoji;
+		std::stable_sort(sorted.begin(), sorted.end(),
+				 [](const auto &a, const auto &b) { return a.second > b.second; });
+		std::vector<std::string> pieces;
+		pieces.reserve(sorted.size());
+		for (const auto &emoji : sorted) {
+			pieces.push_back(emoji.first + " " + std::to_string(emoji.second));
+		}
+		return JoinCapped(pieces);
+	}
+
+	// "312 (😄 280, ❤️ 32), peak 9/s", with `unit` after the count; a multi-second peak bucket
+	// reads "peak 3/2s".
+	std::string Summary(const char *unit = "") const
+	{
+		const std::string breakdown = Breakdown();
+		return std::to_string(total) + unit + (breakdown.empty() ? "" : " (" + breakdown + ")") + ", peak " +
+		       std::to_string(peakTotal) + "/" + (peakSeconds > 1 ? std::to_string(peakSeconds) : "") + "s";
+	}
+};
+
+// One run's reaction logging, owned by the reader's thread: the raw buckets of every poll that
+// carried a reaction (gated), a per-minute summary for each minute that had any, and a session
+// line when the run ends. The session line is written from the destructor because Run leaves the
+// poll loop through several returns.
+class ReactionLog {
+public:
+	explicit ReactionLog(const std::string &destTag)
+		: destTag_(destTag),
+		  windowStart_(std::chrono::steady_clock::now())
+	{
+	}
+
+	ReactionLog(const ReactionLog &) = delete;
+	ReactionLog &operator=(const ReactionLog &) = delete;
+
+	~ReactionLog()
+	{
+		try {
+			FlushWindow(std::chrono::steady_clock::now());
+			HostLog("[chat] youtube reactions: dest=" + destTag_ +
+				" session: " + session_.Summary(" total") + ", from " + std::to_string(session_.polls) +
+				" poll(s) with reactions; summed from buckets, overlap unverified");
+		} catch (...) {
+		}
+	}
+
+	void OnResponse(const json &response)
+	{
+		const std::vector<ReactionBucket> buckets = DecodeReactionBuckets(response);
+		const bool any = std::any_of(buckets.begin(), buckets.end(),
+					     [](const ReactionBucket &bucket) { return bucket.total > 0; });
+		if (any) {
+			DBG(LogCat::Chat, "youtube reactions: dest=%s buckets=[%s]", destTag_.c_str(),
+			    DescribeReactionBuckets(buckets).c_str());
+			window_.Add(buckets);
+			session_.Add(buckets);
+		}
+		const auto now = std::chrono::steady_clock::now();
+		if (now - windowStart_ >= kReactionWindow) {
+			FlushWindow(now);
+		}
+	}
+
+private:
+	void FlushWindow(std::chrono::steady_clock::time_point now)
+	{
+		if (window_.total > 0) {
+			const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - windowStart_);
+			HostLog("[chat] youtube reactions: dest=" + destTag_ + " last " +
+				std::to_string(static_cast<long long>(elapsed.count())) + " s: " + window_.Summary());
+		}
+		window_ = ReactionTally();
+		windowStart_ = now;
+	}
+
+	const std::string destTag_;
+	ReactionTally window_;
+	ReactionTally session_;
+	std::chrono::steady_clock::time_point windowStart_;
+};
+
 } // namespace
 
 std::optional<ModerationOp> DecodeModerationAction(const json &action)
@@ -856,6 +1076,63 @@ std::optional<ModerationOp> DecodeModerationAction(const json &action)
 		return op;
 	}
 	return std::nullopt;
+}
+
+std::vector<ReactionBucket> DecodeReactionBuckets(const json &response)
+{
+	std::vector<ReactionBucket> out;
+	const json &mutations = Obj(Obj(Obj(response, "frameworkUpdates"), "entityBatchUpdate"), "mutations");
+	if (!mutations.is_array()) {
+		return out;
+	}
+	for (const json &mutation : mutations) {
+		const json &buckets = Obj(Obj(Obj(mutation, "payload"), "emojiFountainDataEntity"), "reactionBuckets");
+		if (!buckets.is_array()) {
+			continue;
+		}
+		for (const json &raw : buckets) {
+			if (!raw.is_object()) {
+				continue;
+			}
+			ReactionBucket bucket;
+			bucket.seconds = ReactionCount(Obj(raw, "duration"), "seconds");
+			bucket.intensity = ReactionIntensity(raw);
+			int64_t summed = 0;
+			const json &data = Obj(raw, "reactionsData");
+			if (data.is_array()) {
+				for (const json &entry : data) {
+					if (!entry.is_object()) {
+						continue;
+					}
+					const int64_t count = ReactionCount(entry, "reactionCount");
+					bucket.emojis.emplace_back(ReactionLabel(entry), count);
+					summed = std::min(summed + count, kMaxBucketReactions);
+				}
+			}
+			const int64_t total = ReactionCount(raw, "totalReactions", -1);
+			bucket.total = total >= 0 ? total : summed;
+			out.push_back(std::move(bucket));
+		}
+	}
+	return out;
+}
+
+std::string DescribeReactionBuckets(const std::vector<ReactionBucket> &buckets)
+{
+	std::vector<std::string> pieces;
+	pieces.reserve(buckets.size());
+	for (const ReactionBucket &bucket : buckets) {
+		std::string piece = std::to_string(bucket.total);
+		if (bucket.seconds > 1) {
+			piece += "/" + std::to_string(bucket.seconds) + "s";
+		}
+		for (size_t e = 0; e < bucket.emojis.size(); ++e) {
+			piece +=
+				(e == 0 ? ":" : " ") + bucket.emojis[e].first + std::to_string(bucket.emojis[e].second);
+		}
+		pieces.push_back(std::move(piece));
+	}
+	return JoinCapped(pieces);
 }
 
 bool DecodeChatItem(const json &item, DecodedItem &out)
@@ -910,6 +1187,7 @@ bool Run(const Config &cfg, const Callbacks &cb)
 		return true;
 	}
 	backoff.reset();
+	ReactionLog reactions(cfg.destTag);
 
 	bool filterChecked = false;
 	int emptyStreak = 0;
@@ -968,6 +1246,7 @@ bool Run(const Config &cfg, const Callbacks &cb)
 
 		const NextContinuation next = ReadNextContinuation(liveChat);
 		ProcessActions(lp, Obj(liveChat, "actions"));
+		reactions.OnResponse(resp.body);
 		const int items = lp.items;
 		if (lp.suppressed > 0) {
 			DBG(LogCat::Chat, "youtube innertube: dest=%s connect batch items=%d (suppressed as backlog)",

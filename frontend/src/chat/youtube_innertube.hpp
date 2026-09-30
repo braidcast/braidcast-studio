@@ -6,6 +6,8 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -98,6 +100,26 @@ bool DecodeChatItem(const json &item, DecodedItem &out);
 // `authorExternalChannelId`, so the frame's `author.id`. The op's `dest` is left empty for the
 // hub to fill in. Pure, like DecodeChatItem.
 std::optional<ModerationOp> DecodeModerationAction(const json &action);
+
+// One bucket of the live-reactions fountain: the reactions YouTube counted over `seconds`
+// (measured at 1), and per emoji in arrival order. Reactions are anonymous, so nothing names
+// who sent them. `seconds` is 0 when the bucket does not say.
+struct ReactionBucket {
+	int64_t seconds = 0;
+	int64_t total = 0;
+	double intensity = 0.0;
+	std::vector<std::pair<std::string, int64_t>> emojis;
+};
+
+// Every reaction bucket a get_live_chat response carries, from
+// frameworkUpdates.entityBatchUpdate.mutations[].payload.emojiFountainDataEntity, in order; empty
+// when the response carries no fountain entity, and all-zero buckets are returned as read. Counts
+// may be numbers or numeric strings; a missing totalReactions reads as the sum of the bucket's
+// per-emoji counts. Never throws on any shape. Pure, like DecodeChatItem.
+std::vector<ReactionBucket> DecodeReactionBuckets(const json &response);
+
+// The compact raw form the gated reactions log line carries, e.g. "6:😄6, 9/2s:😄6 ❤️3, 0".
+std::string DescribeReactionBuckets(const std::vector<ReactionBucket> &buckets);
 
 // Run the whole read on the CALLING thread until canceled or the chat ends. Returns true to
 // request the caller's fallback read -- the continuation never resolved, or the endpoint
