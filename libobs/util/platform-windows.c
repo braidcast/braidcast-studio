@@ -788,12 +788,65 @@ error:
 	return code;
 }
 
+/* Another process (antivirus, a search indexer) can open a file just after it
+ * is written or renamed and hold it for a few milliseconds without sharing
+ * delete access. A replace that lands in that window fails, typically on the
+ * second save of one file in quick succession, so it is retried briefly rather
+ * than dropped, as Chromium's ImportantFileWriter does (crbug.com/109928). The
+ * waits only happen after a failure. */
+static const DWORD safe_replace_retry_ms[] = {5, 15, 50, 150};
+
+static const DWORD safe_replace_transient_errors[] = {
+	ERROR_ACCESS_DENIED,
+	ERROR_SHARING_VIOLATION,
+	ERROR_LOCK_VIOLATION,
+	ERROR_UNABLE_TO_REMOVE_REPLACED,
+	ERROR_UNABLE_TO_MOVE_REPLACEMENT,
+	ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+};
+
+static bool safe_replace_error_is_transient(DWORD err)
+{
+	for (size_t i = 0; i < _countof(safe_replace_transient_errors); i++) {
+		if (safe_replace_transient_errors[i] == err) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* One replace attempt; returns ERROR_SUCCESS or the failing step's error. Every
+ * failure ReplaceFileW documents leaves "from" under its own name, and with a
+ * backup named, the previous file under the target or the backup name, so an
+ * attempt can be repeated. A missing target (a first save, or one that
+ * ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 left under the backup name) is completed
+ * with a plain move. */
+static DWORD safe_replace_attempt(const wchar_t *wtarget, const wchar_t *wfrom, const wchar_t *wbackup,
+				  const char **step)
+{
+	*step = "ReplaceFile";
+	if (ReplaceFileW(wtarget, wfrom, wbackup, 0, NULL, NULL)) {
+		return ERROR_SUCCESS;
+	}
+
+	DWORD err = GetLastError();
+	if (err != ERROR_FILE_NOT_FOUND) {
+		return err;
+	}
+
+	*step = "MoveFileEx";
+	return MoveFileExW(wfrom, wtarget, MOVEFILE_REPLACE_EXISTING) ? ERROR_SUCCESS : GetLastError();
+}
+
 int os_safe_replace(const char *target, const char *from, const char *backup)
 {
 	wchar_t *wtarget = NULL;
 	wchar_t *wfrom = NULL;
 	wchar_t *wbackup = NULL;
 	int code = -1;
+	const char *step;
+	DWORD err;
+	size_t retries = 0;
 
 	if (!target || !from) {
 		return -1;
@@ -808,10 +861,18 @@ int os_safe_replace(const char *target, const char *from, const char *backup)
 		goto fail;
 	}
 
-	if (ReplaceFileW(wtarget, wfrom, wbackup, 0, NULL, NULL)) {
+	err = safe_replace_attempt(wtarget, wfrom, wbackup, &step);
+	while (err != ERROR_SUCCESS && safe_replace_error_is_transient(err) &&
+	       retries < _countof(safe_replace_retry_ms)) {
+		Sleep(safe_replace_retry_ms[retries++]);
+		err = safe_replace_attempt(wtarget, wfrom, wbackup, &step);
+	}
+
+	if (err == ERROR_SUCCESS) {
 		code = 0;
-	} else if (GetLastError() == ERROR_FILE_NOT_FOUND) {
-		code = MoveFileExW(wfrom, wtarget, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+	} else {
+		blog(LOG_WARNING, "os_safe_replace: %s onto '%s' failed with error %lu after %zu attempt(s)", step,
+		     target, err, retries + 1);
 	}
 
 fail:
