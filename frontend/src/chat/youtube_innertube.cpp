@@ -830,7 +830,8 @@ long JitteredWaitMs(long stepMs, std::mt19937 &rng)
 
 // The moderation actions: name -> what it does, the field naming its target and the text node
 // YouTube shows in the removed line's place (null when the action leaves no stub). Documented
-// by the community clients that read this endpoint; no capture of one has been taken yet.
+// by the community clients that read this endpoint. markChatItemAsDeletedAction and its
+// deletedStateMessage were seen working live (2026-09-30); the others are uncaptured.
 const struct ModerationKind {
 	const char *name;
 	ModerationAction action;

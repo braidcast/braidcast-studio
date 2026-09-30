@@ -225,8 +225,9 @@ describe("chat leaderboard moderation", () => {
   });
 
   describe("past the held-line bound", () => {
-    // Enough later chat to evict every early line: the bound plus its eviction batch.
-    const FLOOD = 110_000;
+    // Enough later chat to evict every early line: past the bound plus its eviction batch
+    // (MAX_LINES + EVICT_SLACK, 22,000).
+    const FLOOD = 25_000;
 
     async function flooded(early: ChatMessage[]) {
       const lb = await leaderboard();

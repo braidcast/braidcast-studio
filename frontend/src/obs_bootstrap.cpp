@@ -10634,9 +10634,10 @@ void ObsBootstrap::RunChatHistorySelfTest()
 		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") +
 		", label " + (labelOk ? "1" : "0") + ")");
 
-	// YouTube moderation, offline, over both reads. UNVERIFIED SHAPES: no capture of any of
-	// these has been taken; the InnerTube actions follow the community clients that read that
-	// endpoint and the Data API items follow its reference. Each per-message removal names the
+	// YouTube moderation, offline, over both reads. Mostly unverified shapes: only
+	// markChatItemAsDeletedAction has been seen live (2026-09-30); the other InnerTube actions
+	// follow the community clients that read that endpoint and the Data API items follow its
+	// reference. Each per-message removal names the
 	// item's `id` and each per-author one its channel id -- checked here against what
 	// DecodeChatItem reads from a line, so the op's ids are the frame's `id` and `author.id`.
 	{

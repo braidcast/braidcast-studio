@@ -267,7 +267,8 @@ function uncount(op, removes) {
       const next = line.sameId;
       if (removes(line.identity)) {
         const c = line.chatter;
-        c.lines.splice(c.lines.lastIndexOf(line), 1);
+        const at = c.lines.lastIndexOf(line);
+        if (at >= 0) c.lines.splice(at, 1);
         takeBack(c, line);
         changed = true;
       }
