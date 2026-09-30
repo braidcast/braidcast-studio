@@ -96,6 +96,11 @@ export function historyStatusText(s: ChatHistoryStatus): { text: string; problem
         text: `The stored setting ("${s.detail}") is not one this version knows. Chat already saved is kept for up to 7 days and removed as usual, but new chat is not saved. Choose a setting above.`,
         problem: true,
       };
+    case "unreadable":
+      return {
+        text: `The chat history file ${s.detail} could not be read, so it was left in place. Removing it is tried again when chat history is next cleared or its setting changes.`,
+        problem: true,
+      };
     default:
       return { text: "The chat history status is not one this version knows.", problem: true };
   }

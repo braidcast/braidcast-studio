@@ -914,6 +914,107 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		Report("off retries an unreadable file", leftAtOpen && removed);
 	}
 
+	// A chat.db left because its version could not be read is reported by name, with the file
+	// on disk, for as long as its removal is owed: through a Clear that still cannot read it,
+	// until one that can removes it (the status is plain off again). A file that becomes the
+	// live store (7 days chosen once it can be read) is no longer reported either.
+	{
+		const auto seedStore = [&](const std::string &path) {
+			{
+				Launch first(path, Chat::Retention::SevenDays, "L1");
+				Add(first.history, kKickA, "k0", "kick");
+			}
+			fs::create_directory(fs::u8path(path + "-shm"), ec);
+		};
+		const auto reported = [](const json &status, const std::string &name) {
+			return status.value("status", "") == name;
+		};
+		// Checked as each report is taken, since the file is gone by the end.
+		const auto kept = [&](const json &status, const std::string &path) {
+			return reported(status, "unreadable") && status.value("detail", "") == "chat.db" &&
+			       status.value("onDisk", false) && Exists(path);
+		};
+
+		const std::string path = dbPath("unreadable");
+		seedStore(path);
+		Launch launch(path, Chat::Retention::Off, "L2");
+		const json atOpen = launch.archive.StatusJson(kIdleWait);
+		const bool keptAtOpen = kept(atOpen, path);
+		launch.history.Clear();
+		launch.archive.WaitIdle(kIdleWait);
+		const json afterClear = launch.archive.StatusJson(kIdleWait);
+		const bool keptAfterClear = kept(afterClear, path);
+		fs::remove(fs::u8path(path + "-shm"), ec);
+		launch.history.Clear();
+		launch.archive.WaitIdle(kIdleWait);
+		const json removed = launch.archive.StatusJson(kIdleWait);
+		const bool removedOk = keptAtOpen && keptAfterClear && reported(removed, "off") &&
+				       removed.value("detail", "x").empty() && !removed.value("onDisk", true) &&
+				       !Exists(path);
+
+		const std::string livePath = dbPath("unreadable-live");
+		seedStore(livePath);
+		Launch live(livePath, Chat::Retention::Off, "L2");
+		const json liveAtOpen = live.archive.StatusJson(kIdleWait);
+		const bool liveKeptAtOpen = kept(liveAtOpen, livePath);
+		fs::remove(fs::u8path(livePath + "-shm"), ec);
+		live.history.SetRetention(Chat::Retention::SevenDays);
+		live.archive.WaitIdle(kIdleWait);
+		const json adopted = live.archive.StatusJson(kIdleWait);
+		const bool liveOk = liveKeptAtOpen && reported(adopted, "ok") && adopted.value("detail", "x").empty() &&
+				    adopted.value("onDisk", false) && Exists(livePath);
+
+		Report("unreadable file reported", removedOk && liveOk,
+		       atOpen.dump() + " | " + afterClear.dump() + " | " + removed.dump() + " | " + liveAtOpen.dump() +
+			       " | " + adopted.dump());
+
+		// A retry that finds the file held by another instance probes nothing, so the file
+		// stays reported, and the owe stays: once that instance exits, the next Clear removes it.
+		const std::string heldPath = dbPath("unreadable-held");
+		seedStore(heldPath);
+		Launch held(heldPath, Chat::Retention::Off, "L2");
+		const bool heldAtOpen = kept(held.archive.StatusJson(kIdleWait), heldPath);
+		fs::remove(fs::u8path(heldPath + "-shm"), ec);
+		json whileHeld;
+		bool keptWhileHeld = false;
+		{
+			Launch other(heldPath, Chat::Retention::SevenDays, "L3");
+			held.history.Clear();
+			held.archive.WaitIdle(kIdleWait);
+			whileHeld = held.archive.StatusJson(kIdleWait);
+			keptWhileHeld = kept(whileHeld, heldPath) && other.archive.Status() == Chat::ArchiveStatus::Ok;
+		}
+		held.history.Clear();
+		held.archive.WaitIdle(kIdleWait);
+		const json released = held.archive.StatusJson(kIdleWait);
+		const bool heldOk = heldAtOpen && keptWhileHeld && reported(released, "off") && !Exists(heldPath);
+		Report("unreadable file survives a held retry", heldOk, whileHeld.dump() + " | " + released.dump());
+
+		// Degraded holds for the launch, so it stays the status, and its detail names the file.
+		const std::string degradedPath = dbPath("unreadable-degraded");
+		seedStore(degradedPath);
+		Launch degraded(degradedPath, Chat::Retention::Off, "L2");
+		(void)degraded.archive.Degrade("self-test");
+		const json named = degraded.archive.StatusJson(kIdleWait);
+		const bool degradedOk = reported(named, "degraded") &&
+					named.value("detail", "") ==
+						"self-test; chat.db could not be read and was left in place" &&
+					named.value("onDisk", false);
+		Report("degraded names an unreadable file", degradedOk, named.dump());
+
+		// A kept file deleted from outside is no longer named, though its removal is still owed.
+		const std::string gonePath = dbPath("unreadable-gone");
+		seedStore(gonePath);
+		Launch gone(gonePath, Chat::Retention::Off, "L2");
+		const bool goneAtOpen = kept(gone.archive.StatusJson(kIdleWait), gonePath);
+		fs::remove(fs::u8path(gonePath + "-shm"), ec);
+		fs::remove(fs::u8path(gonePath), ec);
+		const json afterDelete = gone.archive.StatusJson(kIdleWait);
+		const bool goneOk = goneAtOpen && reported(afterDelete, "off") &&
+				    afterDelete.value("detail", "x").empty() && !afterDelete.value("onDisk", true);
+		Report("unreadable file deleted outside", goneOk, afterDelete.dump());
+	}
+
 	// The report chat.historyStatus answers with: the count a reader can reach (a queued
 	// Clear already hides its rows), the status and detail, whether a file is on disk, and
 	// the moderated platforms. It waits for a control op queued before it, not for rows.

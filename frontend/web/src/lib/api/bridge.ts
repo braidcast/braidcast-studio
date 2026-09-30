@@ -2725,7 +2725,9 @@ export type ChatHistoryRetention = "off" | "session" | "7d";
 
 /** The state of chat history on disk (chat.historyStatus). "unknown-setting": the stored
  * retention is not one this build knows; what is stored is kept and removed as 7 days
- * keeps it, and new chat is not saved. */
+ * keeps it, and new chat is not saved. "unreadable": a removal (Off, a clear, an account
+ * purge) left the chat history file in place because it could not be read; the next clear,
+ * purge, moderation removal or retention change tries again. */
 export type ChatHistoryState =
   | "off"
   | "ok"
@@ -2733,13 +2735,15 @@ export type ChatHistoryState =
   | "recovered"
   | "newer-schema"
   | "degraded"
-  | "unknown-setting";
+  | "unknown-setting"
+  | "unreadable";
 
 export interface ChatHistoryStatus {
   status: ChatHistoryState;
   /** "recovered": the name the damaged file was set aside under, or empty when it was
-   * deleted instead. "unknown-setting": the stored value. "newer-schema", "disabled",
-   * "degraded": why. Otherwise empty. */
+   * deleted instead. "unknown-setting": the stored value. "unreadable": the name of the
+   * file left in place. "newer-schema", "disabled", "degraded": why ("degraded" also names
+   * a file left in place because it could not be read). Otherwise empty. */
   detail: string;
   /** Messages stored on disk, less any a clear still in flight already hides. */
   rows: number;

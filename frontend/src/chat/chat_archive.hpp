@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -76,6 +77,11 @@ enum class ArchiveStatus {
 	// The stored retention setting is one this build does not know: the store runs as 7 days
 	// (Options::unknownSetting), but no new message is written to it.
 	UnknownSetting,
+	// A removal left chat.db in place because its version could not be read, so it cannot be
+	// shown not to be a newer build's; the next control op tries again. Reported while the
+	// removal is owed and the file is there, over every status but Degraded, whose detail
+	// names the file instead.
+	Unreadable,
 };
 
 enum class ModerationAction { Delete, ClearUser, ClearAll };
@@ -321,6 +327,7 @@ private:
 	// RemoveStoreFiles for `why`; when a file stays, the removal is owed another try
 	// (RemoveWhatIsOwed). A store another instance holds is owed too, when `oweWhileLocked`:
 	// a removal the user confirmed this launch must still reach it once that instance exits.
+	// unreadableKept_ is set with the owe when chat.db stays because its version could not be read.
 	void RemoveOrOwe(const std::string &why, bool oweWhileLocked);
 	// With the store closed: under Off, everything this build may remove; otherwise a
 	// removal an earlier try owes. False when there was nothing to try.
@@ -373,12 +380,15 @@ private:
 	void ReleaseLock();
 	// Remove chat.db and its -wal/-shm (RemoveOwnStore) and every quarantined copy, holding
 	// the lock file for it; nothing while another instance holds that. `why` is logged. True
-	// when a file this build may remove is still there, to be tried again, counting a store
-	// another instance holds when `countLocked`.
-	bool RemoveStoreFiles(const std::string &why, bool countLocked);
+	// when a file this build may remove is still there, or could not be checked for, to be
+	// tried again, counting a store another instance holds when `countLocked`. `unreadable` is
+	// set to whether chat.db stays because its version could not be read, and left as it is
+	// when nothing was probed (another instance holds it, or the check failed).
+	bool RemoveStoreFiles(const std::string &why, bool countLocked, bool &unreadable);
 	// Remove chat.db and its -wal/-shm, unless it is, or may be, a newer build's; `why` is
-	// logged. True when it stays although it is not known to be a newer build's.
-	bool RemoveOwnStore(const std::string &why);
+	// logged. True when it stays although it is not known to be a newer build's; `unreadable`
+	// is set to whether that is because its version could not be read.
+	bool RemoveOwnStore(const std::string &why, bool &unreadable);
 	// Delete chat.db, -wal first, then -shm and the file. False, logged, if one stays.
 	bool DeleteStoreFiles();
 	// Session mode's answer to an unreadable chat.db: it holds only earlier launches' chat,
@@ -399,6 +409,10 @@ private:
 	ForEachQuarantined(const std::function<void(const std::filesystem::path &, const std::string &)> &visit) const;
 	void BuildSeed(Seed &seed);
 	void SetStatus(ArchiveStatus status, std::string detail);
+	// The status and detail reported: status_, or Unreadable naming chat.db while one is kept
+	// unreadable (unreadableKept_) and is still there; under Degraded, the detail names it.
+	// Takes queueMutex_ twice, checking for chat.db between, so the caller must not hold it.
+	std::pair<ArchiveStatus, std::string> ReportedStatus() const;
 
 	Options options_;
 	Retention retention_ = Retention::Off; // the writer's copy of the mode (Open, then writer only)
@@ -431,6 +445,9 @@ private:
 	// Why a removal that left a file this build may remove was made, or "" when none is
 	// owed; the next control op tries again.
 	std::string owedRemoval_;
+	// The owed removal left chat.db because its version could not be read (Unreadable).
+	// Cleared with the owe: by a removal that runs, or by the file becoming the live store.
+	bool unreadableKept_ = false;
 	bool failWriterStart_ = false;
 	bool unknownSetting_ = false; // Options::unknownSetting, until a mode is set
 	// Control ops queued, and those the writer has applied or dropped; StatusJson waits for

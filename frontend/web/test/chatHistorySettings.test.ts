@@ -90,8 +90,15 @@ describe("historyStatusText", () => {
     expect(line.text).toContain("new chat is not saved");
   });
 
+  test("names a file left because it could not be read", () => {
+    const line = historyStatusText(status({ status: "unreadable", detail: "chat.db", onDisk: true }));
+    expect(line.problem).toBe(true);
+    expect(line.text).toContain("chat.db");
+    expect(line.text).toContain("left in place");
+  });
+
   test("flags every problem state, and a status this build does not know", () => {
-    for (const s of ["recovered", "newer-schema", "disabled", "degraded", "unknown-setting"] as const) {
+    for (const s of ["recovered", "newer-schema", "disabled", "degraded", "unknown-setting", "unreadable"] as const) {
       expect(historyStatusText(status({ status: s, detail: "why" })).problem).toBe(true);
     }
     const unknown = historyStatusText(status({ status: "unknown" as ChatHistoryState }));

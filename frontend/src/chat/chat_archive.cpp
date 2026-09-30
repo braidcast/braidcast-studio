@@ -83,6 +83,8 @@ const char *StatusName(ArchiveStatus status)
 		return "degraded";
 	case ArchiveStatus::UnknownSetting:
 		return "unknown-setting";
+	case ArchiveStatus::Unreadable:
+		return "unreadable";
 	}
 	return "unknown";
 }
@@ -524,7 +526,18 @@ bool ChatArchive::NothingToReachLocked() const
 
 void ChatArchive::RemoveOrOwe(const std::string &why, bool oweWhileLocked)
 {
-	SetOwedRemoval(RemoveStoreFiles(why, oweWhileLocked) ? why : std::string());
+	// RemoveStoreFiles leaves `unreadable` as it is when another instance holds the store or the
+	// check for it failed, since nothing was probed. Only the thread that removes (Open's, then the writer) writes the flag,
+	// so the copy read here is still current when it is written back.
+	bool unreadable = false;
+	{
+		std::lock_guard<std::mutex> lock(queueMutex_);
+		unreadable = unreadableKept_;
+	}
+	const bool left = RemoveStoreFiles(why, oweWhileLocked, unreadable);
+	std::lock_guard<std::mutex> lock(queueMutex_);
+	owedRemoval_ = left ? why : std::string();
+	unreadableKept_ = left && unreadable;
 }
 
 bool ChatArchive::RemoveWhatIsOwed()
@@ -550,6 +563,9 @@ void ChatArchive::SetOwedRemoval(std::string why)
 {
 	std::lock_guard<std::mutex> lock(queueMutex_);
 	owedRemoval_ = std::move(why);
+	if (owedRemoval_.empty()) {
+		unreadableKept_ = false;
+	}
 }
 
 void ChatArchive::FailWrites(bool fail)
@@ -740,14 +756,35 @@ bool ChatArchive::Readable() const
 
 ArchiveStatus ChatArchive::Status() const
 {
-	std::lock_guard<std::mutex> lock(queueMutex_);
-	return status_;
+	return ReportedStatus().first;
 }
 
 std::string ChatArchive::StatusDetail() const
 {
+	return ReportedStatus().second;
+}
+
+std::pair<ArchiveStatus, std::string> ChatArchive::ReportedStatus() const
+{
+	bool kept = false;
+	{
+		std::lock_guard<std::mutex> lock(queueMutex_);
+		kept = unreadableKept_;
+	}
+	// A kept file is named only while it is there: it may have been deleted since. Checked
+	// outside the lock, and only while one is kept; a failed check counts as there.
+	std::error_code ec;
+	const bool there = kept && (fs::exists(fs::u8path(options_.path), ec) || ec);
 	std::lock_guard<std::mutex> lock(queueMutex_);
-	return statusDetail_;
+	if (!there || !unreadableKept_) {
+		return {status_, statusDetail_};
+	}
+	const std::string name = fs::u8path(options_.path).filename().u8string();
+	// Degraded holds for the launch, as in SetStatus, so its detail names the file instead.
+	if (degraded_) {
+		return {status_, statusDetail_ + "; " + name + " could not be read and was left in place"};
+	}
+	return {ArchiveStatus::Unreadable, name};
 }
 
 json ChatArchive::StatusJson(std::chrono::milliseconds settle)
@@ -758,14 +795,15 @@ json ChatArchive::StatusJson(std::chrono::milliseconds settle)
 		std::unique_lock<std::mutex> lock(queueMutex_);
 		const uint64_t queued = controlsQueued_;
 		idle_.wait_for(lock, settle, [&] { return controlsDone_ >= queued; });
-		out["status"] = StatusName(status_);
-		out["detail"] = statusDetail_;
 		pending = pending_;
 	}
+	const auto [status, detail] = ReportedStatus();
+	out["status"] = StatusName(status);
+	out["detail"] = detail;
 	bool onDisk = false;
 	if (!options_.path.empty()) {
 		std::error_code ec;
-		onDisk = fs::exists(fs::u8path(options_.path), ec);
+		onDisk = fs::exists(fs::u8path(options_.path), ec) || ec;
 		ForEachQuarantined([&](const fs::path &, const std::string &) { onDisk = true; });
 	}
 	out["onDisk"] = onDisk;
@@ -1621,23 +1659,37 @@ std::string ChatArchive::Quarantine()
 	return name;
 }
 
-bool ChatArchive::RemoveStoreFiles(const std::string &why, bool countLocked)
+bool ChatArchive::RemoveStoreFiles(const std::string &why, bool countLocked, bool &unreadable)
 {
-	const fs::path db = fs::u8path(options_.path);
-	std::error_code ec;
-	bool anyStore = fs::exists(db, ec);
+	std::error_code failed;
+	const auto there = [&](const fs::path &path) {
+		std::error_code ec;
+		const bool exists = fs::exists(path, ec);
+		if (ec && !failed) {
+			failed = ec;
+		}
+		return exists;
+	};
+	bool anyStore = there(fs::u8path(options_.path));
 	for (const char *side : kSideFiles) {
-		anyStore = anyStore || fs::exists(fs::u8path(options_.path + side), ec);
+		anyStore = there(fs::u8path(options_.path + side)) || anyStore;
+	}
+	if (failed) {
+		// Nothing is known to be gone, so nothing was tried: the removal stays owed.
+		HostLog("[chat-archive] could not check for chat.db (" + failed.message() + "); left for another try");
+		return true;
 	}
 	bool anyQuarantined = false;
 	ForEachQuarantined([&](const fs::path &, const std::string &) { anyQuarantined = true; });
 	if (!anyStore && !anyQuarantined) {
+		unreadable = false;
 		return false;
 	}
 	bool left = false;
 	const bool locked = WithStoreLock([&] {
+		unreadable = false;
 		if (anyStore) {
-			left = RemoveOwnStore(why);
+			left = RemoveOwnStore(why, unreadable);
 		}
 		DeleteQuarantined(true);
 	});
@@ -1648,11 +1700,12 @@ bool ChatArchive::RemoveStoreFiles(const std::string &why, bool countLocked)
 	return left;
 }
 
-bool ChatArchive::RemoveOwnStore(const std::string &why)
+bool ChatArchive::RemoveOwnStore(const std::string &why, bool &unreadable)
 {
 	// A newer build's file is left exactly as it is, whatever this build's mode, and so is
 	// one whose version cannot be read: a failed probe proves nothing about it. Only a file
 	// SQLite rejects as not a database at all is known not to be a newer build's.
+	unreadable = false;
 	std::error_code ec;
 	if (!fs::exists(fs::u8path(options_.path), ec) && !ec) {
 		// A -wal or -shm without its database holds nothing to read.
@@ -1676,6 +1729,7 @@ bool ChatArchive::RemoveOwnStore(const std::string &why)
 	}
 	if (!version && !IsCorruptFile(rc)) {
 		HostLog("[chat-archive] chat.db could not be read to check its version (" + cause + "); left in place");
+		unreadable = true;
 		return true;
 	}
 	if (!DeleteStoreFiles()) {
