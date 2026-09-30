@@ -20,7 +20,6 @@
 
 #include "bridge.hpp"
 #include "diag/capture_rate_sampler.hpp"
-#include "gpu_safe_mode.hpp"
 #include "log.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -54,8 +53,6 @@ constexpr const char *kBrowserUrl =
 // A page animating every frame paints about once per canvas frame; this share of
 // the main rate leaves room for CEF's own pacing.
 constexpr double kBrowserMinShare = 0.5;
-// Chromium's own report of its GPU process dying, in CEF's debug log.
-constexpr const char *kCefGpuCrashLine = "GPU process exited unexpectedly";
 
 // win-capture's display_capture_method values.
 constexpr int kMethodDxgi = 1;
@@ -795,21 +792,11 @@ void CheckFullRate(State &st)
 	const std::vector<json> browser = RowsOf(st, Phase::FullRate, kBrowserName, 2);
 	const double paints = Median(Numbers(browser, "rate"));
 	const double wantPaints = kBrowserMinShare * st.mainFps;
-	const std::string what = std::string("overlay paints: ") + kBrowserName + " median " + Fmt(paints) + "/s";
-	OBSDataAutoRelease privateData = obs_get_private_data();
-	const bool sharedTextures = obs_data_get_bool(privateData, BrowserHwAccel::kPrivateDataKey);
-	const int gpuCrashes = SelfTest::CountCefLogLines(kCefGpuCrashLine);
-	if (AllStatus(browser, "ok") && paints == 0.0 && sharedTextures && gpuCrashes > 0) {
-		// Observed with shared textures on and CEF's GPU process crashing at boot:
-		// CEF called OnPaint (type PET_VIEW, sharing_available set) and never
-		// OnAcceleratedPaint, so no frame reached the source.
-		Inconclusive(st, what + ": shared textures on and CEF's GPU process crashed " +
-					 std::to_string(gpuCrashes) +
-					 " time(s) this launch, so no frame reached the source");
-	} else {
-		Check(st, AllStatus(browser, "ok") && paints >= wantPaints && !AnyFlag(browser, "below"),
-		      what + " >= " + Fmt(wantPaints) + ", never below");
-	}
+	// Holds with shared textures on even when CEF's GPU process crash-loops: CEF then paints
+	// through OnPaint, and obs-browser renders those frames on the CPU path.
+	Check(st, AllStatus(browser, "ok") && paints >= wantPaints && !AnyFlag(browser, "below"),
+	      std::string("overlay paints: ") + kBrowserName + " median " + Fmt(paints) + "/s >= " + Fmt(wantPaints) +
+		      ", never below");
 }
 
 // A browser row is a rate and nothing more, in every phase: no fraction, lock, lock
