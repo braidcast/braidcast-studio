@@ -5,6 +5,7 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import InsightsPanel from "$lib/monitor/InsightsPanel.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
@@ -25,6 +26,8 @@
   } from "$lib/utils/statsMeter";
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
+  import { CAPTURE_SECTION_TEXT, describeCapture, fmtSinceReset } from "$lib/utils/captureRate";
+  import { whileVisible } from "$lib/utils/whileVisible";
 
   // Live performance view. The host pushes a sample at 1 Hz; the shared store holds
   // the newest one. This page subscribes while mounted (App renders it conditionally,
@@ -36,6 +39,11 @@
   const stale = $derived(statsStore.stale);
   const staleSec = $derived(Math.round(statsStore.ageMs / 1000));
   $effect(() => statsStore.subscribe());
+
+  // Capture rates. Off air the host samples them only under a lease, held while this
+  // page is on screen and shared with the Stats dock through the store.
+  const watchCaptures = (): (() => void) => statsStore.watchCaptures();
+  const captures = $derived((stats?.captures ?? []).map((row) => ({ row, view: describeCapture(row) })));
 
   // Short client-side ring per metric so each card can draw a sparkline. Observes the
   // derived snapshot only — no store/poll/bridge change. Reads of `hist` are untracked
@@ -159,7 +167,7 @@
 
 <PageShell title="Monitor" sub="Live performance · 1×/s from the host">
 
-  <div class="body">
+  <div class="body" use:whileVisible={watchCaptures}>
     <StaleNotice {stale} ageSec={staleSec} subject="statistics" />
     <div class="cards" class:frozen={stale}>
       {#each cards as c (c.k)}
@@ -228,6 +236,61 @@
             <span>{live ? String(o.droppedFrames) : "—"}</span>
             <span>{live ? o.congestionPct.toFixed(1) + "%" : "—"}</span>
             <span>{live ? fmtDuration(o.durationMs) : "—"}</span>
+          </div>
+        {/each}
+      {/if}
+    </div>
+
+    <h2 class="section-title">CAPTURE SOURCES</h2>
+
+    <!-- Like the outputs table, a grid of spans rather than table semantics: each row
+         carries one screen-reader sentence and its visual cells are hidden from it, since
+         the warning/note line spans the row and fits no column. -->
+    <div class="table caps" class:frozen={stale}>
+      <div class="thead" aria-hidden="true">
+        <span>SOURCE</span>
+        <span>METHOD</span>
+        <span>RATE</span>
+        <span>OF CANVAS</span>
+        <span>LIVE CANVAS</span>
+        <span>SINCE RESET</span>
+      </div>
+      <!-- While an output is live the host samples without the lease, so a renewal
+           error sits above rows it did not stop, and replaces only an empty list. -->
+      {#if statsStore.captureWatchError}
+        <div class="table-msg">{CAPTURE_SECTION_TEXT.unavailable}: {statsStore.captureWatchError}</div>
+      {/if}
+      {#if captures.length === 0 && statsStore.captureWatchError}
+        <!-- The error above is the whole story. -->
+      {:else if !statsStore.capturesSettled}
+        <div class="table-msg">{CAPTURE_SECTION_TEXT.starting}</div>
+      {:else if captures.length === 0}
+        <div class="table-empty">
+          <EmptyState title={CAPTURE_SECTION_TEXT.emptyTitle} sub={CAPTURE_SECTION_TEXT.emptySub} />
+        </div>
+      {:else}
+        {#each captures as { row, view } (row.uuid)}
+          {@const since = fmtSinceReset(row)}
+          {@const spoken =
+            `${view.label}. Live canvas: ${view.ref ?? "not live"}` + (since === "—" ? "" : `. Since reset: ${since}`)}
+          <div class="trow cap" class:warn={view.tone === "warn"}>
+            <span class="sr-only">{spoken}</span>
+            <span class="out" aria-hidden="true">
+              <span class="out-name" title={row.name}>{row.name}</span>
+            </span>
+            <span aria-hidden="true" title={view.kindTitle || undefined}>{view.kind || "—"}</span>
+            <span aria-hidden="true" class="cap-val" class:muted={view.tone === "muted"}>{view.value}</span>
+            <span aria-hidden="true">{view.share ?? "—"}</span>
+            <span aria-hidden="true">{view.ref ?? "not live"}</span>
+            <span aria-hidden="true">{since}</span>
+            {#if view.warn || view.note}
+              <span class="cap-sub" aria-hidden="true">
+                {#if view.warn}
+                  <span class="cap-warn"><Icon name="warn" size={12} />{view.warn}</span>
+                {/if}
+                {#if view.note}<span class="cap-note">{view.note}</span>{/if}
+              </span>
+            {/if}
           </div>
         {/each}
       {/if}
@@ -383,6 +446,54 @@
     padding: 22px 16px;
     border-top: var(--border-weight) solid var(--color-border-2);
   }
+  .table-msg {
+    padding: 14px 16px;
+    border-top: var(--border-weight) solid var(--color-border-2);
+    background: var(--color-surface);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .table.caps.frozen .trow {
+    opacity: 0.45;
+    filter: grayscale(0.6);
+  }
+  /* The edge takes 2px of the row's left padding so the cells stay under the header. */
+  .trow.cap {
+    border-left: 2px solid transparent;
+    padding-left: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The one capture reading that is a warning (async rendering below its input): the
+     edge marks it, and the sub-line under the row says it in words. */
+  .trow.cap.warn {
+    border-left-color: var(--color-warn);
+    background: color-mix(in srgb, var(--color-warn) 6%, var(--color-surface));
+  }
+  .cap-val {
+    color: var(--color-text);
+  }
+  .cap-val.muted {
+    color: var(--color-muted);
+  }
+  .cap-sub {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 5px;
+    font-size: 10px;
+  }
+  .cap-note {
+    color: var(--color-muted);
+  }
+  .cap-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-warn);
+  }
+
   .out {
     display: flex;
     align-items: center;

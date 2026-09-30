@@ -1254,6 +1254,11 @@ export interface OutputStat {
   durationMs: number;
 }
 
+/** A capture-rate row's status. "ok" is measured; "unmeasurable" is showing but its
+ * capture method counts no frames (BitBlt, deinterlaced, a hooked game capture);
+ * "idle" is not capturing right now (hidden, camera stopped, capture not open). */
+export type CaptureStatus = "ok" | "unmeasurable" | "idle";
+
 /** One browser source's paint rate, as diagnostics.get's `overlayPaints` reports it.
  * Diagnostics only: the Stats panel does not render overlay rates. `rate` is paints
  * per second, capped at what the canvas could show, and null unless `status` is "ok". */
@@ -1261,9 +1266,41 @@ export interface OverlayPaintRow {
   uuid: string;
   name: string;
   kind: "browserPaint";
-  status: "ok" | "unmeasurable" | "idle";
+  status: CaptureStatus;
   refFps: number | null;
   rate: number | null;
+}
+
+/** One capture source's frame rate, as stats.get's `captures` reports it. Only the
+ * sources some render root reaches this tick; a removed source drops out. Every
+ * number is null until the source has two samples in one window (just listed, just
+ * re-baselined) or when its kind does not produce it. */
+export interface CaptureRateRow {
+  uuid: string;
+  name: string;
+  kind: "wgc" | "dxgi" | "async" | "gameHook" | "none";
+  status: CaptureStatus;
+  /** Best min(canvas fps, main fps) among LIVE canvases reaching the source; null
+   * off air, and with it every rule that needs a reference. */
+  refFps: number | null;
+  /** WGC / DXGI: frames shown per second, capped at what the canvas could show. */
+  rate: number | null;
+  /** WGC / DXGI: `rate` as a share of what the canvas could show; needs `refFps`. */
+  fraction: number | null;
+  /** Async: frames the producer delivered, and frames that reached the render. */
+  inputFps: number | null;
+  renderedFps: number | null;
+  /** Async only: rendered fell below 0.9 × min(input, expected) this second. The one
+   * capture-rate reading that is a warning. */
+  below: boolean;
+  /** WGC / DXGI while locked to a simple fraction of the canvas ("1/2", "2/3"...). */
+  lockedFraction: string | null;
+  /** The host's neutral wording of the lock, a rate never a cause. Never a warning. */
+  note: string | null;
+  inGrace: boolean;
+  /** Since the last stats.reset (or since listed): seconds measured, seconds below,
+   * seconds locked. */
+  sinceReset: { liveSec: number; belowSec: number; lockedSec: number };
 }
 
 /** One sample taken by the host's stats sampler: pushed on stats.changed, and
@@ -1271,6 +1308,8 @@ export interface OverlayPaintRow {
 export interface Stats {
   general: GeneralStats;
   outputs: OutputStat[];
+  /** Empty unless an output is live or stats.watchCaptures holds a lease. */
+  captures: CaptureRateRow[];
   /** Host wall clock (epoch ms) at which this sample was taken. Compared against
    * Date.now() to tell a live reading from a frozen one — without it, a panel that
    * stopped receiving pushes renders its last sample as if it were current. */
@@ -2268,6 +2307,10 @@ export interface ObsMethods {
   // Rebase the "since reset" counters (render lag, encode skip, per-output drop) to
   // now, like OBS's Stats Reset. Instantaneous readings (cpu/fps/bitrate) are unaffected.
   "stats.reset": { ok: boolean };
+  // Hold the host's capture-rate sampling on for `leaseMs` from now even with nothing
+  // live. Renewed well inside the lease by whatever is showing the rates; there is no
+  // release, the lease simply lapses.
+  "stats.watchCaptures": { ok: boolean; leaseMs: number };
   // Stream history, newest first. Returns an empty array when the history database
   // could not be opened -- history is visibly unavailable, streaming is unaffected.
   "sessions.list": SessionInfo[];

@@ -30,6 +30,8 @@
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
   import { pageStore } from "$lib/stores/pageStore.svelte";
   import { obs, type GeneralStats, type OutputStat } from "$lib/api/bridge";
+  import { CAPTURE_SECTION_TEXT, describeCapture } from "$lib/utils/captureRate";
+  import { whileVisible } from "$lib/utils/whileVisible";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -143,6 +145,15 @@
 
   const outputs = $derived(stats?.outputs ?? []);
 
+  // --- capture rates ----------------------------------------------------------
+  // Off air the host samples these only while a lease holds; the dock takes one only
+  // while it is actually on screen (whileVisible on the dock root below), and the store
+  // shares the renewal with the Monitor page.
+  const watchCaptures = (): (() => void) => statsStore.watchCaptures();
+  const captures = $derived((stats?.captures ?? []).map((row) => ({ row, view: describeCapture(row) })));
+  const capturesSettled = $derived(statsStore.capturesSettled);
+  const captureWatchError = $derived(statsStore.captureWatchError);
+
   // Cumulative read across every output, so trouble is visible before drilling into
   // rows: live/total, error count, summed dropped frames + worst drop%, summed
   // outgoing bitrate, and peak congestion.
@@ -251,7 +262,7 @@
   }
 </script>
 
-<div class="dock-body" class:stale>
+<div class="dock-body" class:stale use:whileVisible={watchCaptures}>
   {#if error}
     <p class="dock-msg err">{error}</p>
   {/if}
@@ -294,6 +305,59 @@
           </div>
         {/each}
       </div>
+    </section>
+
+    <section class="block captures" aria-labelledby="stats-captures-label">
+      <div class="sec-head">
+        <span class="sec-label" id="stats-captures-label">Captures</span>
+        <span class="sec-meta" title="Real frames per second each capture source delivers">
+          {capturesSettled ? captures.length : "…"}
+        </span>
+      </div>
+      <!-- While an output is live the host samples without the lease, so a renewal
+           error sits above rows it did not stop, and replaces only an empty list. -->
+      {#if captureWatchError}
+        <p class="dock-msg err">{CAPTURE_SECTION_TEXT.unavailable}: {captureWatchError}</p>
+      {/if}
+      {#if captures.length === 0 && captureWatchError}
+        <!-- The error above is the whole story. -->
+      {:else if !capturesSettled}
+        <p class="cap-msg">{CAPTURE_SECTION_TEXT.starting}</p>
+      {:else if captures.length === 0}
+        <div class="empty-wrap">
+          <EmptyState
+            compact
+            title={CAPTURE_SECTION_TEXT.emptyTitle}
+            sub={CAPTURE_SECTION_TEXT.emptySub}
+          >
+            {#snippet icon()}
+              <Icon name="monitor" size={22} />
+            {/snippet}
+          </EmptyState>
+        </div>
+      {:else}
+        <ul class="list caps">
+          {#each captures as { row, view } (row.uuid)}
+            <li class="cap" class:warn={view.tone === "warn"}>
+              <span class="sr-only">{view.label}</span>
+              <div class="cap-line1" aria-hidden="true">
+                <span class="cap-name" title={row.name}>{row.name}</span>
+                {#if view.kind}<span class="cap-kind" title={view.kindTitle}>{view.kind}</span>{/if}
+                <span class="cap-val" class:muted={view.tone === "muted"}>{view.value}</span>
+              </div>
+              {#if view.warn || view.share || view.note}
+                <div class="cap-line2" aria-hidden="true">
+                  {#if view.warn}
+                    <span class="cap-warn"><Icon name="warn" size={11} />{view.warn}</span>
+                  {/if}
+                  {#if view.share}<span class="stat">{view.share}</span>{/if}
+                  {#if view.note}<span class="cap-note">{view.note}</span>{/if}
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </section>
 
     <section class="block outputs">
@@ -719,6 +783,86 @@
   }
   .sm.err .sm-v {
     color: var(--meter-red);
+  }
+
+  .cap-msg {
+    margin: 0;
+    padding: 10px 9px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
+  }
+  /* Same hairline row as an output, with a neutral edge: a capture row has no state
+     colour to carry. Only an async row that renders below its input takes the warn
+     edge, and it says so in words on line 2. */
+  .cap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 9px 6px 8px;
+    border: var(--border-weight) solid var(--color-border);
+    border-left: 3px solid var(--color-border);
+    background: var(--color-base);
+  }
+  .cap.warn {
+    border-left-color: var(--color-warn);
+    background: color-mix(in srgb, var(--color-warn) 7%, var(--color-base));
+  }
+  /* Wraps rather than squeezing: the name keeps at least 8em, and a value that no
+     longer fits beside it and the badge drops to its own line, still right-aligned. */
+  .cap-line1 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+  }
+  .cap-name {
+    flex: 1 1 8em;
+    min-width: 0;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cap-kind {
+    flex-shrink: 0;
+    padding: 0 4px;
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    letter-spacing: 0.08em;
+    color: var(--color-muted);
+    border: var(--border-weight) solid var(--color-border);
+  }
+  /* Right-aligned tabular figures, so a ticking rate never shifts the row. */
+  .cap-val {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--color-text);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .cap-val.muted {
+    color: var(--color-muted);
+  }
+  .cap-line2 {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+    font-size: 10px;
+    color: var(--color-dim);
+  }
+  .cap-note {
+    color: var(--color-muted);
+  }
+  .cap-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-warn);
   }
 
   .err-modal {
