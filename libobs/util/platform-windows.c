@@ -68,13 +68,15 @@ void *os_dlopen(const char *path)
 	wchar_t *wpath_slash;
 	HMODULE h_library = NULL;
 
-	if (!path)
+	if (!path) {
 		return NULL;
+	}
 
 	dstr_init_copy(&dll_name, path);
 	dstr_replace(&dll_name, "\\", "/");
-	if (!dstr_find(&dll_name, ".dll"))
+	if (!dstr_find(&dll_name, ".dll")) {
 		dstr_cat(&dll_name, ".dll");
+	}
 	os_utf8_to_wcs_ptr(dll_name.array, 0, &wpath);
 
 	dstr_free(&dll_name);
@@ -103,8 +105,9 @@ void *os_dlopen(const char *path)
 
 		/* don't print error for libraries that aren't meant to be
 		 * dynamically linked */
-		if (error == ERROR_PROC_NOT_FOUND)
+		if (error == ERROR_PROC_NOT_FOUND) {
 			return NULL;
+		}
 
 		char *message = NULL;
 
@@ -114,8 +117,9 @@ void *os_dlopen(const char *path)
 
 		blog(LOG_INFO, "LoadLibrary failed for '%s': %s (%lu)", path, message, error);
 
-		if (message)
+		if (message) {
 			LocalFree(message);
+		}
 	}
 
 	return h_library;
@@ -141,8 +145,9 @@ static bool has_obs_export(VOID *base, PIMAGE_NT_HEADERS nt_headers)
 		PIMAGE_DATA_DIRECTORY data_dir;
 		data_dir = &nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
 
-		if (data_dir->Size == 0)
+		if (data_dir->Size == 0) {
 			return false;
+		}
 
 		PIMAGE_SECTION_HEADER section, last_section;
 		section = IMAGE_FIRST_SECTION(nt_headers);
@@ -162,8 +167,9 @@ static bool has_obs_export(VOID *base, PIMAGE_NT_HEADERS nt_headers)
 
 		/* double check in case we exited early */
 		if (last_section->VirtualAddress > data_dir->VirtualAddress ||
-		    section->VirtualAddress <= data_dir->VirtualAddress)
+		    section->VirtualAddress <= data_dir->VirtualAddress) {
 			return false;
+		}
 
 		section = last_section;
 
@@ -172,8 +178,9 @@ static bool has_obs_export(VOID *base, PIMAGE_NT_HEADERS nt_headers)
 		export = (PIMAGE_EXPORT_DIRECTORY)((byte *)base + data_dir->VirtualAddress - section->VirtualAddress +
 						   section->PointerToRawData);
 
-		if (export->NumberOfNames == 0)
+		if (export->NumberOfNames == 0) {
 			return false;
+		}
 
 		/* get a pointer to the export directory names */
 		DWORD *names_ptr;
@@ -214,13 +221,15 @@ void get_plugin_info(const char *path, bool *is_obs_plugin)
 
 	*is_obs_plugin = false;
 
-	if (!path)
+	if (!path) {
 		return;
+	}
 
 	dstr_init_copy(&dll_name, path);
 	dstr_replace(&dll_name, "\\", "/");
-	if (!dstr_find(&dll_name, ".dll"))
+	if (!dstr_find(&dll_name, ".dll")) {
 		dstr_cat(&dll_name, ".dll");
+	}
 	os_utf8_to_wcs_ptr(dll_name.array, 0, &wpath);
 
 	dstr_free(&dll_name);
@@ -229,29 +238,34 @@ void get_plugin_info(const char *path, bool *is_obs_plugin)
 
 	bfree(wpath);
 
-	if (hFile == INVALID_HANDLE_VALUE)
+	if (hFile == INVALID_HANDLE_VALUE) {
 		goto cleanup;
+	}
 
 	hFileMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-	if (hFileMapping == NULL)
+	if (hFileMapping == NULL) {
 		goto cleanup;
+	}
 
 	base = MapViewOfFile(hFileMapping, FILE_MAP_READ, 0, 0, 0);
-	if (!base)
+	if (!base) {
 		goto cleanup;
+	}
 
 	/* all mapped file i/o must be prepared to handle exceptions */
 	__try {
 
 		dos_header = (PIMAGE_DOS_HEADER)base;
 
-		if (dos_header->e_magic != IMAGE_DOS_SIGNATURE)
+		if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
 			goto cleanup;
+		}
 
 		nt_headers = (PIMAGE_NT_HEADERS)((byte *)dos_header + dos_header->e_lfanew);
 
-		if (nt_headers->Signature != IMAGE_NT_SIGNATURE)
+		if (nt_headers->Signature != IMAGE_NT_SIGNATURE) {
 			goto cleanup;
+		}
 
 		*is_obs_plugin = has_obs_export(base, nt_headers);
 
@@ -263,14 +277,17 @@ void get_plugin_info(const char *path, bool *is_obs_plugin)
 	}
 
 cleanup:
-	if (base)
+	if (base) {
 		UnmapViewOfFile(base);
+	}
 
-	if (hFileMapping != NULL)
+	if (hFileMapping != NULL) {
 		CloseHandle(hFileMapping);
+	}
 
-	if (hFile != INVALID_HANDLE_VALUE)
+	if (hFile != INVALID_HANDLE_VALUE) {
 		CloseHandle(hFile);
+	}
 }
 
 bool os_is_obs_plugin(const char *path)
@@ -312,8 +329,9 @@ double os_cpu_usage_info_query(os_cpu_usage_info_t *info)
 	FILETIME dummy;
 	double percent;
 
-	if (!info)
+	if (!info) {
 		return 0.0;
+	}
 
 	GetSystemTimeAsFileTime(&cur_time.ft);
 	GetProcessTimes(GetCurrentProcess(), &dummy, &dummy, &cur_sys_time.ft, &cur_user_time.ft);
@@ -331,8 +349,9 @@ double os_cpu_usage_info_query(os_cpu_usage_info_t *info)
 
 void os_cpu_usage_info_destroy(os_cpu_usage_info_t *info)
 {
-	if (info)
+	if (info) {
 		bfree(info);
+	}
 }
 
 bool os_sleepto_ns(uint64_t time_target)
@@ -346,13 +365,15 @@ bool os_sleepto_ns(uint64_t time_target)
 	const bool stall = count.QuadPart < count_target;
 	if (stall) {
 		const DWORD milliseconds = (DWORD)(((count_target - count.QuadPart) * 1000.0) / freq);
-		if (milliseconds > 1)
+		if (milliseconds > 1) {
 			Sleep(milliseconds - 1);
+		}
 
 		for (;;) {
 			QueryPerformanceCounter(&count);
-			if (count.QuadPart >= count_target)
+			if (count.QuadPart >= count_target) {
 				break;
+			}
 
 			YieldProcessor();
 		}
@@ -364,13 +385,15 @@ bool os_sleepto_ns(uint64_t time_target)
 bool os_sleepto_ns_fast(uint64_t time_target)
 {
 	uint64_t current = os_gettime_ns();
-	if (time_target < current)
+	if (time_target < current) {
 		return false;
+	}
 
 	do {
 		uint64_t remain_ms = (time_target - current) / 1000000;
-		if (!remain_ms)
+		if (!remain_ms) {
 			remain_ms = 1;
+		}
 		Sleep((DWORD)remain_ms);
 
 		current = os_gettime_ns();
@@ -382,8 +405,9 @@ bool os_sleepto_ns_fast(uint64_t time_target)
 void os_sleep_ms(uint32_t duration)
 {
 	/* windows 8+ appears to have decreased sleep precision */
-	if (get_winver() >= 0x0602 && duration > 0)
+	if (get_winver() >= 0x0602 && duration > 0) {
 		duration--;
+	}
 
 	Sleep(duration);
 }
@@ -483,12 +507,14 @@ bool os_file_exists(const char *path)
 	HANDLE hFind;
 	wchar_t *path_utf16;
 
-	if (!os_utf8_to_wcs_ptr(path, 0, &path_utf16))
+	if (!os_utf8_to_wcs_ptr(path, 0, &path_utf16)) {
 		return false;
+	}
 
 	hFind = FindFirstFileW(path_utf16, &wfd);
-	if (hFind != INVALID_HANDLE_VALUE)
+	if (hFind != INVALID_HANDLE_VALUE) {
 		FindClose(hFind);
+	}
 
 	bfree(path_utf16);
 	return hFind != INVALID_HANDLE_VALUE;
@@ -501,15 +527,18 @@ size_t os_get_abs_path(const char *path, char *abspath, size_t size)
 	size_t out_len = 0;
 	size_t len;
 
-	if (!abspath)
+	if (!abspath) {
 		return 0;
+	}
 
 	len = os_utf8_to_wcs(path, 0, wpath, MAX_PATH);
-	if (!len)
+	if (!len) {
 		return 0;
+	}
 
-	if (_wfullpath(wabspath, wpath, MAX_PATH) != NULL)
+	if (_wfullpath(wabspath, wpath, MAX_PATH) != NULL) {
 		out_len = os_wcs_to_utf8(wabspath, 0, abspath, size);
+	}
 	return out_len;
 }
 
@@ -567,14 +596,16 @@ static inline bool is_dir(WIN32_FIND_DATA *wfd)
 
 struct os_dirent *os_readdir(os_dir_t *dir)
 {
-	if (!dir)
+	if (!dir) {
 		return NULL;
+	}
 
 	if (dir->first) {
 		dir->first = false;
 	} else {
-		if (!FindNextFileW(dir->handle, &dir->wfd))
+		if (!FindNextFileW(dir->handle, &dir->wfd)) {
 			return NULL;
+		}
 	}
 
 	os_wcs_to_utf8(dir->wfd.cFileName, 0, dir->out.d_name, sizeof(dir->out.d_name));
@@ -601,8 +632,9 @@ int64_t os_get_free_space(const char *path)
 	if (os_get_abs_path(path, abs_path, 512) > 0) {
 		if (os_utf8_to_wcs(abs_path, 0, w_abs_path, 512) > 0) {
 			BOOL success = GetDiskFreeSpaceExW(w_abs_path, (PULARGE_INTEGER)&remainingSpace, NULL, NULL);
-			if (success)
+			if (success) {
 				return (int64_t)remainingSpace.QuadPart;
+			}
 		}
 	}
 
@@ -619,10 +651,11 @@ static void make_globent(struct os_globent *ent, WIN32_FIND_DATA *wfd, const cha
 	dstr_copy(&path, pattern);
 	if (path.array) {
 		slash = strrchr(path.array, '/');
-		if (slash)
+		if (slash) {
 			dstr_resize(&path, slash + 1 - path.array);
-		else
+		} else {
 			dstr_free(&path);
+		}
 	}
 
 	dstr_cat_dstr(&path, &name);
@@ -648,8 +681,9 @@ int os_glob(const char *pattern, int flags, os_glob_t **pglob)
 			do {
 				struct os_globent ent = {0};
 				make_globent(&ent, &wfd, pattern);
-				if (ent.path)
+				if (ent.path) {
 					da_push_back(files, &ent);
+				}
 			} while (FindNextFile(handle, &wfd));
 			FindClose(handle);
 
@@ -663,8 +697,9 @@ int os_glob(const char *pattern, int flags, os_glob_t **pglob)
 		bfree(w_path);
 	}
 
-	if (ret != 0)
+	if (ret != 0) {
 		*pglob = NULL;
+	}
 
 	UNUSED_PARAMETER(flags);
 	return ret;
@@ -673,8 +708,9 @@ int os_glob(const char *pattern, int flags, os_glob_t **pglob)
 void os_globfree(os_glob_t *pglob)
 {
 	if (pglob) {
-		for (size_t i = 0; i < pglob->gl_pathc; i++)
+		for (size_t i = 0; i < pglob->gl_pathc; i++) {
 			bfree(pglob->gl_pathv[i].path);
+		}
 		bfree(pglob->gl_pathv);
 		bfree(pglob);
 	}
@@ -686,8 +722,9 @@ int os_unlink(const char *path)
 	bool success;
 
 	os_utf8_to_wcs_ptr(path, 0, &w_path);
-	if (!w_path)
+	if (!w_path) {
 		return -1;
+	}
 
 	success = !!DeleteFileW(w_path);
 	bfree(w_path);
@@ -701,8 +738,9 @@ int os_rmdir(const char *path)
 	bool success;
 
 	os_utf8_to_wcs_ptr(path, 0, &w_path);
-	if (!w_path)
+	if (!w_path) {
 		return -1;
+	}
 
 	success = !!RemoveDirectoryW(w_path);
 	bfree(w_path);
@@ -715,14 +753,16 @@ int os_mkdir(const char *path)
 	wchar_t *path_utf16;
 	BOOL success;
 
-	if (!os_utf8_to_wcs_ptr(path, 0, &path_utf16))
+	if (!os_utf8_to_wcs_ptr(path, 0, &path_utf16)) {
 		return MKDIR_ERROR;
+	}
 
 	success = CreateDirectory(path_utf16, NULL);
 	bfree(path_utf16);
 
-	if (!success)
+	if (!success) {
 		return (GetLastError() == ERROR_ALREADY_EXISTS) ? MKDIR_EXISTS : MKDIR_ERROR;
+	}
 
 	return MKDIR_SUCCESS;
 }
@@ -755,14 +795,18 @@ int os_safe_replace(const char *target, const char *from, const char *backup)
 	wchar_t *wbackup = NULL;
 	int code = -1;
 
-	if (!target || !from)
+	if (!target || !from) {
 		return -1;
-	if (!os_utf8_to_wcs_ptr(target, 0, &wtarget))
+	}
+	if (!os_utf8_to_wcs_ptr(target, 0, &wtarget)) {
 		return -1;
-	if (!os_utf8_to_wcs_ptr(from, 0, &wfrom))
+	}
+	if (!os_utf8_to_wcs_ptr(from, 0, &wfrom)) {
 		goto fail;
-	if (backup && !os_utf8_to_wcs_ptr(backup, 0, &wbackup))
+	}
+	if (backup && !os_utf8_to_wcs_ptr(backup, 0, &wbackup)) {
 		goto fail;
+	}
 
 	if (ReplaceFileW(wtarget, wfrom, wbackup, 0, NULL, NULL)) {
 		code = 0;
@@ -851,8 +895,9 @@ char *os_getcwd(char *path, size_t size)
 	DWORD len;
 
 	len = GetCurrentDirectoryW(0, NULL);
-	if (!len)
+	if (!len) {
 		return NULL;
+	}
 
 	path_w = bmalloc(((size_t)len + 1) * sizeof(wchar_t));
 	GetCurrentDirectoryW(len + 1, path_w);
@@ -869,8 +914,9 @@ int os_chdir(const char *path)
 	int ret;
 
 	size = os_utf8_to_wcs_ptr(path, 0, &path_w);
-	if (!path_w)
+	if (!path_w) {
 		return -1;
+	}
 
 	ret = SetCurrentDirectoryW(path_w) ? 0 : -1;
 	bfree(path_w);
@@ -926,10 +972,12 @@ bool get_dll_ver(const wchar_t *lib, struct win_version_info *ver_info)
 	DWORD size;
 	char utf8_lib[512];
 
-	if (!ver_initialized && !initialize_version_functions())
+	if (!ver_initialized && !initialize_version_functions()) {
 		return false;
-	if (!ver_initialize_success)
+	}
+	if (!ver_initialize_success) {
 		return false;
+	}
 
 	os_wcs_to_utf8(lib, 0, utf8_lib, sizeof(utf8_lib));
 
@@ -1022,8 +1070,9 @@ void get_reg_dword(HKEY hkey, LPCWSTR sub_key, LPCWSTR value_name, struct reg_dw
 static inline void rtl_get_ver(struct win_version_info *ver)
 {
 	HMODULE ntdll = GetModuleHandleW(L"ntdll");
-	if (!ntdll)
+	if (!ntdll) {
 		return;
+	}
 
 	NTSTATUS(WINAPI * get_ver)
 	(RTL_OSVERSIONINFOEXW *) = (void *)GetProcAddress(ntdll, "RtlGetVersion");
@@ -1058,22 +1107,26 @@ static inline void get_reg_ver(struct win_version_info *ver)
 	wchar_t str[MAX_SZ_LEN];
 
 	status = RegOpenKeyW(HKEY_LOCAL_MACHINE, WINVER_REG_KEY, &key);
-	if (status != ERROR_SUCCESS)
+	if (status != ERROR_SUCCESS) {
 		return;
+	}
 
 	size = sizeof(dw_val);
 
 	status = RegQueryValueExW(key, L"CurrentMajorVersionNumber", NULL, NULL, (LPBYTE)&dw_val, &size);
-	if (status == ERROR_SUCCESS)
+	if (status == ERROR_SUCCESS) {
 		ver->major = (int)dw_val;
+	}
 
 	status = RegQueryValueExW(key, L"CurrentMinorVersionNumber", NULL, NULL, (LPBYTE)&dw_val, &size);
-	if (status == ERROR_SUCCESS)
+	if (status == ERROR_SUCCESS) {
 		ver->minor = (int)dw_val;
+	}
 
 	status = RegQueryValueExW(key, L"UBR", NULL, NULL, (LPBYTE)&dw_val, &size);
-	if (status == ERROR_SUCCESS)
+	if (status == ERROR_SUCCESS) {
 		ver->revis = (int)dw_val;
+	}
 
 	if (get_reg_sz(key, L"CurrentBuildNumber", str, sizeof(str))) {
 		ver->build = wcstol(str, NULL, 10);
@@ -1112,8 +1165,9 @@ static inline bool version_higher(struct win_version_info *cur, struct win_versi
 
 static inline void use_higher_ver(struct win_version_info *cur, struct win_version_info *new)
 {
-	if (version_higher(cur, new))
+	if (version_higher(cur, new)) {
 		*cur = *new;
+	}
 }
 
 void get_win_ver(struct win_version_info *info)
@@ -1121,8 +1175,9 @@ void get_win_ver(struct win_version_info *info)
 	static struct win_version_info ver = {0};
 	static bool got_version = false;
 
-	if (!info)
+	if (!info) {
 		return;
+	}
 
 	if (!got_version) {
 		struct win_version_info reg_ver = {0};
@@ -1165,10 +1220,12 @@ os_inhibit_t *os_inhibit_sleep_create(const char *reason)
 
 bool os_inhibit_sleep_set_active(os_inhibit_t *info, bool active)
 {
-	if (!info)
+	if (!info) {
 		return false;
-	if (info->active == active)
+	}
+	if (info->active == active) {
 		return false;
+	}
 
 	if (active) {
 		SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED |
@@ -1226,14 +1283,16 @@ static void os_get_cores_internal(void)
 	PSYSTEM_LOGICAL_PROCESSOR_INFORMATION info = NULL, temp = NULL;
 	DWORD len = 0;
 
-	if (core_count_initialized)
+	if (core_count_initialized) {
 		return;
+	}
 
 	core_count_initialized = true;
 
 	GetLogicalProcessorInformation(info, &len);
-	if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+	if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
 		return;
+	}
 
 	info = malloc(len);
 
@@ -1260,30 +1319,34 @@ static void os_get_cores_internal(void)
 
 int os_get_physical_cores(void)
 {
-	if (!core_count_initialized)
+	if (!core_count_initialized) {
 		os_get_cores_internal();
+	}
 	return physical_cores;
 }
 
 int os_get_logical_cores(void)
 {
-	if (!core_count_initialized)
+	if (!core_count_initialized) {
 		os_get_cores_internal();
+	}
 	return logical_cores;
 }
 
 static inline bool os_get_sys_memory_usage_internal(MEMORYSTATUSEX *msex)
 {
-	if (!GlobalMemoryStatusEx(msex))
+	if (!GlobalMemoryStatusEx(msex)) {
 		return false;
+	}
 	return true;
 }
 
 uint64_t os_get_sys_free_size(void)
 {
 	MEMORYSTATUSEX msex = {sizeof(MEMORYSTATUSEX)};
-	if (!os_get_sys_memory_usage_internal(&msex))
+	if (!os_get_sys_memory_usage_internal(&msex)) {
 		return 0;
+	}
 	return msex.ullAvailPhys;
 }
 
@@ -1295,32 +1358,36 @@ static void os_get_sys_total_size_internal()
 	total_memory_initialized = true;
 
 	MEMORYSTATUSEX msex = {sizeof(MEMORYSTATUSEX)};
-	if (!os_get_sys_memory_usage_internal(&msex))
+	if (!os_get_sys_memory_usage_internal(&msex)) {
 		return;
+	}
 
 	total_memory = msex.ullTotalPhys;
 }
 
 uint64_t os_get_sys_total_size(void)
 {
-	if (!total_memory_initialized)
+	if (!total_memory_initialized) {
 		os_get_sys_total_size_internal();
+	}
 
 	return total_memory;
 }
 
 static inline bool os_get_proc_memory_usage_internal(PROCESS_MEMORY_COUNTERS *pmc)
 {
-	if (!GetProcessMemoryInfo(GetCurrentProcess(), pmc, sizeof(*pmc)))
+	if (!GetProcessMemoryInfo(GetCurrentProcess(), pmc, sizeof(*pmc))) {
 		return false;
+	}
 	return true;
 }
 
 bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 {
 	PROCESS_MEMORY_COUNTERS pmc = {sizeof(PROCESS_MEMORY_COUNTERS)};
-	if (!os_get_proc_memory_usage_internal(&pmc))
+	if (!os_get_proc_memory_usage_internal(&pmc)) {
 		return false;
+	}
 
 	usage->resident_size = pmc.WorkingSetSize;
 	usage->virtual_size = pmc.PagefileUsage;
@@ -1330,16 +1397,18 @@ bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 uint64_t os_get_proc_resident_size(void)
 {
 	PROCESS_MEMORY_COUNTERS pmc = {sizeof(PROCESS_MEMORY_COUNTERS)};
-	if (!os_get_proc_memory_usage_internal(&pmc))
+	if (!os_get_proc_memory_usage_internal(&pmc)) {
 		return 0;
+	}
 	return pmc.WorkingSetSize;
 }
 
 uint64_t os_get_proc_virtual_size(void)
 {
 	PROCESS_MEMORY_COUNTERS pmc = {sizeof(PROCESS_MEMORY_COUNTERS)};
-	if (!os_get_proc_memory_usage_internal(&pmc))
+	if (!os_get_proc_memory_usage_internal(&pmc)) {
 		return 0;
+	}
 	return pmc.PagefileUsage;
 }
 
@@ -1347,8 +1416,9 @@ uint64_t os_get_free_disk_space(const char *dir)
 {
 	wchar_t *wdir = NULL;
 	os_utf8_to_wcs_ptr(dir, 0, &wdir);
-	if (!wdir)
+	if (!wdir) {
 		return 0;
+	}
 
 	ULARGE_INTEGER free;
 	bool success = !!GetDiskFreeSpaceExW(wdir, &free, NULL, NULL);
@@ -1362,8 +1432,9 @@ char *os_generate_uuid(void)
 	UUID uuid;
 
 	RPC_STATUS res = UuidCreate(&uuid);
-	if (res != RPC_S_OK && res != RPC_S_UUID_LOCAL_ONLY)
+	if (res != RPC_S_OK && res != RPC_S_UUID_LOCAL_ONLY) {
 		bcrash("Failed to get UUID, RPC_STATUS: %l", res);
+	}
 
 	struct dstr uuid_str = {0};
 	dstr_printf(&uuid_str, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", uuid.Data1, uuid.Data2, uuid.Data3,
