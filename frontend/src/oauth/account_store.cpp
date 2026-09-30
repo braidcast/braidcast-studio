@@ -1,7 +1,6 @@
 #include "account_store.hpp"
 
 #include <filesystem>
-#include <fstream>
 #include <system_error>
 #include <vector>
 
@@ -139,8 +138,27 @@ void AccountStore::EnsureLoadedLocked()
 		return;
 	}
 
+	// A save whose replace failed with nothing left under the real name leaves the store
+	// only in its temp file (see WriteBinaryFileAtomic), so that one is read while the real
+	// file is provably absent. A temp file beside a present one is a save that never
+	// committed -- it crashed before its replace, or reported failure -- so the real file
+	// holds the last committed state and is what loads. The temp is deleted rather than
+	// left: nothing would read it, and it can hold tokens for an account the loaded store
+	// does not have.
+	const std::filesystem::path target = std::filesystem::u8path(path);
+	const std::filesystem::path temp = std::filesystem::u8path(FileUtil::AtomicWriteTempPath(path));
+	std::error_code ec;
+	const bool targetPresent = std::filesystem::exists(target, ec);
+	const bool fromTemp = !targetPresent && !ec;
+	if (targetPresent) {
+		std::error_code removeEc;
+		std::filesystem::remove(temp, removeEc);
+	}
+	const std::filesystem::path &source = fromTemp ? temp : target;
+	const char *what = fromTemp ? "token store temp file" : "token store";
+
 	std::vector<unsigned char> wrapped;
-	if (!FileUtil::ReadBinaryFile(std::filesystem::u8path(path), wrapped)) {
+	if (!FileUtil::ReadBinaryFile(source, wrapped)) {
 		return; // first run: no file yet
 	}
 	if (wrapped.empty()) {
@@ -149,17 +167,26 @@ void AccountStore::EnsureLoadedLocked()
 
 	std::string plain;
 	if (!UnprotectBytes(wrapped, plain)) {
-		HostLog("[oauth] token store unwrap failed (corrupt or host changed); starting empty");
+		HostLog(std::string("[oauth] ") + what + " unwrap failed (corrupt or host changed); starting empty");
 		return;
 	}
 
 	const json root = json::parse(plain, nullptr, false);
 	if (root.is_discarded() || !root.is_object()) {
-		HostLog("[oauth] token store JSON unparseable; starting empty");
+		HostLog(std::string("[oauth] ") + what + " JSON unparseable; starting empty");
 		return;
 	}
 	for (auto it = root.begin(); it != root.end(); ++it) {
 		accounts_[it.key()] = AccountFromJson(it.value());
+	}
+	if (fromTemp) {
+		// Give the recovered store its real name now: the next save rewrites the temp
+		// file from the start, and until it is flushed there would be no intact copy.
+		// os_safe_replace, so a scanner briefly holding the just-read file is ridden out.
+		const bool moved =
+			os_safe_replace(path.c_str(), FileUtil::AtomicWriteTempPath(path).c_str(), nullptr) == 0;
+		HostLog(std::string("[oauth] token store recovered from the temp file of an unfinished save") +
+			(moved ? "" : "; moving it into place failed, the next save rewrites it"));
 	}
 }
 
@@ -183,37 +210,22 @@ void AccountStore::SaveLocked()
 		return;
 	}
 
-	const std::filesystem::path fsPath = std::filesystem::u8path(path);
-	const std::filesystem::path tmpPath = std::filesystem::u8path(path + ".tmp");
-	os_mkdirs(fsPath.parent_path().u8string().c_str());
+	os_mkdirs(std::filesystem::u8path(path).parent_path().u8string().c_str());
 
 	// Atomic write: a crash mid-write must never corrupt the live blob (an
-	// undecryptable file would silently drop every linked account). Write the
-	// full blob to a sibling temp file, then atomically replace the real file.
-	{
-		std::ofstream f(tmpPath, std::ios::binary | std::ios::trunc);
-		if (!f) {
-			HostLog("[oauth] token store open-for-write failed");
-			return;
-		}
-		f.write(reinterpret_cast<const char *>(wrapped.data()), static_cast<std::streamsize>(wrapped.size()));
-		f.flush();
-		if (!f) {
-			HostLog("[oauth] token store temp write failed");
-			f.close();
-			std::error_code ec;
-			std::filesystem::remove(tmpPath, ec);
-			return;
-		}
-	}
-
-	// MOVEFILE_REPLACE_EXISTING handles the first-write case too (dst absent ->
-	// plain rename); MOVEFILE_WRITE_THROUGH flushes the metadata to disk.
-	if (!MoveFileExW(tmpPath.c_str(), fsPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+	// undecryptable file would silently drop every linked account).
+	switch (FileUtil::WriteBinaryFileAtomic(path, wrapped.data(), wrapped.size())) {
+	case FileUtil::AtomicWriteResult::Ok:
+		break;
+	case FileUtil::AtomicWriteResult::OpenFailed:
+		HostLog("[oauth] token store open-for-write failed");
+		break;
+	case FileUtil::AtomicWriteResult::WriteFailed:
+		HostLog("[oauth] token store temp write failed");
+		break;
+	case FileUtil::AtomicWriteResult::ReplaceFailed:
 		HostLog("[oauth] token store atomic replace failed");
-		std::error_code ec;
-		std::filesystem::remove(tmpPath, ec);
-		return;
+		break;
 	}
 }
 

@@ -2629,6 +2629,70 @@ void ObsBootstrap::RunSettingsSelfTest()
 			std::to_string(buckets.size()) + " buckets: " + raw + ")");
 	}
 
+	// 6b2b) Token-store recovery. A save whose replace failed can leave the store only in its
+	// temp file: with the real file absent the load must recover it and move it into place,
+	// and with the real file present the temp must lose and be deleted, since it may still
+	// hold an account removed since. Local stores against the isolated self-test config; the
+	// files there are snapshotted and put back.
+	{
+		// Load the process-wide store first, so a worker's first touch of it cannot land
+		// mid-test and adopt the test's files.
+		OAuth::Accounts().All();
+		const std::string path = OAuth::AccountStore::FilePath();
+		const std::filesystem::path target = std::filesystem::u8path(path);
+		const std::filesystem::path temp = std::filesystem::u8path(FileUtil::AtomicWriteTempPath(path));
+		std::error_code ec;
+		const auto snapshot = [&](const std::filesystem::path &p) {
+			std::vector<unsigned char> bytes;
+			return std::filesystem::exists(p, ec) && FileUtil::ReadBinaryFile(p, bytes)
+				       ? std::optional<std::vector<unsigned char>>(std::move(bytes))
+				       : std::nullopt;
+		};
+		const auto put = [](const std::filesystem::path &p, const std::vector<unsigned char> &bytes) {
+			std::ofstream out(p, std::ios::binary | std::ios::trunc);
+			out.write(reinterpret_cast<const char *>(bytes.data()),
+				  static_cast<std::streamsize>(bytes.size()));
+			return static_cast<bool>(out);
+		};
+		// The blob a fresh store writes when it holds only `id`.
+		const auto blobOf = [&](const std::string &id) {
+			std::filesystem::remove(target, ec);
+			std::filesystem::remove(temp, ec);
+			OAuth::OAuthAccount account;
+			account.providerId = "selftest";
+			account.login = id;
+			OAuth::AccountStore().Put(id, account);
+			return snapshot(target);
+		};
+		const auto loads = [](const std::string &id) {
+			const std::map<std::string, OAuth::OAuthAccount> all = OAuth::AccountStore().All();
+			return all.size() == 1 && all.count(id) == 1;
+		};
+
+		const std::optional<std::vector<unsigned char>> savedTarget = snapshot(target);
+		const std::optional<std::vector<unsigned char>> savedTemp = snapshot(temp);
+
+		const std::optional<std::vector<unsigned char>> blobA = blobOf("selftest-a");
+		const std::optional<std::vector<unsigned char>> blobB = blobOf("selftest-b");
+		bool recovered = false;
+		bool targetWins = false;
+		if (!path.empty() && blobA && blobB) {
+			std::filesystem::remove(target, ec);
+			recovered = put(temp, *blobA) && loads("selftest-a") && std::filesystem::exists(target, ec) &&
+				    !std::filesystem::exists(temp, ec) && loads("selftest-a");
+			targetWins = put(temp, *blobB) && loads("selftest-a") && !std::filesystem::exists(temp, ec);
+		}
+
+		std::filesystem::remove(target, ec);
+		std::filesystem::remove(temp, ec);
+		const bool restored = (!savedTarget || put(target, *savedTarget)) &&
+				      (!savedTemp || put(temp, *savedTemp));
+		HostLog(std::string("[selftest] token-store recovery -> ") +
+			(recovered && targetWins && restored ? "OK" : "FAIL") + " (temp-only " +
+			(recovered ? "recovered" : "bad") + ", beside-target " +
+			(targetWins ? "ignored+removed" : "bad") + ", restore " + (restored ? "ok" : "bad") + ")");
+	}
+
 	// 6b3) Twitch IRC chat lines, offline: a USERNOTICE renders Twitch's own system-msg (plus
 	// the chatter's words, emotes resolved, when there are any), a shared-chat mirror of another
 	// channel's notice renders nothing, a cheer's line carries its bits as `paid`, a /me line

@@ -657,11 +657,11 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 	}
 	{
 		// Existence check only; the blob below is written with mutex_ RELEASED. At the
-		// 8 MB cap the write plus the WRITE_THROUGH move is tens of milliseconds, and
-		// the video thread now takes this lock on every overlay source's update -- a
-		// hold that long is several missed composites, not jitter. Same discipline
-		// OverlayServer applies to sseMutex_ (snapshot under lock, do the blocking part
-		// unlocked; see overlay_server.hpp).
+		// 8 MB cap the write and its flush to disk are tens of milliseconds, and a replace
+		// that has to retry adds up to a further 220 ms, while the video thread takes this
+		// lock on every overlay source's update -- a hold that long is several missed
+		// composites, not jitter. Same discipline OverlayServer applies to sseMutex_
+		// (snapshot under lock, do the blocking part unlocked; see overlay_server.hpp).
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (!FindWidget(widgets_, id)) {
 			return std::string();
@@ -673,32 +673,16 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 		return std::string();
 	}
 	const std::string full = dir + "/" + safeKey;
-	const std::filesystem::path fullPath = std::filesystem::u8path(full);
-	const std::filesystem::path tmpPath = std::filesystem::u8path(full + ".tmp");
 	// Atomic write: a crash or partial write must never leave a truncated asset the
-	// overlay would then serve. Write the whole blob to a sibling temp, then atomically
-	// replace the real file (mirrors OAuth::TokenStore::SaveLocked).
-	{
-		std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-		if (!out) {
-			return std::string();
-		}
-		if (!bytes.empty()) {
-			out.write(reinterpret_cast<const char *>(bytes.data()),
-				  static_cast<std::streamsize>(bytes.size()));
-		}
-		out.flush();
-		if (!out) {
-			std::error_code ec;
-			std::filesystem::remove(tmpPath, ec);
-			return std::string();
-		}
-	}
-	// MOVEFILE_REPLACE_EXISTING handles the first-write case too (dst absent -> plain
-	// rename); MOVEFILE_WRITE_THROUGH flushes the metadata to disk.
-	if (!MoveFileExW(tmpPath.c_str(), fullPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+	// overlay would then serve. No backup is kept, and a temp file a failed replace kept is
+	// deleted: nothing would ever read either, and each would sit in the assets directory
+	// unreferenced, outliving RemoveAsset and copied along by every Duplicate.
+	const FileUtil::AtomicWriteResult written = FileUtil::WriteBinaryFileAtomic(full, bytes.data(), bytes.size());
+	if (written == FileUtil::AtomicWriteResult::ReplaceFailed) {
 		std::error_code ec;
-		std::filesystem::remove(tmpPath, ec);
+		std::filesystem::remove(std::filesystem::u8path(FileUtil::AtomicWriteTempPath(full)), ec);
+	}
+	if (written != FileUtil::AtomicWriteResult::Ok) {
 		return std::string();
 	}
 	bool stillPresent = false;

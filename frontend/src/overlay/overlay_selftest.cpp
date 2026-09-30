@@ -13,11 +13,13 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../log.hpp"
 #include "../obs_bootstrap.hpp"
 #include "util/file_util.hpp"
+#include "util/selftest_paths.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
@@ -144,6 +146,77 @@ bool PumpUntil(SOCKET s, std::string &acc, const std::function<void()> &push,
 		}
 	}
 	return arrived(acc);
+}
+
+// FileUtil::WriteBinaryFileAtomic, the write behind AddAsset, against a target another
+// handle holds open without FILE_SHARE_DELETE -- what an antivirus filter driver does to a
+// just-saved file for a few milliseconds. A hold shorter than os_safe_replace's retry
+// window must end in a saved file; a hold longer than it must fail with the previous bytes
+// intact and no temp file left behind.
+//
+// The hold starts before the temp file is written and flushed, so the first replace lands
+// some flush time F into it; the retries then land at F+5, F+20, F+70 and F+220 ms. The brief
+// hold outlasts the first attempts even on a slow flush, so it passes only if the retries
+// work; the long one outlasts the whole window with room for a flush under load.
+bool AtomicWriteSurvivesHeldTarget()
+{
+	constexpr std::chrono::milliseconds kBriefHold{120};
+	constexpr std::chrono::milliseconds kLongHold{1000};
+
+	const std::string path = SelfTest::ConfigPath("atomic-write-probe.bin");
+	if (path.empty()) {
+		HostLog("[selftest] overlay atomic write -> FAILED (no scratch path)");
+		return false;
+	}
+	const std::filesystem::path fsPath = std::filesystem::u8path(path);
+	const auto write = [&](const std::string &bytes) {
+		return FileUtil::WriteBinaryFileAtomic(path, bytes.data(), bytes.size());
+	};
+	const auto contents = [&] {
+		return FileUtil::ReadUtf8File(path).value_or(std::string());
+	};
+	// Opens the target the way a scanner would and closes it after `hold` on another thread.
+	// False when the open itself failed, which would make the step below prove nothing.
+	const auto holdOpen = [&](std::chrono::milliseconds hold, std::thread &releaser) {
+		const HANDLE h = CreateFileW(fsPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+					     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (h == INVALID_HANDLE_VALUE) {
+			return false;
+		}
+		releaser = std::thread([h, hold] {
+			std::this_thread::sleep_for(hold);
+			CloseHandle(h);
+		});
+		return true;
+	};
+
+	const bool seeded = write("first") == FileUtil::AtomicWriteResult::Ok && contents() == "first";
+
+	std::thread briefRelease;
+	const bool briefHeld = holdOpen(kBriefHold, briefRelease);
+	const FileUtil::AtomicWriteResult brief = write("second");
+	if (briefRelease.joinable()) {
+		briefRelease.join();
+	}
+	const bool briefOk = briefHeld && brief == FileUtil::AtomicWriteResult::Ok && contents() == "second";
+
+	std::thread longRelease;
+	const bool longHeld = holdOpen(kLongHold, longRelease);
+	const FileUtil::AtomicWriteResult held = write("third");
+	if (longRelease.joinable()) {
+		longRelease.join();
+	}
+	std::error_code ec;
+	const bool longOk = longHeld && held == FileUtil::AtomicWriteResult::ReplaceFailed && contents() == "second" &&
+			    !std::filesystem::exists(std::filesystem::u8path(FileUtil::AtomicWriteTempPath(path)), ec);
+
+	std::filesystem::remove(fsPath, ec);
+	const bool ok = seeded && briefOk && longOk;
+	HostLog(std::string("[selftest] overlay atomic write -> ") + (ok ? "OK" : "FAILED") +
+		" (seed=" + (seeded ? "ok" : "bad") + " " + std::to_string(kBriefHold.count()) +
+		"ms-hold=" + (briefOk ? "saved" : "bad") + " " + std::to_string(kLongHold.count()) +
+		"ms-hold=" + (longOk ? "refused, old bytes kept" : "bad") + ")");
+	return ok;
 }
 
 } // namespace
@@ -568,6 +641,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog(std::string("[selftest] overlay natural sizes -> ") +
 		(sizesOk ? "OK" : "MISSING (" + unsizedList + ")"));
 
+	const bool atomicWriteOk = AtomicWriteSurvivesHeldTarget();
+
 	server.Stop();
 	// Leave the shared singleton clean: the real boot Server() must not serve this
 	// injected test widget after the smoke run.
@@ -575,8 +650,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
 	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk &&
-	    replayGateOk && stockOk && sizesOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/gate/auth/stock/sizes OK");
+	    replayGateOk && stockOk && sizesOk && atomicWriteOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/gate/auth/stock/sizes/atomic-write OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}
