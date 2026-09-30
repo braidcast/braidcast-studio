@@ -828,18 +828,25 @@ long JitteredWaitMs(long stepMs, std::mt19937 &rng)
 	return std::max(static_cast<long>(static_cast<double>(stepMs) * jitter(rng)), kPollFloorMs);
 }
 
-// The moderation actions: name -> what it does and the field naming its target. Documented
+// The moderation actions: name -> what it does, the field naming its target and the text node
+// YouTube shows in the removed line's place (null when the action leaves no stub). Documented
 // by the community clients that read this endpoint; no capture of one has been taken yet.
 const struct ModerationKind {
 	const char *name;
 	ModerationAction action;
 	const char *targetKey;
+	const char *labelKey;
 } kModerationActions[] = {
-	{"markChatItemAsDeletedAction", ModerationAction::Delete, "targetItemId"},
-	{"removeChatItemAction", ModerationAction::Delete, "targetItemId"},
-	{"markChatItemsByAuthorAsDeletedAction", ModerationAction::ClearUser, "externalChannelId"},
-	{"removeChatItemByAuthorAction", ModerationAction::ClearUser, "externalChannelId"},
+	{"markChatItemAsDeletedAction", ModerationAction::Delete, "targetItemId", "deletedStateMessage"},
+	{"removeChatItemAction", ModerationAction::Delete, "targetItemId", nullptr},
+	{"markChatItemsByAuthorAsDeletedAction", ModerationAction::ClearUser, "externalChannelId",
+	 "deletedStateMessage"},
+	{"removeChatItemByAuthorAction", ModerationAction::ClearUser, "externalChannelId", nullptr},
 };
+
+// A removed line's stub text ("[message retracted]") is shown beside it in the dock. Longer
+// than this, it is dropped and the dock's own wording shows instead.
+constexpr size_t kMaxDeletedLabelBytes = 64;
 
 // No real one-second bucket comes near this, and refusing anything above it keeps a session's
 // running sum from ever overflowing.
@@ -851,19 +858,21 @@ constexpr int64_t kMaxBucketReactions = 1000000000;
 constexpr size_t kMaxReactionLabelBytes = 32;
 
 // The UTF-8 encodings refused in a label, as a lead-byte prefix plus an inclusive range for the
-// final byte: U+0085 NEL; U+200E/200F (LRM/RLM); U+2028-202E (line/paragraph separators and the
-// bidi embeddings and overrides); U+2066-2069 (bidi isolates). U+200D (ZWJ) sits between them on
-// purpose, since multi-person and profession emoji are joined with it. The input is valid UTF-8
-// (the JSON parser guarantees it), so a byte-sequence match is an exact code-point match.
+// final byte: U+0080-009F (the C1 controls, NEL among them); U+061C (ALM); U+200E/200F
+// (LRM/RLM); U+2028-202E (line/paragraph separators and the bidi embeddings and overrides);
+// U+2066-2069 (bidi isolates). U+200D (ZWJ) sits between them on purpose, since multi-person
+// and profession emoji are joined with it. The input is valid UTF-8 (the JSON parser guarantees
+// it), so a byte-sequence match is an exact code-point match.
 const struct LabelRefusal {
 	const char *prefix;
 	unsigned char first;
 	unsigned char last;
 } kLabelRefusals[] = {
-	{"\xC2", 0x85, 0x85},
-	{"\xE2\x80", 0x8E, 0x8F},
-	{"\xE2\x80", 0xA8, 0xAE},
-	{"\xE2\x81", 0xA6, 0xA9},
+	{"\xC2", 0x80, 0x9F},     // U+0080-009F
+	{"\xD8", 0x9C, 0x9C},     // U+061C
+	{"\xE2\x80", 0x8E, 0x8F}, // U+200E-200F
+	{"\xE2\x80", 0xA8, 0xAE}, // U+2028-202E
+	{"\xE2\x81", 0xA6, 0xA9}, // U+2066-2069
 };
 
 // Both reaction lists (a poll's raw buckets, a tally's per-emoji breakdown) stop at an entry
@@ -893,9 +902,11 @@ double ReactionIntensity(const json &bucket)
 	return std::isfinite(value) && value >= 0.0 ? value : 0.0;
 }
 
-bool IsLogSafeLabel(const std::string &id)
+// Whether `id` is a short, single-line label that cannot forge or visually reorder the log
+// line or UI row it lands in: at most `maxBytes`, no control character, no kLabelRefusals.
+bool IsLogSafeLabel(const std::string &id, size_t maxBytes)
 {
-	if (id.empty() || id.size() > kMaxReactionLabelBytes) {
+	if (id.empty() || id.size() > maxBytes) {
 		return false;
 	}
 	for (size_t i = 0; i < id.size(); ++i) {
@@ -919,7 +930,7 @@ bool IsLogSafeLabel(const std::string &id)
 std::string ReactionLabel(const json &entry)
 {
 	const std::string id = Str(entry, "unicodeEmojiId");
-	return IsLogSafeLabel(id) ? id : std::string("?");
+	return IsLogSafeLabel(id, kMaxReactionLabelBytes) ? id : std::string("?");
 }
 
 // `pieces` joined with ", ", stopping at a piece boundary once the next would pass
@@ -1073,6 +1084,12 @@ std::optional<ModerationOp> DecodeModerationAction(const json &action)
 		ModerationOp op;
 		op.action = kind.action;
 		(kind.action == ModerationAction::Delete ? op.msgId : op.authorId) = target;
+		if (kind.labelKey) {
+			std::string label = PlainText(Obj(payload, kind.labelKey));
+			if (IsLogSafeLabel(label, kMaxDeletedLabelBytes)) {
+				op.label = std::move(label);
+			}
+		}
 		return op;
 	}
 	return std::nullopt;

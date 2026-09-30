@@ -1539,7 +1539,9 @@ export interface ChatPaid {
  * across platforms.
  *
  * `deleted` is set once platform moderation removed the message (see ChatModeration);
- * its `fragments` are then empty, and it renders as a tombstone rather than a body. */
+ * its `fragments` are then empty. While the host still holds the message in memory, what
+ * it said rides along in `retracted`, so the dock can show it struck through; a message
+ * read back from chat.db never carries it, since the stored copy is emptied. */
 export interface ChatMessage {
   platform: ChatPlatform;
   accountId: string;
@@ -1553,6 +1555,11 @@ export interface ChatMessage {
   fragments: ChatFragment[];
   paid?: ChatPaid;
   deleted?: ChatModerationAction;
+  /** A removed message's own fragments, held in memory only. */
+  retracted?: ChatFragment[];
+  /** The platform's own text for a removed message ("[message retracted]"), when it gave
+   * one; the dock's own wording shows otherwise. */
+  deletedLabel?: string;
 }
 
 /** What platform moderation removed: one message, everything one author said (a ban or
@@ -1563,7 +1570,8 @@ export type ChatModerationAction = "message" | "user" | "all";
  * `accountId` plus `profileUuid`, absent for account-wide -- and within it one message
  * (`msgId`, for `"message"`), one author (`authorId`, for `"user"`) or everything
  * (`"all"`). The host has already redacted its own copy, so a page read after this
- * arrives with `deleted` set and no fragments. */
+ * arrives with `deleted` set and no fragments (and `retracted` while the host holds it).
+ * The stream overlay gets the same op as its `moderation` event, less `label`. */
 export interface ChatModeration {
   platform: ChatPlatform;
   accountId: string;
@@ -1579,6 +1587,8 @@ export interface ChatModeration {
    * the platform's history is applied long after it happened, so `before` alone would
    * reach lines said since. */
   beforeTs?: number;
+  /** The platform's own text for what it removed ("[message retracted]"), when it gave one. */
+  label?: string;
 }
 
 /** Per-transport chat connection state. The `chat.state` METHOD returns the full

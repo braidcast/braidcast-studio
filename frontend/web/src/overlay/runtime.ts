@@ -10,6 +10,7 @@ import type {
   AudienceKind,
   ChannelStats,
   ChatMessage,
+  ChatModeration,
   EventType,
   NormalizedEvent,
   StreamState,
@@ -20,6 +21,7 @@ import type {
 import { cssForSlots } from "./textStyle";
 import { fmtCount, fmtMoney, fmtTally, isTally } from "../lib/utils/format";
 import { fillTemplate } from "./fillTemplate";
+import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
 
 interface OverlayBootstrap {
   id: string;
@@ -75,6 +77,10 @@ type LoadCtx = { fields: Record<string, unknown> };
 type LoadHandler = (ctx: LoadCtx) => void;
 type EventHandler = (e: NormalizedEvent) => void;
 type ChatHandler = (m: ChatMessage) => void;
+/** A moderator removed chat lines. `removes` answers, for a line the widget already drew,
+ * whether this op takes it -- the same rule the app's chat dock uses, so a widget never
+ * re-derives which destination, author or bound an op reaches. */
+type ChatModerationHandler = (op: ChatModeration, removes: (m: ChatIdentity) => boolean) => void;
 type ViewersHandler = (v: ViewerSnapshot) => void;
 type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
 // No Snapshot type alongside this one: the host already sends per-destination rows carrying
@@ -91,6 +97,7 @@ const boot: OverlayBootstrap = (window as unknown as { __OVERLAY__: OverlayBoots
 const loadHandlers: LoadHandler[] = [];
 const eventHandlers: EventHandler[] = [];
 const chatHandlers: ChatHandler[] = [];
+const chatModerationHandlers: ChatModerationHandler[] = [];
 const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
 const streamHandlers: StreamHandler[] = [];
@@ -564,6 +571,9 @@ const OBSOverlay = {
    * stay verbatim, empty values drop out with their leading spaces, and substituted text is
    * never re-expanded. Put the result in textContent, never innerHTML. */
   fillTemplate,
+  /** What a widget keeps of a chat line it drew or counted, for onChatModeration's `removes`
+   * to test later: identity, admission order and time, never text. */
+  chatIdentity,
   onLoad(fn: LoadHandler) {
     loadHandlers.push(fn);
   },
@@ -572,6 +582,12 @@ const OBSOverlay = {
   },
   onChat(fn: ChatHandler) {
     chatHandlers.push(fn);
+  },
+  /** A moderator deleted a message, removed a user's messages (a ban or a timeout) or cleared
+   * the chat. The op names lines by id and author id only; a widget that drew chat drops
+   * every line `removes` picks. */
+  onChatModeration(fn: ChatModerationHandler) {
+    chatModerationHandlers.push(fn);
   },
   onViewers(fn: ViewersHandler) {
     viewersHandlers.push(fn);
@@ -630,6 +646,18 @@ function fireChat(m: ChatMessage) {
     }
   }
   window.dispatchEvent(new CustomEvent("obs:chat", { detail: m }));
+}
+
+function fireChatModeration(op: ChatModeration) {
+  const removes = moderationMatcher(op);
+  for (const fn of chatModerationHandlers) {
+    try {
+      fn(op, removes);
+    } catch (err) {
+      console.log("OBSOverlay onChatModeration threw: " + (err as Error).message);
+    }
+  }
+  window.dispatchEvent(new CustomEvent("obs:chatmoderation", { detail: op }));
 }
 
 // The per-platform sum lives here rather than in each template.js: the host payload is
@@ -716,6 +744,15 @@ src.onmessage = (msg) => {
 src.addEventListener("chat", (msg) => {
   try {
     fireChat(JSON.parse((msg as MessageEvent).data) as ChatMessage);
+  } catch {
+    /* ignore a malformed frame */
+  }
+});
+// A moderator's removal rides its own named event, sent after every line it can name. It is
+// never replayed on connect: a widget that connects later never drew those lines.
+src.addEventListener("moderation", (msg) => {
+  try {
+    fireChatModeration(JSON.parse((msg as MessageEvent).data) as ChatModeration);
   } catch {
     /* ignore a malformed frame */
   }

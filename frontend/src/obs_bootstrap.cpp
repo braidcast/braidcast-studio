@@ -10590,10 +10590,49 @@ void ObsBootstrap::RunChatHistorySelfTest()
 							   {"action", "all"}} &&
 			   afterAllSeq > 0 && before(allBody) == afterAllSeq && mark("youtube:2", "t1") == "all" &&
 			   mark("youtube:2", "y2").empty() && mark("twitch:1", "t4").empty();
-	const bool roundTripOk = admitted && deleteOk && userOk && goneOk && allOk;
+	// A platform label rides the dock's body and never the overlay's, which carries ids and
+	// bounds only. A removed held line keeps what it said beside its emptied frame, the first
+	// removal's text is not replaced by a later one's nothing, and an op without a label
+	// leaves the one already given.
+	const auto heldLine = [&moderated](const std::string &accountId, const std::string &id) {
+		for (const nlohmann::json &m : moderated.Page(std::nullopt, 10, Feed::Filter{}).items) {
+			if (m.value("accountId", "") == accountId && m.value("id", "") == id) {
+				return m;
+			}
+		}
+		return nlohmann::json();
+	};
+	// Whether a held line kept "hello", the text every admitted line here says.
+	const auto keptHello = [](const nlohmann::json &m) {
+		const auto it = m.find("retracted");
+		return it != m.end() && it->is_array() && it->size() == 1 && (*it)[0].value("text", "") == "hello";
+	};
+	Chat::ModerationOp labelled;
+	labelled.msgId = "t4";
+	labelled.label = "[message deleted]";
+	const nlohmann::json labelBody = Chat::ApplyModeration(moderated, "twitch", twitch, labelled);
+	nlohmann::json unlabelled = labelBody;
+	unlabelled.erase("label");
+	const nlohmann::json laterBody =
+		apply("twitch", twitch, parse("@target-user-id=u3 :tmi.twitch.tv CLEARCHAT #dallas :ronni"));
+	const nlohmann::json t4 = heldLine("twitch:1", "t4");
+	const nlohmann::json t2 = heldLine("twitch:1", "t2");
+	const bool labelOk = keys(labelBody) == nlohmann::json{{"platform", "twitch"},
+							       {"accountId", "twitch:1"},
+							       {"action", "message"},
+							       {"msgId", "t4"},
+							       {"label", "[message deleted]"}} &&
+			     Chat::OverlayModerationBody(labelBody) == unlabelled &&
+			     Chat::OverlayModerationBody(userBody) == userBody &&
+			     Chat::OverlayModerationBody(allBody) == allBody && !laterBody.contains("label") &&
+			     mark("twitch:1", "t4") == "user" && keptHello(t4) &&
+			     t4.value("deletedLabel", "") == "[message deleted]" && keptHello(t2) &&
+			     !t2.contains("deletedLabel") && !heldLine("twitch:1", "t5").contains("retracted");
+	const bool roundTripOk = admitted && deleteOk && userOk && goneOk && allOk && labelOk;
 	HostLog(std::string("[selftest] chat-history moderation round trip -> ") + (roundTripOk ? "OK" : "FAIL") +
 		" (admitted " + (admitted ? "1" : "0") + ", delete " + (deleteOk ? "1" : "0") + ", user " +
-		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") + ")");
+		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") +
+		", label " + (labelOk ? "1" : "0") + ")");
 
 	// YouTube moderation, offline, over both reads. UNVERIFIED SHAPES: no capture of any of
 	// these has been taken; the InnerTube actions follow the community clients that read that
@@ -10617,10 +10656,44 @@ void ObsBootstrap::RunChatHistorySelfTest()
 		const auto is = [](const std::optional<Chat::ModerationOp> &op, ModerationAction action,
 				   const std::string &msgId, const std::string &authorId) {
 			return op && op->action == action && op->msgId == msgId && op->authorId == authorId &&
-			       op->dest.accountId.empty();
+			       op->dest.accountId.empty() && op->label.empty();
 		};
+		// The stub text a mark* action shows in the line's place becomes the op's label, read
+		// from runs or simpleText alike. One that could reorder or break the row (U+202E RLO,
+		// U+061C ALM, either end of the C1 controls), one too long, and one on a remove* action
+		// (which leaves no stub) give none; a character just past the C1 range (U+00A9) is kept.
+		const auto labelOf = [&decoded](const char *name, const char *key, const nlohmann::json &stub) {
+			const std::optional<Chat::ModerationOp> op = Chat::YouTubeInnerTube::DecodeModerationAction(
+				nlohmann::json{{name, {{key, decoded.id}, {"deletedStateMessage", stub}}}});
+			return op ? op->label : std::string("<none>");
+		};
+		const nlohmann::json runs = {
+			{"runs", nlohmann::json::array({{{"text", "[message "}}, {{"text", "retracted]"}}})}};
+		const bool stubLabelOk = labelOf("markChatItemAsDeletedAction", "targetItemId", runs) ==
+						 "[message retracted]" &&
+					 labelOf("markChatItemsByAuthorAsDeletedAction", "externalChannelId",
+						 {{"simpleText", "[message deleted]"}}) == "[message deleted]" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", "[message \xE2\x80\xAE"
+								 "deleted]"}}) == "" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", "[message \xD8\x9C"
+								 "deleted]"}}) == "" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", "[message \xC2\x80"
+								 "deleted]"}}) == "" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", "[message \xC2\x9F"
+								 "deleted]"}}) == "" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", "[message \xC2\xA9"
+								 "deleted]"}}) == "[message \xC2\xA9"
+										  "deleted]" &&
+					 labelOf("markChatItemAsDeletedAction", "targetItemId",
+						 {{"simpleText", std::string(65, 'x')}}) == "" &&
+					 labelOf("removeChatItemAction", "targetItemId", runs) == "";
 		const bool innertubeOk =
-			lineDecoded &&
+			lineDecoded && stubLabelOk &&
 			is(innertube("markChatItemAsDeletedAction", "targetItemId", decoded.id),
 			   ModerationAction::Delete, decoded.id, "") &&
 			is(innertube("removeChatItemAction", "targetItemId", decoded.id), ModerationAction::Delete,

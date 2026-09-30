@@ -369,6 +369,38 @@ void ObsBootstrap::RunChatArchiveSelfTest()
 		       std::string("pending ") + (pendingOk ? "ok" : "bad") + ", committed " +
 			       (committedOk ? "ok" : "bad"));
 
+		// Memory only: a removed message the ring still holds keeps what it said, and the
+		// platform's label, in the pages the ring serves, and a later removal of the same line
+		// keeps both. Its stored row, and the page of a removed message only the store holds,
+		// carry neither, and no stored byte holds the text or the label.
+		Chat::ModerationOp labelled{kTwitch,      Chat::ModerationAction::Delete, "m1300", "",
+					    std::nullopt, "[message retracted]"};
+		launch.history.Redact(labelled);
+		launch.history.Redact({kTwitch, Chat::ModerationAction::ClearUser, "", "author-m1300"});
+		launch.archive.WaitIdle(kIdleWait);
+		const auto itemOf = [&](const std::string &id) {
+			const Chat::ChatPage page = launch.history.Page(seqOf(id) + 1, 1, Feed::Filter{});
+			return page.items.size() == 1 && page.items[0].value("id", "") == id ? page.items[0] : json();
+		};
+		const auto kept = [](const json &m, const std::string &text) {
+			const auto it = m.find("retracted");
+			return it != m.end() && it->is_array() && it->size() == 1 && (*it)[0].value("text", "") == text;
+		};
+		const json heldDeleted = itemOf("m1300");
+		const json heldBanned = itemOf("m1200");
+		const json storedOnly = itemOf("m10");
+		const bool memoryOk =
+			kept(heldDeleted, "hello m1300") && heldDeleted.value("fragments", json()) == json::array() &&
+			heldDeleted.value("deleted", "") == "user" &&
+			heldDeleted.value("deletedLabel", "") == "[message retracted]" &&
+			kept(heldBanned, "hello m1200") && !heldBanned.contains("deletedLabel") &&
+			storedOnly.value("deleted", "") == "message" && !storedOnly.contains("retracted") &&
+			!storedOnly.contains("deletedLabel") &&
+			Scalar(path, "SELECT count(*) FROM messages WHERE body LIKE '%hello m1300%' OR body LIKE "
+				     "'%hello m1200%' OR body LIKE '%retracted%' OR body LIKE '%deletedLabel%'") == 0 &&
+			Column(path, "SELECT deleted FROM messages WHERE msg_id = 'm1300'") == "user";
+		Report("redaction memory only", memoryOk);
+
 		// A Clear removes what was admitted before it and nothing after, in queue order, and
 		// nothing it removed is served while its delete is still queued.
 		launch.archive.HoldWrites(true);

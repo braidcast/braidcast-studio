@@ -15473,6 +15473,10 @@ void Init()
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.send", p, cb, MethodChatSend);
 		 }},
+		// Async-only is also what keeps this off the MCP server: its pages carry `retracted`,
+		// the text of messages a moderator removed, and MCP reaches only the sync table
+		// (Bridge::Dispatch). Moved there, McpServer's Classify would call it a Read by its
+		// `.list` suffix and serve that text to any client allowed to read.
 		{"chat.list",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.list", p, cb, MethodChatList);

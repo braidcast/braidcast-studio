@@ -51,9 +51,35 @@ const MAX_STAMPS = 600;
 // coalesced onto this cadence, so the cost is bounded by time rather than by chat volume.
 const RENDER_MS = 250;
 
+// Every counted message is kept as a line, { identity, stamp, chatter, gone, sameId }, so a
+// moderator's delete or ban can take it back off the board. The identity is what an op is
+// matched on (OBSOverlay.chatIdentity -- never the text). A ban has to reach every message the
+// op names, and the chatters most worth removing are the ones with the most messages, so
+// lines are held up to this many across all chatters. Past it the oldest lines are evicted
+// in batches of EVICT_SLACK, each folded into its chatter's per-destination tally (see
+// foldEvicted), which a ban still takes back whole, so the bound costs precision only for
+// `beforeTs` bans over evicted lines, and for a delete of an evicted line, which no longer
+// finds it and leaves it counting; never a banned chatter left on the board. Every browser
+// source is its own renderer, so the bound is kept small: a held line measures about 360
+// bytes on V8 without pointer compression, its message and author id strings included, so
+// about 8 MB at worst (MAX_LINES + EVICT_SLACK lines), and less in Chromium, whose pointer
+// compression shrinks the objects though not the strings.
+const MAX_LINES = 20000;
+const EVICT_SLACK = 2000;
+
 let fields = {};
-// key -> { platform, name, count, seq, stamps }. See keyFor for what identifies a chatter.
+// key -> { key, platform, name, count, seq, stamps, lines, evicted }. See keyFor for what
+// identifies a chatter. `count` is always lines.length plus every evicted tally's count.
 const chatters = new Map();
+// Every live line, oldest first from `orderHead`; a line taken back by moderation or dropped
+// with its chatter is marked `gone` and skipped, and compactOrder reclaims the slots.
+const order = [];
+let orderHead = 0;
+let liveLines = 0;
+// Message id -> its newest live line, older lines with the same id chained through `sameId`
+// (one message read by two of our accounts). A delete names only an id, so this is what keeps
+// it from scanning every held line.
+const linesById = new Map();
 // Arrival order of first message, the tie-break for equal counts. A counter rather than a
 // timestamp: message `ts` comes from the platform and can arrive out of order, which would
 // make "earliest first seen" swap between renders -- the exact reshuffle it prevents.
@@ -66,6 +92,7 @@ let windowTimer = null;
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onChat((m) => note(m));
+OBSOverlay.onChatModeration((op, removes) => uncount(op, removes));
 // A rolling window ages chatters out on its own, but the tally itself has nothing that
 // expires with time, so it would otherwise carry the previous broadcast's standings into
 // the next one. Clearing back to an empty table is the same "nobody has reported yet"
@@ -73,6 +100,10 @@ OBSOverlay.onChat((m) => note(m));
 OBSOverlay.onStream((s) => {
   if (s && s.active !== true) {
     chatters.clear();
+    order.length = 0;
+    orderHead = 0;
+    liveLines = 0;
+    linesById.clear();
     render();
   }
 });
@@ -171,14 +202,13 @@ function note(m) {
   if (!name) {
     return;
   }
-  const id = typeof m.author.id === "string" ? m.author.id.trim() : "";
-  const platform = typeof m.platform === "string" ? m.platform.trim().toLowerCase() : "";
+  const platform = platformOf(m.platform);
   const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : Date.now();
 
-  const key = keyFor(platform, id, name);
+  const key = keyFor(platform, groupId(m.author.id), name);
   let c = chatters.get(key);
   if (c === undefined) {
-    c = { platform: platform, name: name, count: 0, seq: seq++, stamps: [] };
+    c = { key: key, platform: platform, name: name, count: 0, seq: seq++, stamps: [], lines: [], evicted: new Map() };
     chatters.set(key, c);
   }
   // An id-keyed row survives a rename, so the board shows the name they go by now rather
@@ -186,13 +216,200 @@ function note(m) {
   c.name = name;
   c.count += 1;
   c.stamps.push(ts);
+  const line = { identity: OBSOverlay.chatIdentity(m), stamp: ts, chatter: c, gone: false, sameId: null };
+  c.lines.push(line);
+  order.push(line);
+  liveLines += 1;
+  const msgId = line.identity.id;
+  if (typeof msgId === "string" && msgId) {
+    line.sameId = linesById.get(msgId) || null;
+    linesById.set(msgId, line);
+  }
   if (c.stamps.length > MAX_STAMPS) {
     c.stamps.splice(0, c.stamps.length - MAX_STAMPS);
+  }
+  if (liveLines > MAX_LINES + EVICT_SLACK) {
+    evictOldest();
   }
   if (chatters.size > PRUNE_AT) {
     pruneChatters();
   }
 
+  markDirty();
+}
+
+// The platform as a key segment: an op and a message from one destination normalize alike.
+function platformOf(p) {
+  return typeof p === "string" ? p.trim().toLowerCase() : "";
+}
+
+// The sender id as a key segment, trimmed so one person is one row. Grouping only: a
+// moderation op is matched on the raw id the line's identity keeps, the way the host and the
+// dock match it, and uncount finds the row through this same function.
+function groupId(id) {
+  return typeof id === "string" ? id.trim() : "";
+}
+
+// A removed message stops counting. A delete takes its message off its author's count, and a
+// ban or timeout takes off every message of theirs the op names: only those from the op's
+// own destination, admitted and said before it, so what they said on another channel or
+// after a timeout ran out still counts. That includes lines already evicted (MAX_LINES),
+// through their per-destination tally. A row whose count reaches zero leaves the board. A
+// clear of the whole chat leaves the standings alone.
+function uncount(op, removes) {
+  if (!op || op.action === "all") {
+    return;
+  }
+  let changed = false;
+  if (op.action === "message") {
+    let line = typeof op.msgId === "string" ? linesById.get(op.msgId) : undefined;
+    while (line) {
+      const next = line.sameId;
+      if (removes(line.identity)) {
+        const c = line.chatter;
+        c.lines.splice(c.lines.lastIndexOf(line), 1);
+        takeBack(c, line);
+        changed = true;
+      }
+      line = next;
+    }
+  } else if (op.action === "user") {
+    const c = chatters.get(keyFor(platformOf(op.platform), groupId(op.authorId), ""));
+    if (c !== undefined) {
+      const kept = [];
+      for (const line of c.lines) {
+        if (removes(line.identity)) {
+          takeBack(c, line);
+          changed = true;
+        } else {
+          kept.push(line);
+        }
+      }
+      c.lines = kept;
+      for (const [dest, tally] of c.evicted) {
+        if (removes(tally)) {
+          c.evicted.delete(dest);
+          c.count -= tally.count;
+          changed = true;
+        }
+      }
+      if (c.count <= 0) {
+        chatters.delete(c.key);
+      }
+    }
+  }
+  if (changed) {
+    compactOrder();
+    markDirty();
+  }
+}
+
+// `line`, already out of c.lines, stops counting for `c`.
+function takeBack(c, line) {
+  retire(line);
+  c.count -= 1;
+  const at = c.stamps.lastIndexOf(line.stamp);
+  if (at !== -1) {
+    c.stamps.splice(at, 1);
+  }
+  if (c.count <= 0) {
+    chatters.delete(c.key);
+  }
+}
+
+// `line` leaves the held set: marked gone for `order`, and unlinked from linesById.
+function retire(line) {
+  line.gone = true;
+  liveLines -= 1;
+  const msgId = line.identity.id;
+  if (typeof msgId !== "string" || !msgId) {
+    return;
+  }
+  let at = linesById.get(msgId);
+  if (at === line) {
+    if (line.sameId) {
+      linesById.set(msgId, line.sameId);
+    } else {
+      linesById.delete(msgId);
+    }
+    return;
+  }
+  while (at && at.sameId !== line) {
+    at = at.sameId;
+  }
+  if (at) {
+    at.sameId = line.sameId;
+  }
+}
+
+// Evict the oldest lines back down to MAX_LINES. They are each chatter's oldest too, so they
+// leave c.lines as one prefix per chatter.
+function evictOldest() {
+  const evictedFrom = new Map();
+  while (liveLines > MAX_LINES && orderHead < order.length) {
+    const line = order[orderHead++];
+    if (line.gone) {
+      continue;
+    }
+    retire(line);
+    foldEvicted(line.chatter, line.identity);
+    evictedFrom.set(line.chatter, (evictedFrom.get(line.chatter) || 0) + 1);
+  }
+  for (const [c, n] of evictedFrom) {
+    c.lines.splice(0, n);
+  }
+  compactOrder();
+}
+
+// An evicted line still counts, so it is kept as a tally per destination and raw author id:
+// how many, and the latest admission seq and time among them. The tally has an identity's
+// shape with those maxima in it, so one `removes` test answers for all of its lines at once:
+// if the op names the latest, it names every earlier one too. A ban with no `beforeTs` names
+// every line on its destination admitted before it, which evicted lines always are, so it
+// takes the whole tally; one with a `beforeTs` takes it only when all of it was said by then
+// (an evicted line with no time goes with the rest, where a held one would stay).
+// The stamps of an evicted line stay in c.stamps until the window or MAX_STAMPS drops them,
+// and a ban does not take them back, so a row that survives a ban -- one with lines on
+// another destination -- may briefly over-read its windowed count by lines evicted inside
+// the window, which takes over MAX_LINES messages within one window.
+function foldEvicted(c, identity) {
+  const authorId = identity.author.id;
+  const dest = identity.accountId + "\n" + (identity.profileUuid || "") + "\n" + (authorId || "");
+  let tally = c.evicted.get(dest);
+  if (tally === undefined) {
+    tally = {
+      accountId: identity.accountId,
+      profileUuid: identity.profileUuid,
+      id: "",
+      seq: 0,
+      ts: 0,
+      author: { id: authorId },
+      count: 0,
+    };
+    c.evicted.set(dest, tally);
+  }
+  tally.count += 1;
+  tally.seq = Math.max(tally.seq, Number(identity.seq) || 0);
+  tally.ts = Math.max(tally.ts, Number(identity.ts) || 0);
+}
+
+// Reclaim the slots of evicted and gone lines once they are at least half of `order`, so it
+// stays within a small multiple of the live count at an amortized constant cost per line.
+function compactOrder() {
+  if (orderHead * 2 < order.length && order.length <= 2 * liveLines + EVICT_SLACK) {
+    return;
+  }
+  let w = 0;
+  for (let r = orderHead; r < order.length; r++) {
+    if (!order[r].gone) {
+      order[w++] = order[r];
+    }
+  }
+  order.length = w;
+  orderHead = 0;
+}
+
+function markDirty() {
   dirty = true;
   if (renderTimer === null) {
     renderTimer = setTimeout(flush, RENDER_MS);
@@ -206,8 +423,12 @@ function note(m) {
 function pruneChatters() {
   const all = Array.from(chatters.keys()).sort((a, b) => compare(chatters.get(a), chatters.get(b)));
   for (let i = MAX_CHATTERS; i < all.length; i++) {
+    for (const line of chatters.get(all[i]).lines) {
+      retire(line);
+    }
     chatters.delete(all[i]);
   }
+  compactOrder();
 }
 
 // Count descending, then earliest first seen. Equal counts are the normal case on a board

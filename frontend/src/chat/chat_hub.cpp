@@ -18,7 +18,7 @@
 #include "../oauth/account_store.hpp"
 #include "../events/transport_health.hpp"
 #include "../obs_bootstrap.hpp"
-#include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat
+#include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat, BroadcastChatModeration
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
 #include "chat_history.hpp"
 #include "chat_transport.hpp"
@@ -104,6 +104,9 @@ json ApplyModeration(ChatHistory &history, const std::string &platform, const OA
 	if (op.beforeTs) {
 		body["beforeTs"] = *op.beforeTs;
 	}
+	if (!op.label.empty()) {
+		body["label"] = op.label;
+	}
 	switch (op.action) {
 	case ModerationAction::Delete:
 		body["msgId"] = op.msgId;
@@ -113,6 +116,22 @@ json ApplyModeration(ChatHistory &history, const std::string &platform, const OA
 		break;
 	case ModerationAction::ClearAll:
 		break;
+	}
+	return body;
+}
+
+json OverlayModerationBody(const json &dockBody)
+{
+	// An allowlist rather than dropping `label`, so a key added to the dock's body later
+	// reaches the overlay only by being named here.
+	static constexpr const char *kKeys[] = {"platform", "accountId", "profileUuid", "action",
+						"msgId",    "authorId",  "before",      "beforeTs"};
+	json body = json::object();
+	for (const char *key : kKeys) {
+		const auto it = dockBody.find(key);
+		if (it != dockBody.end()) {
+			body[key] = *it;
+		}
 	}
 	return body;
 }
@@ -273,8 +292,9 @@ void ChatHub::Start()
 			ctx.canceled = canceled;
 			ctx.emit = emitFn;
 			// A moderator's removal: redact the ring here on the worker and queue the same
-			// redaction for chat.db's writer, then tell the docks on the UI thread, behind the
-			// same stop guard as emit.
+			// redaction for chat.db's writer, then tell the overlay widgets from here (the
+			// same blocking-send reason as the `chat` fan-out in emit) and the docks on the
+			// UI thread, behind the same stop guard as emit.
 			ctx.emitModeration = [dest, providerId, canceled](const ModerationOp &op) {
 				if (canceled()) {
 					return;
@@ -282,6 +302,11 @@ void ChatHub::Start()
 				json body = ApplyModeration(History(), providerId, dest, op);
 				DBG(LogCat::Chat, "chat moderation: %s on %s", DeletedMark(op.action),
 				    providerId.c_str());
+				try {
+					Overlay::Server().BroadcastChatModeration(OverlayModerationBody(body));
+				} catch (...) {
+					// malformed payload -> skip the overlay fan-out
+				}
 				AsyncTask::PostToUi(
 					[body = std::move(body)] { RouteEmit(EventNames::kChatModeration, body); });
 			};

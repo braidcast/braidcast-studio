@@ -13,6 +13,11 @@ let fields = {};
 let maxMessages = 50;
 let lifetimeMs = 0;
 
+// Each drawn row -> what a moderation op is matched on (OBSOverlay.chatIdentity). Never the
+// text: the op itself carries none, and the row already shows it.
+// Weak, so a row that scrolls off, times out or is cleared frees its entry with it.
+const identities = new WeakMap();
+
 // Paid (Super Chat/Super Sticker/Cheer) chip. Strict "#RRGGBB" validation before a
 // platform-supplied string reaches inline CSS -- mirrors
 // frontend/web/src/lib/utils/hexColor.ts (this file is plain JS with no bundler, so
@@ -38,6 +43,16 @@ function readableTextColor(hex) {
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onChat((m) => appendMessage(m));
+// A moderator deleted a message, removed a user's messages or cleared the chat: the lines it
+// names leave the column at once, without the fade, since they should not stay on stream.
+OBSOverlay.onChatModeration((op, removes) => {
+  for (const row of Array.from(root.children)) {
+    const id = identities.get(row);
+    if (id && removes(id)) {
+      root.removeChild(row);
+    }
+  }
+});
 // Messages have no expiry by default (messageLifetimeSec 0), so without this the last
 // broadcast's chat would still be sitting on screen when the next one goes live. Clearing
 // the column back to empty is the same state the widget starts in before any message has
@@ -76,6 +91,7 @@ function appendMessage(m) {
 
   const row = document.createElement("div");
   row.className = "msg";
+  identities.set(row, OBSOverlay.chatIdentity(m));
 
   // Platform tag (opt-in).
   if (fields.showPlatform) {

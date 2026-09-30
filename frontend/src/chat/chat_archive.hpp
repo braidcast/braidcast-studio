@@ -100,6 +100,10 @@ struct ModerationOp {
 	std::string msgId;    // Delete
 	std::string authorId; // ClearUser
 	std::optional<int64_t> beforeTs;
+	// What the platform itself shows in place of a removed message ("[message retracted]"),
+	// "" when it gave nothing usable. Shown beside the removed text in the dock and held in
+	// memory only: a Redaction does not carry it, so it never reaches chat.db.
+	std::string label;
 };
 
 // Whether `op` may be applied when it was read out of a platform's history (a backlog or a

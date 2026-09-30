@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { obs, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
+  import { obs, type ChatFragment, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { PLATFORM_COLORS, platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
@@ -36,7 +36,7 @@
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
   import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
-  import { moderationMatcher, redactChat, TOMBSTONE_TEXT } from "$lib/docks/multichat/chatModeration";
+  import { moderationMatcher, redactChat, removedLabel } from "$lib/docks/multichat/chatModeration";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -596,7 +596,7 @@
     });
     const offCleared = obs.on(EV.chatCleared, ({ epoch }) => feed.reset(epoch));
     const offModeration = obs.on(EV.chatModeration, (op) =>
-      feed.patch(moderationMatcher(op), (m) => redactChat(m, op.action)),
+      feed.patch(moderationMatcher(op), (m) => redactChat(m, op)),
     );
     untrack(() => feed.load());
     return () => {
@@ -607,6 +607,20 @@
     };
   });
 </script>
+
+<!-- A message body: text as text, never HTML, and emotes as images from the given url only. -->
+{#snippet fragmentsOf(frags: ChatFragment[])}
+  {#each frags as frag, i (i)}
+    {#if frag.type === "text"}{frag.text}{:else}<img
+        class="emote"
+        src={frag.url}
+        alt={frag.code}
+        title={frag.code}
+        loading="lazy"
+        draggable="false"
+      />{/if}
+  {/each}
+{/snippet}
 
 <div class="chat" use:tickWhileVisible>
   <PollStrip polls={pollStore.polls} originOf={pollOrigin} fallbackFocus={focusPollButton} />
@@ -635,8 +649,9 @@
             {@const paidBg = paidColor ?? platformChipColor(m.platform)}
             {@const chipTextColor = HEX_COLOR_RE.test(paidBg) ? readableTextColor(paidBg) : "var(--color-accent-ink)"}
             <!-- A row platform moderation removed keeps its time, origin and author, so the
-                 talk around it still reads, and says what happened in place of the body; its
-                 badges and paid decoration go with the message. -->
+                 talk around it still reads. What it said stays readable, struck through, while
+                 the host still holds it (`retracted`, never stored), beside a label saying what
+                 happened; its badges and paid decoration go with the message. -->
             <div
               class="row selectable"
               class:paid={!!paid}
@@ -672,20 +687,15 @@
                 <span class="amount" style:color={chipTextColor}>{paid.amount}</span>
               {/if}
               {#if m.deleted}
-                <span class="removed">{TOMBSTONE_TEXT[m.deleted]}</span>
+                {#if m.retracted && m.retracted.length > 0}
+                  <!-- Most screen readers say nothing for <del>, so the removal is spoken too. -->
+                  <del class="text retracted"
+                    ><span class="sr-only">Removed message: </span>{@render fragmentsOf(m.retracted)}</del
+                  >
+                {/if}
+                <span class="removed">{removedLabel(m)}</span>
               {:else if m.fragments.length > 0}
-                <span class="text">
-                  {#each m.fragments as frag, i (i)}
-                    {#if frag.type === "text"}{frag.text}{:else}<img
-                        class="emote"
-                        src={frag.url}
-                        alt={frag.code}
-                        title={frag.code}
-                        loading="lazy"
-                        draggable="false"
-                      />{/if}
-                  {/each}
-                </span>
+                <span class="text">{@render fragmentsOf(m.fragments)}</span>
               {/if}
             </div>
             {/if}
@@ -873,8 +883,17 @@
      4.5:1 on --color-surface in Industrial, Slate and light mode, while dim clears it in
      every preset (lowest 5.20:1, Industrial). */
   .tombstone .author,
+  .retracted,
   .removed {
     color: var(--color-dim);
+  }
+  /* Struck through as well as dimmed, so removal never rests on color alone. No opacity:
+     it would take the text under 4.5:1. */
+  .retracted {
+    text-decoration: line-through;
+  }
+  .retracted .emote {
+    filter: grayscale(1);
   }
   .removed {
     font-style: italic;

@@ -270,11 +270,13 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// widget overrides arrives at the override; and a key it does not arrives at the
 	// schema's default rather than missing.
 	bool docOk = false;
+	std::string docResp;
 	{
 		SOCKET c = DialLoopback(port);
 		if (c != INVALID_SOCKET) {
 			WriteAll(c, "GET /w/selftest-widget?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
-			const std::string resp = RecvUntilClose(c);
+			docResp = RecvUntilClose(c);
+			const std::string &resp = docResp;
 			docOk = StatusOf(resp) == 200 && resp.find("window.__OVERLAY__") != std::string::npos &&
 				resp.find("src=\"/runtime.js") != std::string::npos &&
 				resp.find("<div id=\"a\"></div>") != std::string::npos &&
@@ -328,6 +330,30 @@ void ObsBootstrap::RunOverlaySelfTest()
 		}
 	}
 	HostLog(std::string("[selftest] overlay runtime caching -> ") + (cacheOk ? "OK" : "MISMATCH"));
+
+	// 1c) The day-long max-age above is only safe because the document names the runtime by
+	// its content: the `v` on the URL it serves must be the hash of the bytes /runtime.js
+	// sends, which is the ETag without its quotes. Otherwise a rebuild pairs a new template
+	// with a cached old runtime.
+	bool versionOk = false;
+	{
+		SOCKET c = DialLoopback(port);
+		if (c != INVALID_SOCKET) {
+			WriteAll(c, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			const std::string resp = RecvUntilClose(c);
+			closesocket(c);
+			const size_t tagAt = resp.find("ETag: \"");
+			const size_t tagEnd = tagAt == std::string::npos ? std::string::npos
+									 : resp.find("\"\r\n", tagAt + 7);
+			if (StatusOf(resp) == 200 && tagEnd != std::string::npos) {
+				const std::string hash = resp.substr(tagAt + 7, tagEnd - tagAt - 7);
+				versionOk = !hash.empty() &&
+					    docResp.find("src=\"/runtime.js?t=selftesttoken&v=" + hash + "\"") !=
+						    std::string::npos;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] overlay runtime version -> ") + (versionOk ? "OK" : "MISMATCH"));
 
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then
 	// 4) push one frame through every named channel and assert each arrives under its own
@@ -388,6 +414,15 @@ void ObsBootstrap::RunOverlaySelfTest()
 				 msg["author"] = "selftest-ovl";
 				 msg["text"] = "hello";
 				 server.BroadcastChat(msg);
+			 }},
+			{"moderation", "selftest-mod-1",
+			 [&] {
+				 Overlay::json op = Overlay::json::object();
+				 op["platform"] = "twitch";
+				 op["action"] = "message";
+				 op["msgId"] = "selftest-mod-1";
+				 op["before"] = 1;
+				 server.BroadcastChatModeration(op);
 			 }},
 			{"viewers", "selftest:viewers",
 			 [&] {
@@ -453,9 +488,10 @@ void ObsBootstrap::RunOverlaySelfTest()
 			});
 			replayOk = gotChannels && gotStream && gotBackfill;
 			// A replayed chat message would put a moment back on screen as if it had just
-			// happened, and a replayed viewer count would assert an audience that may no
-			// longer be watching.
+			// happened, a replayed moderation op names lines a fresh page never drew, and a
+			// replayed viewer count would assert an audience that may no longer be watching.
 			replayScopeOk = acc.find("event: chat") == std::string::npos &&
+					acc.find("event: moderation") == std::string::npos &&
 					acc.find("event: viewers") == std::string::npos;
 			closesocket(fresh);
 		}

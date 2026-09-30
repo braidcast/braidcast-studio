@@ -66,12 +66,19 @@ bool BindingDestination(const OutputBinding &b, OAuth::DestinationId &out);
 //     "msgId"?:       <string>,               // action "message": the frame's `id`
 //     "authorId"?:    <string>,               // action "user": the frame's `author.id`
 //     "before":       <number>,               // the op covers only messages with seq below it
-//     "beforeTs"?:    <number> }              // and, when present, only those with
+//     "beforeTs"?:    <number>,               // and, when present, only those with
 //                                             // 0 < ts <= beforeTs (ModerationOp::beforeTs)
+//     "label"?:       <string> }              // the platform's own stub text, when it gave one
+//                                             // (ModerationOp::label)
 // The hub's emitModeration is this plus the post to the UI thread; it is separate so a
 // self-test can drive it against a private ring.
 json ApplyModeration(ChatHistory &history, const std::string &platform, const OAuth::DestinationId &dest,
 		     const ModerationOp &op);
+
+// The overlay's `moderation` SSE body for the chat.moderation body `dockBody`: the same keys
+// less any text (`label`), so a chat widget can drop the lines it names by `id`, `author.id`
+// and `seq` without the stream ever carrying what the platform or a viewer wrote.
+json OverlayModerationBody(const json &dockBody);
 
 class ChatHub {
 public:

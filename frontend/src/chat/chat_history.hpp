@@ -76,7 +76,8 @@ public:
 
 	// Up to `limit` messages matching `filter` with seq below `beforeSeq` (every one when
 	// absent), newest ones first chosen, returned oldest-first: the ring's, then the
-	// archive's.
+	// archive's. A held message a moderator removed also carries `retracted` (what it said)
+	// and, when the platform gave one, `deletedLabel`; a stored one never does.
 	ChatPage Page(std::optional<uint64_t> beforeSeq, size_t limit, const Feed::Filter &filter) const;
 
 	// Drop every held message, and every stored one, and open a new epoch, which is
@@ -86,7 +87,9 @@ public:
 
 	// Apply a moderator's removal to the held messages it covers, and to the stored ones.
 	// It covers only messages admitted before it; the returned bound is the seq the next
-	// admitted message will get, so it covers exactly those with a lower seq.
+	// admitted message will get, so it covers exactly those with a lower seq. A held
+	// message keeps its text in memory beside the redacted frame (Held::retracted); a
+	// stored one loses it.
 	uint64_t Redact(const ModerationOp &op);
 
 	// Change what the archive keeps (Off / This session / 7 days).
@@ -100,6 +103,13 @@ private:
 		std::string dest; // OAuth::DestinationKey
 		std::string key;  // dest + ":" + id, the dedupe key
 		json frame;
+		// A removed message's own fragments and the platform's stub text for it, kept
+		// beside the redacted frame so the dock can still show what was said (Page hands
+		// them out as `retracted` and `deletedLabel`). In memory only: chat.db's row was
+		// built from the message when it was admitted and is redacted on its own, and
+		// nothing writes a held frame back.
+		json retracted;
+		std::string label;
 	};
 
 	// Move the messages past kCap that may leave into `out`, oldest first.

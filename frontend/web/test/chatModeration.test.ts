@@ -2,7 +2,7 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import type { ChatMessage, ChatModeration } from "$lib/api/bridge";
 import { destinationKey, isDestinationKey } from "$lib/api/destinationKeys";
 import { chatKey } from "$lib/docks/multichat/chatIntake";
-import { moderationMatcher, redactChat } from "$lib/docks/multichat/chatModeration";
+import { moderationMatcher, redactChat, removedLabel, TOMBSTONE_TEXT } from "$lib/docks/multichat/chatModeration";
 import { frame, harness, measure, useFrameMocks, type Harness, type TestConfig } from "./feedHarness";
 
 useFrameMocks();
@@ -101,16 +101,54 @@ describe("isDestinationKey", () => {
 });
 
 describe("redactChat", () => {
-  test("empties the body and marks the action", () => {
-    const r = redactChat(msg(1, { paid: { kind: "cheer", amount: "100 bits" } }), "user");
+  const said = [{ type: "text" as const, text: "hello 1" }];
+
+  test("empties the body, marks the action and keeps what it said", () => {
+    const r = redactChat(msg(1, { paid: { kind: "cheer", amount: "100 bits" } }), { action: "user" });
     expect(r.fragments).toEqual([]);
     expect(r.deleted).toBe("user");
+    expect(r.retracted).toEqual(said);
+    expect(r.deletedLabel).toBeUndefined();
     expect(chatKey(r)).toBe(chatKey(msg(1)));
   });
 
+  test("takes the platform's label", () => {
+    const r = redactChat(msg(1), { action: "message", label: "[message retracted]" });
+    expect(r.deletedLabel).toBe("[message retracted]");
+    expect(removedLabel(r)).toBe("[message retracted]");
+  });
+
+  test("a later op keeps the text and the label an earlier one kept", () => {
+    const first = redactChat(msg(1), { action: "message", label: "[message deleted]" });
+    const later = redactChat(first, { action: "user" });
+    expect(later.deleted).toBe("user");
+    expect(later.retracted).toEqual(said);
+    expect(later.deletedLabel).toBe("[message deleted]");
+  });
+
+  test("a row the host already redacted keeps the text the host kept", () => {
+    const fromHost = msg(1, { fragments: [], deleted: "message", retracted: said });
+    const r = redactChat(fromHost, { action: "all" });
+    expect(r.retracted).toEqual(said);
+    expect(r.deleted).toBe("all");
+  });
+
+  test("a line with no text keeps nothing", () => {
+    const r = redactChat(msg(1, { fragments: [], paid: { kind: "cheer", amount: "100 bits" } }), { action: "message" });
+    expect("retracted" in r).toBe(false);
+  });
+
   test("a row already redacted the same way comes back as itself", () => {
-    const r = redactChat(msg(1), "message");
-    expect(redactChat(r, "message")).toBe(r);
+    const r = redactChat(msg(1), { action: "message" });
+    expect(redactChat(r, { action: "message" })).toBe(r);
+    const labelled = redactChat(msg(1), { action: "message", label: "[message deleted]" });
+    expect(redactChat(labelled, { action: "message" })).toBe(labelled);
+  });
+
+  test("with no platform label, the label says what happened", () => {
+    expect(removedLabel(redactChat(msg(1), { action: "message" }))).toBe(TOMBSTONE_TEXT.message);
+    expect(removedLabel(redactChat(msg(1), { action: "user" }))).toBe("Messages removed by a moderator");
+    expect(removedLabel(redactChat(msg(1), { action: "all" }))).toBe("Chat cleared");
   });
 });
 
@@ -131,7 +169,7 @@ const CHAT: TestConfig<ChatMessage> = {
 function moderate(h: Harness<ChatMessage>, o: ChatModeration): void {
   h.v.patch(
     moderationMatcher(o),
-    (m) => redactChat(m, o.action),
+    (m) => redactChat(m, o),
   );
   frame();
 }
@@ -153,6 +191,7 @@ describe("FeedVirtualizer.patch with moderation", () => {
     const row = h.v.rows.find((r) => r.item.id === "m7")!;
     expect(row.item.deleted).toBe("message");
     expect(row.item.fragments).toEqual([]);
+    expect(row.item.retracted).toEqual([{ type: "text", text: "hello 7" }]);
     expect(h.v.rows.filter((r) => r.item.deleted).length).toBe(1);
     h.stop();
   });
@@ -212,6 +251,7 @@ describe("FeedVirtualizer.patch with moderation", () => {
     await h.host.reply(); // the host answers from its pre-op copy
     expect(h.v.rows.length).toBe(5);
     expect(h.v.rows.every((r) => r.item.deleted === "all" && r.item.fragments.length === 0)).toBe(true);
+    expect(h.v.rows.every((r) => r.item.retracted?.[0]?.type === "text")).toBe(true);
     h.stop();
   });
 

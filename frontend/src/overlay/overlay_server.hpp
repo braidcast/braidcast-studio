@@ -61,6 +61,11 @@ public:
 	// (distinct from the default `message` event alert boxes consume). The chat-box
 	// widget subscribes to it; alert boxes ignore it.
 	void BroadcastChat(const nlohmann::json &chatMsg);
+	// Push a moderator's removal to EVERY open widget socket as a named `moderation` SSE
+	// event, so a widget showing chat drops the lines it names. The body names lines by id
+	// and author id only, never by text (Chat::OverlayModerationBody). Like `chat`, it is
+	// never kept for replay: a widget that connects later never had the lines.
+	void BroadcastChatModeration(const nlohmann::json &op);
 	// Push the poller's concurrent-viewer payload to EVERY open widget socket as a named
 	// `viewers` SSE event, forwarded verbatim (nulls and absent rows included -- a
 	// destination that never answered is not a zero). Viewer-count widgets subscribe to

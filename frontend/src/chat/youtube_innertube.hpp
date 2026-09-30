@@ -97,8 +97,10 @@ bool DecodeChatItem(const json &item, DecodedItem &out);
 // removeChatItemAction, which takes the line away) delete the item their `targetItemId`
 // names: the renderer `id` DecodeChatItem reads, so the frame's `id`. The two per-author
 // actions remove every line of their `externalChannelId`, the renderer's
-// `authorExternalChannelId`, so the frame's `author.id`. The op's `dest` is left empty for the
-// hub to fill in. Pure, like DecodeChatItem.
+// `authorExternalChannelId`, so the frame's `author.id`. The two mark* actions carry the stub
+// text YouTube shows in the line's place (`deletedStateMessage`), which becomes the op's
+// `label` when it is short and single-line. The op's `dest` is left empty for the hub to fill
+// in. Pure, like DecodeChatItem.
 std::optional<ModerationOp> DecodeModerationAction(const json &action);
 
 // One bucket of the live-reactions fountain: the reactions YouTube counted over `seconds`

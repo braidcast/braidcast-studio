@@ -69,7 +69,8 @@ void ChatHistory::OpenArchive(const ChatArchive::Options &options)
 			continue;
 		}
 		const uint64_t seq = entry.frame.value("seq", uint64_t(0));
-		messages_.push_back({seq, std::move(entry.dest), std::move(key), std::move(entry.frame)});
+		messages_.push_back(
+			{seq, std::move(entry.dest), std::move(key), std::move(entry.frame), json(), std::string()});
 	}
 	nextSeq_ = std::max(nextSeq_, seed.nextSeq);
 }
@@ -127,7 +128,8 @@ bool ChatHistory::Add(const OAuth::DestinationId &dest, json &message)
 					archive_->Enqueue(std::move(*row));
 				}
 			}
-			messages_.push_back({seq, std::move(destKey), std::move(key), std::move(copy)});
+			messages_.push_back(
+				{seq, std::move(destKey), std::move(key), std::move(copy), json(), std::string()});
 			if (archive_ && messages_.size() > ChatArchive::kRingHardCap && archive_->Active()) {
 				dropped =
 					archive_->Degrade("the writer fell " + std::to_string(messages_.size() - kCap) +
@@ -179,6 +181,12 @@ ChatPage ChatHistory::Page(std::optional<uint64_t> beforeSeq, size_t limit, cons
 				continue;
 			}
 			newestFirst.push_back(it->frame);
+			if (!it->retracted.is_null()) {
+				newestFirst.back()["retracted"] = it->retracted;
+			}
+			if (!it->label.empty()) {
+				newestFirst.back()["deletedLabel"] = it->label;
+			}
 		}
 	}
 	// The ring ran out: the rest comes from disk, starting below everything the ring holds.
@@ -235,9 +243,20 @@ uint64_t ChatHistory::Redact(const ModerationOp &op)
 	std::lock_guard<std::mutex> lock(mutex_);
 	const Redaction redaction = Redaction::From(op, nextSeq_);
 	for (Held &held : messages_) {
-		if (redaction.Matches(held.dest, held.seq, held.frame)) {
-			RedactFrame(held.frame, op.action);
+		if (!redaction.Matches(held.dest, held.seq, held.frame)) {
+			continue;
 		}
+		// The first removal keeps what was said; a later one (a ban after a delete) finds
+		// the fragments already emptied and must not replace it with nothing.
+		const auto fragments = held.frame.find("fragments");
+		if (held.retracted.is_null() && fragments != held.frame.end() && fragments->is_array() &&
+		    !fragments->empty()) {
+			held.retracted = std::move(*fragments);
+		}
+		if (!op.label.empty()) {
+			held.label = op.label;
+		}
+		RedactFrame(held.frame, op.action);
 	}
 	if (archive_) {
 		archive_->EnqueueRedact(redaction);

@@ -45,10 +45,12 @@ constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a s
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
 constexpr size_t kMaxBackfillEvents = 200;     // ceiling on the connect-time event replay
 
-// Freshness for an uploaded widget asset. A day, because the URL AssembleDocument mints
-// carries the widget revision, and OverlayStore::AddAsset -- the only writer of these bytes
-// -- bumps that revision under the same lock as the write. So the cache key cannot outlive
-// the bytes it names: a re-upload at the same filename still moves the URL. Freshness only
+// Freshness for an uploaded widget asset and for the runtime. A day, because every URL
+// AssembleDocument mints for them moves with the bytes: an asset URL carries the widget
+// revision, which OverlayStore::AddAsset -- the only writer of those bytes -- bumps under the
+// same lock as the write, and the runtime URL carries the runtime's content hash. So the
+// cache key cannot outlive the bytes it names: a re-upload at the same filename, or a rebuilt
+// runtime, still moves the URL. Freshness only
 // has to outlast a broadcast, and a day is well past that. Not `immutable`: the ETag
 // revalidation below is the backstop if a future writer ever appears that does not bump,
 // and `immutable` would tell the client not to check even on a reload.
@@ -137,22 +139,35 @@ std::string HeaderValue(const std::string &headerBlock, const char *lowerName)
 	return std::string();
 }
 
-// A strong ETag for a body we have already read: FNV-1a 64 over the bytes, quoted.
+// FNV-1a 64 over a body we have already read, as 16 lowercase hex digits.
 //
 // Content-derived rather than mtime-derived deliberately. An asset is replaced in place at
 // the same path by OverlayStore::AddAsset, and a filesystem timestamp has a granularity a
 // fast replace can land inside -- which would hand a client a validator that says "still
 // the same file" about different bytes. Hashing what we are about to serve cannot say that.
-std::string StrongETag(const std::string &body)
+std::string ContentHash(const std::string &body)
 {
 	const uint64_t h = Fnv1a64(body);
 	static const char *kHex = "0123456789abcdef";
-	std::string out = "\"";
+	std::string out;
 	for (int shift = 60; shift >= 0; shift -= 4) {
 		out += kHex[(h >> shift) & 0xf];
 	}
-	out += '"';
 	return out;
+}
+
+// The strong ETag for a body: its ContentHash, quoted.
+std::string StrongETag(const std::string &body)
+{
+	return "\"" + ContentHash(body) + "\"";
+}
+
+// The shipped overlay runtime, read from the web bundle. The one reader both routes use, so
+// the version AssembleDocument stamps on the runtime URL is the hash of the bytes
+// ServeRuntime then sends.
+bool ReadRuntime(std::string &body, std::string &ctype)
+{
+	return ReadFileGuarded(WebBundle::Root() + "/overlay", "runtime.js", body, ctype);
 }
 
 // Whether an If-None-Match value selects `etag`. Accepts "*", a single tag, and the
@@ -320,7 +335,19 @@ std::string AssembleDocument(const Widget &w, int port)
 	doc += "\n</style></head><body>\n";
 	doc += resolved.html;
 	doc += "\n<script>window.__OVERLAY__=" + overlay.dump() + ";</script>\n";
-	doc += "<script src=\"/runtime.js?t=" + w.token + "\"></script>\n";
+	// `v` is the runtime's content hash. The runtime is cached for a day, but this document
+	// is not cached at all and inlines a template written against one runtime; without `v`
+	// a rebuild that changed both would pair the new template with the day-old runtime, and
+	// a hook the template calls would not exist yet. Moving the URL with the bytes makes the
+	// runtime a page loads the one it was assembled beside. ServeRuntime reads only `t`, so
+	// `v` is a pure cache key.
+	std::string runtimeUrl = "/runtime.js?t=" + w.token;
+	std::string runtimeBody;
+	std::string runtimeType;
+	if (ReadRuntime(runtimeBody, runtimeType)) {
+		runtimeUrl += "&v=" + ContentHash(runtimeBody);
+	}
+	doc += "<script src=\"" + runtimeUrl + "\"></script>\n";
 	doc += "<script>\n" + resolved.js + "\n</script>\n</body></html>";
 	return doc;
 }
@@ -530,6 +557,14 @@ size_t OverlayServer::Broadcast(const Events::NormalizedEvent &ev, bool replay)
 void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 {
 	BroadcastFrame(NamedFrame("chat", chatMsg));
+}
+
+// Called on the chat transport worker right after the op redacted the ring, so it lands
+// behind every `chat` line that destination's read worker admitted before it. A Twitch local
+// echo is fanned out from its send worker instead, so it is not ordered against the op.
+void OverlayServer::BroadcastChatModeration(const nlohmann::json &op)
+{
+	BroadcastFrame(NamedFrame("moderation", op));
 }
 
 // Named `viewers` event for the same reason `chat` is named: an unnamed frame lands on every
@@ -935,15 +970,15 @@ void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, co
 	}
 	std::string body;
 	std::string ctype;
-	if (!ReadFileGuarded(WebBundle::Root() + "/overlay", "runtime.js", body, ctype)) {
+	if (!ReadRuntime(body, ctype)) {
 		WriteResponse(sock, 404, "text/plain", "runtime not found");
 		CloseClient(clientSocket);
 		return;
 	}
 	// Same validator the asset route uses, for the same reason: without one Chromium
 	// cannot cache this even heuristically, so every widget load and every editor preview
-	// rebuild refetched the whole runtime. The bytes only change on a rebuild, which a
-	// content-derived ETag notices by itself.
+	// rebuild refetched the whole runtime. The bytes only change on a rebuild, and the `v`
+	// AssembleDocument puts on this URL moves with them, so a fresh entry is never a stale one.
 	const std::string etag = StrongETag(body);
 	const std::string cacheHeaders =
 		"Cache-Control: private, max-age=" + std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag + "\r\n";
