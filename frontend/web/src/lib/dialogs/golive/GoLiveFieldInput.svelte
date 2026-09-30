@@ -579,7 +579,7 @@
   }
   .thumb-err {
     font-size: 10px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin-top: 4px;
     max-width: 320px;
     line-height: 1.35;

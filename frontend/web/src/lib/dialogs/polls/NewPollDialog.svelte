@@ -419,7 +419,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     line-height: 1.5;
-    color: var(--color-live);
+    color: var(--color-live-text);
     overflow-wrap: anywhere;
   }
   .dests .err {

@@ -568,7 +568,7 @@
     text-align: center;
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 0 0 8px;
     font-size: 11px;
   }

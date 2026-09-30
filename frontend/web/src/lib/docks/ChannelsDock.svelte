@@ -211,7 +211,7 @@
     cursor: pointer;
   }
   .chip.warn:hover:not(:disabled) {
-    color: var(--color-live);
+    color: var(--color-live-text);
     border-color: var(--color-live);
   }
   .chip.warn:disabled {
@@ -252,6 +252,6 @@
     white-space: nowrap;
   }
   .v.live {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 </style>

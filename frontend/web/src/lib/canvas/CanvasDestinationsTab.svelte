@@ -242,7 +242,7 @@
 <style>
   .err {
     margin: 0 0 12px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-size: 12px;
   }
   .section {
@@ -333,7 +333,7 @@
     white-space: nowrap;
   }
   .card-name.deleted {
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-style: italic;
   }
   .card-name.unset {
@@ -375,7 +375,7 @@
     color: var(--color-muted);
   }
   .card-note.err {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .card-foot {
     display: flex;

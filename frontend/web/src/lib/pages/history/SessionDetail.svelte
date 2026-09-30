@@ -172,7 +172,7 @@
   .err {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .dest {
     padding: 8px 0;

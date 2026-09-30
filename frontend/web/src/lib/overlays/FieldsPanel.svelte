@@ -328,7 +328,7 @@
   }
   .err {
     margin: 0;
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-size: 12px;
   }
   .empty {

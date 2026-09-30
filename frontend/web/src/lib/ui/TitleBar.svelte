@@ -157,6 +157,6 @@ import { EV } from "$lib/utils/eventNames";
   }
   .ctl.close:hover {
     background: var(--color-live);
-    color: #fff;
+    color: var(--color-live-ink);
   }
 </style>

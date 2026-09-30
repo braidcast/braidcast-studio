@@ -16,15 +16,13 @@
   // Resting ink, and for the bordered variants the resting edge with it: every call
   // site that reddened a Retry or ambered a warning-strip action moved both together.
   //
-  // `live` at rest inherits a known token-level gap: --color-live is not a 4.5:1 ink
-  // on --color-surface in light mode (3.49:1), and no preset rescues it (4.25:1 at
-  // worst in dark, Slate). Four destructive controls now take it at rest rather than
-  // only on hover -- lib/pages/OverlaysPage.svelte:664,
-  // lib/settings/StreamsTab.svelte:739, lib/settings/BrowserDocksTab.svelte:121,
-  // lib/settings/HotkeysTab.svelte:222 -- where the resting ink used to be
-  // --color-dim (6.91:1 light) or --color-text (16.55:1 light), both compliant. The
-  // shortfall is the token's and predates this component; it is recorded here rather
-  // than tuned, because closing it means moving --color-live.
+  // `live` is the one colored tone whose two differ: the edge is --color-live and the label
+  // --color-live-text (app.css), because the brand red is a fill color and under
+  // 4.5:1 as text. Over the four preset palettes plus the light palette, on
+  // --color-base/-rail/-surface/-surface-2, the label bottoms out at 5.97:1 bare and
+  // 5.10:1 under the toned hover wash (both light, over --color-rail). A selected
+  // row's accent wash is the ground it does not clear: 3.92:1 at worst (Slate with
+  // amber, over --color-surface-2).
   export type ButtonTone = "default" | "accent" | "live" | "warn";
 
   // Which typeface the label is set in.
@@ -78,7 +76,7 @@
   const TONE_INK: Record<ButtonTone, string> = {
     default: "var(--color-text)",
     accent: "var(--color-accent)",
-    live: "var(--color-live)",
+    live: "var(--color-live-text)",
     warn: "var(--color-warn)",
   };
 
@@ -101,12 +99,9 @@
     grow?: boolean;
   }
 
-  // A tone paints ink and edge in one of the four semantic colors; a fill needs the
-  // matching ink to draw *on* that color, and only the accent has one
-  // (--color-accent-ink, app.css:72; --color-warn-ink at app.css:84 exists but is
-  // scoped to warn's own surfaces, and there is no live equivalent). So `filled` is
-  // the accent block or it is nothing, and the type says so rather than accepting a
-  // `tone` it would drop.
+  // A tone paints ink and edge in one of the four semantic colors. `filled` is the
+  // accent block with --color-accent-ink on it and nothing else, and the type says so
+  // rather than accepting a `tone` it would drop.
   type Toned = { variant?: Exclude<ButtonVariant, "filled">; tone?: ButtonTone };
   type FilledOnly = { variant: "filled"; tone?: never };
 
@@ -249,14 +244,18 @@
   /* Toned: the edge already carries the tone, so moving it to --color-text would
      read as the button having stopped being a retry or a warning. The wash is what
      each of the three rules it replaces already used, at this same 14%, and it
-     leaves ink and edge alone. It is the one hover here that moves what the label
-     is measured against, so its cost was swept: over the four preset palettes plus
-     the shared light palette, x five accents, against --color-base/-rail/-surface/
-     -surface-2, the washed label is at worst 0.08 below the same label on the
-     unwashed ground (warn, light mode, over --color-rail: 1.39:1 washed against
-     1.47:1 plain -- an ink already below 3:1 in light mode before any wash). */
+     leaves ink and edge alone. It is mixed from the edge, not the ink, so `live`
+     washes in --color-live like every other live tint rather than in its label
+     color. It is the one hover here that moves what the label is measured against,
+     so its cost was swept: over the four preset palettes plus the shared light
+     palette, x five accents, against --color-base/-rail/-surface/-surface-2, an
+     accent or warn label is at worst 0.08 below the same label on the unwashed
+     ground (warn, light mode, over --color-rail: 1.39:1 washed against 1.47:1 plain
+     -- an ink already below 3:1 in light mode before any wash). A live label loses
+     more, because its ink sits further from the wash, and bottoms out at 5.10:1
+     (light, over --color-rail). */
   .btnx-toned:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--btnx-ink) 14%, transparent);
+    background: color-mix(in srgb, var(--btnx-edge) 14%, transparent);
   }
 
   /* The fill is already the strongest thing in its row, so its hover darkens the

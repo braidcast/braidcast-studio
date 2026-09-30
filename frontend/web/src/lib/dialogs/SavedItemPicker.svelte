@@ -374,6 +374,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     line-height: 1.6;
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 </style>

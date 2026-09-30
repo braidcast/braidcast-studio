@@ -362,7 +362,7 @@
     white-space: nowrap;
   }
   .dname.deleted {
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-style: italic;
   }
   .dname.unset {
@@ -400,7 +400,7 @@
     padding: 3px 6px;
     background: none;
     border: var(--border-weight) solid var(--color-live);
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.06em;

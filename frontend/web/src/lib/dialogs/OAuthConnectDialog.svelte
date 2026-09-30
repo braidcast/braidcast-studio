@@ -230,7 +230,7 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 12px;
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 0 0 8px;
     font-size: 12px;
   }

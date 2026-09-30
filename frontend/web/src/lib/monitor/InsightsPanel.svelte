@@ -203,7 +203,7 @@
   .ierror {
     margin: 0;
     padding: 12px 10px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-size: 11px;
   }
   .igo {

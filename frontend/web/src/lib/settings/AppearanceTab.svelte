@@ -696,7 +696,7 @@
     color: var(--color-muted);
   }
   .preset-del:hover {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .save-input {
     height: 30px;

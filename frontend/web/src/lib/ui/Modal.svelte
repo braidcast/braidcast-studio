@@ -429,16 +429,16 @@
     font-weight: 600;
   }
   .foot-cell.danger {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .foot-cell:not(.accent, .strong, .danger):hover:not(:disabled) {
     color: var(--color-text);
   }
   /* These two already carry a lifted ink, so their hover moves the cell's divider
      rather than its ink or its ground: recoloring a Delete's label would read as it
-     having stopped being destructive, and raising the ground under --color-live
-     costs contrast the label cannot spare (4.25:1 on --color-surface against 3.84:1
-     on --color-surface-2, Slate). An edge is outside the label, so it changes
+     having stopped being destructive, and raising the ground under the label costs
+     it contrast (--color-live-text at 6.63:1 on --color-surface against 5.99:1 on
+     --color-surface-2, Slate). An edge is outside the label, so it changes
      nothing the label is measured against. */
   .foot-cell.strong:hover:not(:disabled) {
     border-left-color: var(--color-text);

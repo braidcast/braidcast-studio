@@ -71,6 +71,23 @@
   --color-accent-contrast: #0a0a0b;
   --color-accent-ink: #0a0a0b;
   --color-live: #f04444;
+  /* --color-live is a fill: as text it is under 4.5:1 on light grounds and on the
+     lighter dark presets. Text takes --color-live-text instead, --color-live pulled
+     45% toward --color-text: lighter in dark mode, darker in light, so one rule follows
+     every preset, both modes and a user-edited live color (the ratios below are for the
+     shipped reds; a user-edited one is not guaranteed 4.5:1). oklab rather than
+     srgb because srgb mixing loses too much lightness to clear Slate at a ratio that
+     still reads as red. Worst case over the four presets and the light palette, on
+     --color-base/-rail/-surface/-surface-2 bare and under the 14/16/22% live tints:
+     4.65:1 (light, 22% tint over --color-rail). The var()s resolve here on :root
+     against what applyTheme writes, so a subtree that rescopes --color-text does not
+     shift it. */
+  --color-live-text: color-mix(in oklab, var(--color-live) 55%, var(--color-text));
+  /* Ink for text drawn ON a solid --color-live fill: white is 3.74:1 there, this is
+     5.29:1 (5.26:1 on the presets' #ef4444). Static like --color-warn-ink, because
+     the fill it sits on does not change with mode; unlike --color-warn, --color-live
+     is user-editable, and a darkened one needs a lighter ink. */
+  --color-live-ink: #0a0a0b;
   /* Success/linked status (OAuth "linked" chip + connected panel). Static status
      colors, not part of the theme presets; --color-ok-bg is the darker border/fill. */
   --color-ok: #3fb950;
@@ -532,7 +549,7 @@ input[type="color"] {
   text-transform: var(--label-case);
 }
 .dock-msg.err {
-  color: var(--color-live);
+  color: var(--color-live-text);
   text-transform: none;
 }
 
@@ -795,7 +812,7 @@ input[type="color"] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--color-live);
+  color: var(--color-live-text);
   border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
   background: color-mix(in srgb, var(--color-live) 14%, transparent);
 }
@@ -828,7 +845,7 @@ input[type="color"] {
   color: var(--color-muted);
 }
 .cfhead__note.live {
-  color: var(--color-live);
+  color: var(--color-live-text);
 }
 
 /* --- sub-tab strip (icon + label) --- */
@@ -1098,7 +1115,7 @@ input[type="color"] {
   font-size: 10px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--color-live);
+  color: var(--color-live-text);
 }
 
 /* --- lock group ---

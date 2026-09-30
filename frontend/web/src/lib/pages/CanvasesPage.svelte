@@ -279,7 +279,7 @@
   }
   .err {
     margin: 12px 24px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-size: 12px;
   }
   .reorder-line {

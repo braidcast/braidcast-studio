@@ -746,13 +746,20 @@
     align-items: center;
     gap: 6px;
     padding: 0 4px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     background: color-mix(in srgb, var(--color-live) 22%, transparent);
     backdrop-filter: blur(3px);
     font-family: var(--font-mono);
     font-size: 9px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
+  }
+  /* The cover's wash composites over the row's own live tint, which deepens on hover.
+     Thinning the cover as the row deepens keeps the ground under the label about
+     where it rests (27% live at rest, 28% hovered), which is what holds the label at
+     4.5:1 in light mode; line1 still shows the hover. */
+  .row.err:hover .err-cover {
+    background: color-mix(in srgb, var(--color-live) 16%, transparent);
   }
 
   .summary {

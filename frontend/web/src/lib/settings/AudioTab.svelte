@@ -240,7 +240,7 @@
     margin-top: 8px;
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 6px 0 0;
     font-size: 12px;
   }

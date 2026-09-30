@@ -12,7 +12,8 @@
 
   // Resting glyph color: `accent` for an engaged toggle, `live` for a state the app
   // paints in the live color (monitoring routed to output, a destructive action at
-  // rest). Hover preserves a tone rather than overriding it.
+  // rest), drawn in --color-live-text like all live-colored text. Hover preserves a
+  // tone rather than overriding it.
   export type IconButtonTone = "default" | "accent" | "live";
 
   // Named boxes for the shapes that repeat across docks and dialogs, so changing a
@@ -144,12 +145,12 @@
   }
 
   .iconbtn-live {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 
   /* Hover moves the edge and never the ground. A translucent ground wash pulls the
-     ground toward mid luminance, and --color-live and --color-accent sit there, so
-     they are the tones it costs contrast; the direction reverses between modes
+     ground toward mid luminance, which costs the toned glyphs (--color-accent,
+     --color-live-text) the most contrast; the direction reverses between modes
      because --color-text is near-white in one and near-black in the other, which is
      why no single percentage holds. An edge is outside the glyph, so hovering does
      not change what the glyph is measured against; only the two rules below move a
@@ -197,7 +198,7 @@
   }
 
   .iconbtn.iconbtn-default.iconbtn-danger:hover:not(:disabled):not([aria-disabled="true"]) {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 
   /* No text label, so the ring is the only thing telling a keyboard user which

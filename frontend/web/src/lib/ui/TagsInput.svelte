@@ -684,7 +684,7 @@
     color: var(--color-dim);
   }
   .x:hover {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .label:focus-visible,
   .x:focus-visible {
@@ -781,7 +781,7 @@
     overflow-wrap: anywhere;
   }
   .tag-note.refused {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .tag-acts {
     display: flex;

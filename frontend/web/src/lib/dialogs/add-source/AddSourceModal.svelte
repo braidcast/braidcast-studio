@@ -664,12 +664,12 @@
     font-size: 11px;
   }
   .warn {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 0;
     font-size: 12px;
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 0 0 10px;
     font-size: 12px;
   }

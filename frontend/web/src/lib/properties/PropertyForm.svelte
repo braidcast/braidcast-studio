@@ -169,7 +169,7 @@
     margin: 0;
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 0;
     font-size: 12px;
   }

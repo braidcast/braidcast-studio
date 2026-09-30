@@ -756,7 +756,7 @@ import { EV } from "$lib/utils/eventNames";
   }
   .banner.down {
     background: color-mix(in srgb, var(--color-live) 14%, transparent);
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .body {
     flex: 1;
@@ -992,7 +992,7 @@ import { EV } from "$lib/utils/eventNames";
      sharing it made source order decide the size and left a margin on top of the stack's
      own gap. This line is a template-state line that happens to be an error. */
   .tpl-state--err {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .scroll-pane {
     flex: 1;
@@ -1002,7 +1002,7 @@ import { EV } from "$lib/utils/eventNames";
   }
   .err {
     margin: 0 0 12px;
-    color: var(--color-live);
+    color: var(--color-live-text);
     font-size: 12px;
   }
 </style>

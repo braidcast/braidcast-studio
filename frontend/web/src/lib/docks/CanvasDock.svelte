@@ -1589,6 +1589,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     font-size: 10px;
   }
   .dock-msg.err {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 </style>

@@ -590,7 +590,7 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-text);
   }
   .error {
-    color: var(--color-live);
+    color: var(--color-live-text);
     margin: 6px 0 0;
     font-size: 12px;
   }

@@ -74,7 +74,7 @@
     color: var(--color-warn);
   }
   .info.error {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .info.nowrap {
     white-space: nowrap;

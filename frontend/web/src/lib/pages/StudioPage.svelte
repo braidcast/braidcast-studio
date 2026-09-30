@@ -1365,7 +1365,7 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.06em;
-    color: var(--color-live);
+    color: var(--color-live-text);
     white-space: nowrap;
     background: color-mix(in srgb, var(--color-live) 14%, transparent);
   }
@@ -1514,7 +1514,7 @@ import { EV } from "$lib/utils/eventNames";
   }
   .golive.running {
     background: var(--color-live);
-    color: #fff;
+    color: var(--color-live-ink);
   }
   /* Blocked reads: the button stays clickable (the click explains and offers a retry)
      but drops the accent fill so it can't read as a primed Go Live. */

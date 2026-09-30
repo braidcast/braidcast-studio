@@ -393,7 +393,7 @@
     color: var(--edge);
   }
   .c-badge.alerting {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
 
   /* ---- block (week / day) ---- */
@@ -469,7 +469,7 @@
     font-family: var(--font-mono);
     font-size: 9px;
     letter-spacing: 0.06em;
-    color: var(--color-live);
+    color: var(--color-live-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -501,11 +501,11 @@
     background: transparent;
   }
   .cancel {
-    color: var(--color-live);
+    color: var(--color-live-text);
     border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
   }
   .cancel:hover {
-    color: var(--color-accent-ink);
+    color: var(--color-live-ink);
     background: var(--color-live);
     border-color: var(--color-live);
   }

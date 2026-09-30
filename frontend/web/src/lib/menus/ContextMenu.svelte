@@ -469,7 +469,7 @@
     outline-offset: -1px;
   }
   .item.danger {
-    color: var(--color-live);
+    color: var(--color-live-text);
   }
   .item.disabled {
     color: var(--color-muted);
