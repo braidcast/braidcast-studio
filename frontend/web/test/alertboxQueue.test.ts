@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fillTemplate } from "../src/overlay/fillTemplate";
 
 // The default alertbox is a bundler-free overlay script, so it is loaded here the way the
 // overlay page loads it: as source, run against stand-ins for the globals it touches. The
@@ -13,6 +14,11 @@ interface Burst {
 }
 
 const SOURCE = await Bun.file(new URL("../public/overlay/default-alertbox/template.js", import.meta.url)).text();
+const SCHEMA: { key: string; default?: unknown }[] = await Bun.file(
+  new URL("../public/overlay/default-alertbox/fields.json", import.meta.url),
+).json();
+// What the host injects for a stock widget: each schema default, under the user's overrides.
+const DEFAULT_FIELDS = Object.fromEntries(SCHEMA.map((f) => [f.key, f.default]));
 
 function fakeEl(): Record<string, unknown> {
   const el: Record<string, unknown> = {
@@ -32,7 +38,7 @@ function fakeEl(): Record<string, unknown> {
   return el;
 }
 
-function alertbox() {
+function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
   let now = 0;
   let handler: (e: unknown) => void = () => {};
   const document = {
@@ -41,7 +47,7 @@ function alertbox() {
     body: fakeEl(),
   };
   const overlay = {
-    fields: {},
+    fields,
     onLoad() {},
     onEvent(fn: (e: unknown) => void) {
       handler = fn;
@@ -49,9 +55,8 @@ function alertbox() {
     formatAmount: () => "",
     formatAmountText: () => "",
     formatCount: (n: number) => String(n),
-    fillTemplate: (t: string, v: Record<string, unknown>) =>
-      t.replace(/[{]([a-zA-Z]+)[}]/g, (m, k: string) => (k in v ? String(v[k]) : m)),
-    textField: (_f: unknown, _k: string, d: string) => d,
+    fillTemplate,
+    textField: (f: Record<string, unknown>, k: string, d: string) => (f[k] != null ? String(f[k]) : d),
     playSound() {},
   };
   const run = new Function(
@@ -60,12 +65,13 @@ function alertbox() {
     "performance",
     "setTimeout",
     "clearTimeout",
-    SOURCE + "\n;return { queue: () => queue, current: () => current, fillSummary };",
+    SOURCE + "\n;return { queue: () => queue, current: () => current, fillSummary, TYPES };",
   );
   const box = run(document, overlay, { now: () => now }, () => 0, () => {}) as {
     queue: () => Burst[];
     current: () => Burst | null;
     fillSummary: (el: unknown, b: Burst) => void;
+    TYPES: Record<string, { msg?: string; group?: string; alone?: string }>;
   };
   let seq = 0;
   return {
@@ -81,6 +87,28 @@ function alertbox() {
       return all.reduce((n, b) => n + b.events.length, 0);
     },
   };
+}
+
+// The two lines a "+N more" card shows under `fields`: the overflow card that 25 Super Chats
+// end in, and a sub burst's own "+N more" after its first three cards.
+function summaries(fields: Record<string, unknown>) {
+  const a = alertbox(fields);
+  for (let i = 0; i < 25; i++) {
+    a.fire("superchat");
+  }
+  const fill = (b: Burst) => {
+    const name = { textContent: "" };
+    const msg = { textContent: "a peek's old line" };
+    const el = { classList: { add() {} }, querySelector: (sel: string) => (sel === ".alert-name" ? name : msg) };
+    a.box.fillSummary(el, b);
+    return { name: name.textContent, msg: msg.textContent };
+  };
+  const burst: Burst = {
+    group: "subs",
+    summaryFrom: 3,
+    events: Array.from({ length: 8 }, (_, i) => ({ type: "sub", id: "s" + i })),
+  };
+  return { overflow: fill(a.box.queue().at(-1)!), burst: fill(burst) };
 }
 
 describe("alertbox queue", () => {
@@ -126,33 +154,41 @@ describe("alertbox queue", () => {
   });
 
   test("an overflow card names the type it counts; a burst's own '+N more' does not", () => {
-    const a = alertbox();
-    for (let i = 0; i < 25; i++) {
-      a.fire("superchat");
+    const { overflow, burst } = summaries(DEFAULT_FIELDS);
+    expect(overflow).toEqual({ name: "and 14 more!", msg: "Super Chats" }); // 1 on the deck + 10 whole + 14 folded
+    expect(burst).toEqual({ name: "and 5 more!", msg: "" });
+  });
+
+  test("a localized overflow line takes its type's name from the user's field", () => {
+    const { overflow } = summaries({
+      ...DEFAULT_FIELDS,
+      msgBurstMore: "und {count} weitere!",
+      nounSuperchat: "Superchats",
+    });
+    expect(overflow).toEqual({ name: "und 14 weitere!", msg: "Superchats" });
+  });
+
+  test("{type} places the name in the line, once; a burst's card drops it", () => {
+    const { overflow, burst } = summaries({ ...DEFAULT_FIELDS, msgBurstMore: "und {count} weitere {type}!" });
+    expect(overflow).toEqual({ name: "und 14 weitere Super Chats!", msg: "" });
+    expect(burst).toEqual({ name: "und 5 weitere!", msg: "" });
+  });
+
+  test("a name cleared on purpose shows nothing; a field the widget lacks shows the type", () => {
+    expect(summaries({ ...DEFAULT_FIELDS, nounSuperchat: "" }).overflow.msg).toBe("");
+    const { nounSuperchat: _, ...forked } = DEFAULT_FIELDS;
+    expect(summaries(forked).overflow.msg).toBe("superchat");
+  });
+
+  test("every type has its message field, and every play-alone type its overflow name field", () => {
+    const keys = new Set(SCHEMA.map((f) => f.key));
+    for (const [type, t] of Object.entries(alertbox().box.TYPES)) {
+      expect([type, keys.has(t.msg ?? "")]).toEqual([type, true]);
+      if (t.alone) {
+        expect([type, keys.has(t.alone)]).toEqual([type, true]);
+        expect(t.group).toBeUndefined();
+      }
     }
-    const card = () => {
-      const name = { textContent: "" };
-      const msg = { textContent: "a peek's old line" };
-      const el = {
-        classList: { add() {} },
-        querySelector: (sel: string) => (sel === ".alert-name" ? name : msg),
-      };
-      return { el, name, msg };
-    };
-    const overflow = a.box.queue().at(-1)!;
-    const c = card();
-    a.box.fillSummary(c.el, overflow);
-    expect(c.name.textContent).toBe("and 14 more!"); // 1 on the deck + 10 whole + 14 folded
-    expect(c.msg.textContent).toBe("Super Chats");
-    const burst: Burst = {
-      group: "subs",
-      summaryFrom: 3,
-      events: Array.from({ length: 8 }, (_, i) => ({ type: "sub", id: "s" + i })),
-    };
-    const b = card();
-    a.box.fillSummary(b.el, burst);
-    expect(b.name.textContent).toBe("and 5 more!");
-    expect(b.msg.textContent).toBe("");
   });
 
   test("5 Super Chats stay individual cards", () => {

@@ -16,7 +16,7 @@ mock.module("$lib/api/bridge", () => ({
     },
   },
 }));
-const { createLayoutPersister, layoutStore } = await import("$lib/docking/layoutStore.svelte");
+const { createLayoutPersister, layoutStore, SAVE_RETRIES } = await import("$lib/docking/layoutStore.svelte");
 
 function dockview(fromJSON: (data: unknown) => void): DockviewApi {
   return { fromJSON } as unknown as DockviewApi;
@@ -73,6 +73,7 @@ describe("createLayoutPersister", () => {
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   let timers: Map<number, () => void>;
+  let delays: Map<number, number>;
   let nextId = 1;
   let layout: { grid: string; activeGroup?: string };
   let written: string[];
@@ -80,11 +81,13 @@ describe("createLayoutPersister", () => {
 
   beforeEach(() => {
     timers = new Map();
+    delays = new Map();
     layout = { grid: "default", activeGroup: "1" };
     written = [];
     writeOk = true;
-    (globalThis as Record<string, unknown>).setTimeout = (fn: () => void) => {
+    (globalThis as Record<string, unknown>).setTimeout = (fn: () => void, ms: number) => {
       timers.set(nextId, fn);
+      delays.set(nextId, ms);
       return nextId++;
     };
     (globalThis as Record<string, unknown>).clearTimeout = (id: number) => timers.delete(id);
@@ -103,6 +106,13 @@ describe("createLayoutPersister", () => {
     }
     await Promise.resolve();
     await Promise.resolve();
+  }
+
+  // The delay of the one timer pending, or undefined when none is.
+  function pendingDelay(): number | undefined {
+    const ids = [...timers.keys()];
+    expect(ids.length).toBeLessThanOrEqual(1);
+    return ids.length ? delays.get(ids[0]) : undefined;
   }
 
   // As StudioPage sets it up after a restore: the layout on screen is the baseline.
@@ -205,5 +215,87 @@ describe("createLayoutPersister", () => {
     p.dispose();
     await elapse();
     expect(written).toEqual([]);
+  });
+
+  test("a failed write retries on its own, backing off to a cap, then gives up", async () => {
+    const p = persister();
+    p.armExplicit();
+    writeOk = false;
+    change({ grid: "x" }, p);
+    const waits: number[] = [];
+    await elapse(); // the save itself
+    for (let d = pendingDelay(); d !== undefined; d = pendingDelay()) {
+      waits.push(d);
+      await elapse();
+    }
+    expect(waits).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
+    expect(waits.length).toBe(SAVE_RETRIES);
+    expect(written.length).toBe(1 + SAVE_RETRIES);
+  });
+
+  test("a retry that lands stops the run, and the saved arrangement is not rewritten", async () => {
+    const p = persister();
+    p.armExplicit();
+    writeOk = false;
+    change({ grid: "x" }, p);
+    await elapse();
+    writeOk = true;
+    await elapse(); // the first retry
+    expect(pendingDelay()).toBeUndefined();
+    change({ activeGroup: "2" }, p);
+    await elapse();
+    expect(written.map((w) => JSON.parse(w).grid)).toEqual(["x", "x"]);
+  });
+
+  test("the next change cancels a pending retry and saves in its place", async () => {
+    const p = persister();
+    p.armExplicit();
+    writeOk = false;
+    change({ grid: "x" }, p);
+    await elapse();
+    expect(pendingDelay()).toBe(1000);
+    writeOk = true;
+    change({ grid: "y" }, p);
+    expect(pendingDelay()).toBe(250); // the retry is gone; only the new save waits
+    await elapse();
+    expect(written.map((w) => JSON.parse(w).grid)).toEqual(["x", "y"]);
+    expect(pendingDelay()).toBeUndefined();
+  });
+
+  test("a write failing after a newer change, or after dispose, schedules no retry", async () => {
+    let fail: () => void = () => {};
+    const p = createLayoutPersister(
+      () => layout as never,
+      (s) => {
+        written.push(s);
+        return new Promise<boolean>((resolve) => (fail = () => resolve(false)));
+      },
+    );
+    p.settle();
+    p.armExplicit();
+    change({ grid: "x" }, p);
+    await elapse(); // the write is in flight
+    change({ grid: "y" }, p);
+    fail();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pendingDelay()).toBe(250); // the newer save, not a retry of the old one
+    await elapse();
+    p.dispose();
+    fail();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pendingDelay()).toBeUndefined();
+  });
+
+  test("dispose cancels a pending retry", async () => {
+    const p = persister();
+    p.armExplicit();
+    writeOk = false;
+    change({ grid: "x" }, p);
+    await elapse();
+    expect(pendingDelay()).toBe(1000);
+    p.dispose();
+    expect(pendingDelay()).toBeUndefined();
   });
 });

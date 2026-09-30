@@ -3,46 +3,25 @@ const countEl = document.getElementById("deck-count");
 const liveEl = document.getElementById("alert-live");
 const cardTpl = document.getElementById("alert-card");
 
-// Map event type -> the field key holding its message template. Unlisted types fall
-// back to a generic line (registry map, not a switch: a new type is one entry).
-const TEMPLATE_KEY = {
-  follow: "msgFollow",
-  sub: "msgSub",
-  resub: "msgSub",
-  subgift: "msgSub",
-  cheer: "msgCheer",
-  raid: "msgRaid",
-  superchat: "msgSuperchat",
-  supersticker: "msgSupersticker",
-  member: "msgMember",
-  kicks: "msgKicks",
-};
-
-// Event type -> the burst group it stacks with. An unlisted type is a group of its own.
-// `null` always plays alone, whole, with its own sound -- it never joins a burst and none
-// joins it. That is every tip (cheers, Super Chats, Super Stickers, Kicks), so whoever paid
-// sees their own name and message, and a raid.
-const BURST_GROUP = {
-  sub: "subs",
-  resub: "subs",
-  subgift: "subs",
-  member: "members",
-  cheer: null,
-  raid: null,
-  superchat: null,
-  supersticker: null,
-  kicks: null,
-};
-
-// Play-alone type -> what its overflow card counts, shown under the "+N more" line. That card
-// can follow another kind's burst, so it has to say what it stands for. An unlisted type
-// shows as its type string.
-const OVERFLOW_NOUN = {
-  cheer: "cheers",
-  raid: "raids",
-  superchat: "Super Chats",
-  supersticker: "Super Stickers",
-  kicks: "Kicks",
+// Event type -> how the deck treats it (registry map, not a switch: a new type is one entry).
+//   msg    the field key holding its message template; an unlisted type gets a generic line.
+//   group  the burst group it stacks with; without one, a type is a group of its own.
+//   alone  plays alone, whole, with its own sound -- it never joins a burst and none joins
+//          it. The value is the field key naming what its overflow card counts: that card
+//          can follow another kind's burst, so it has to say what it stands for. That is
+//          every tip (cheers, Super Chats, Super Stickers, Kicks), so whoever paid sees their
+//          own name and message, and a raid.
+const TYPES = {
+  follow: { msg: "msgFollow" },
+  sub: { msg: "msgSub", group: "subs" },
+  resub: { msg: "msgSub", group: "subs" },
+  subgift: { msg: "msgSub", group: "subs" },
+  member: { msg: "msgMember", group: "members" },
+  cheer: { msg: "msgCheer", alone: "nounCheer" },
+  raid: { msg: "msgRaid", alone: "nounRaid" },
+  superchat: { msg: "msgSuperchat", alone: "nounSuperchat" },
+  supersticker: { msg: "msgSupersticker", alone: "nounSupersticker" },
+  kicks: { msg: "msgKicks", alone: "nounKicks" },
 };
 
 // burstAnimation value -> the class that plays a card's exit (one keyframes block each in
@@ -66,7 +45,7 @@ const MIN_SUMMARIZED = 2;
 // Bursts that may wait behind the one on the deck. Past this, an event of a burst group joins
 // the newest waiting burst of its group whatever the burst window says, so a follow or bot
 // storm stays one burst however long it runs; only a group with nothing waiting adds a burst.
-// A type that plays alone (a `null` BURST_GROUP: tips and raids) is capped separately, below.
+// A type that plays alone (an `alone` TYPES entry: tips and raids) is capped separately, below.
 // Nothing is dropped either way -- a big merged burst ends on its "+N more" card instead.
 const MAX_WAITING = 3;
 // Cards of one play-alone type that may wait, each whole, so whoever paid still gets their
@@ -81,6 +60,11 @@ const EXIT_REMOVE_MS = 700;
 // A registry entry for `key`, or undefined. Own properties only: the keys come from event
 // payloads and user settings, and "constructor" must not resolve to Object's.
 const own = (map, key) => (Object.hasOwn(map, key) ? map[key] : undefined);
+// The burst group `type` stacks with; `null` plays alone.
+function groupOf(type) {
+  const t = own(TYPES, type);
+  return t?.alone ? null : t?.group || type;
+}
 
 const DEFAULTS = {
   duration: 5,
@@ -106,7 +90,7 @@ OBSOverlay.onLoad((ctx) => {
 
 OBSOverlay.onEvent((e) => {
   const now = performance.now();
-  const group = Object.hasOwn(BURST_GROUP, e.type) ? BURST_GROUP[e.type] : e.type;
+  const group = groupOf(e.type);
   if (group !== null && seconds("burstWindow") > 0) {
     if (current && canJoin(current, group, now)) {
       current.events.push(e);
@@ -319,7 +303,7 @@ function layout(b) {
 }
 
 function fillCard(el, e) {
-  const key = own(TEMPLATE_KEY, e.type);
+  const key = own(TYPES, e.type)?.msg;
   const tmpl = (key && fields[key]) || "{name}";
   // The strip has to remove exactly what render() substituted for {name}, fallback
   // included -- otherwise an unnamed actor shows as "Someone Someone just followed!".
@@ -332,12 +316,21 @@ function fillCard(el, e) {
 function fillSummary(el, b) {
   const tmpl = OBSOverlay.textField(fields, "msgBurstMore", DEFAULTS.msgBurstMore);
   const more = OBSOverlay.formatCount(b.events.length - b.summaryFrom);
+  // A burst's own "+N more" follows its cards and needs no label, so {type} is empty there.
+  // An overflow card names its type: through {type} where the template places it, else on
+  // the line below. A taken-over peek still holds its alert's line, so that is always
+  // rewritten.
+  const noun = b.overflow ? overflowNoun(b.events[0].type) : "";
   el.classList.add("summary");
-  el.querySelector(".alert-name").textContent = OBSOverlay.fillTemplate(tmpl, { count: more });
-  // A burst's own "+N more" follows its cards and needs no label; a taken-over peek still
-  // holds its alert's line, so the line is always rewritten.
-  const type = b.events[0].type;
-  el.querySelector(".alert-msg").textContent = b.overflow ? own(OVERFLOW_NOUN, type) || type : "";
+  el.querySelector(".alert-name").textContent = OBSOverlay.fillTemplate(tmpl, { count: more, type: noun });
+  el.querySelector(".alert-msg").textContent = tmpl.includes("{type}") ? "" : noun;
+}
+
+// What a play-alone type's overflow card counts, from the type's user-editable name field.
+// A widget whose field is missing shows the type string.
+function overflowNoun(type) {
+  const key = own(TYPES, type)?.alone;
+  return key ? OBSOverlay.textField(fields, key, type) : type;
 }
 
 // The live region says each card once, as it reaches the front. The cards themselves are

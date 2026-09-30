@@ -19,6 +19,7 @@ import type {
 // the $lib alias is Vite's and this file is built by `bun build` on its own.
 import { cssForSlots } from "./textStyle";
 import { fmtCount, fmtMoney, fmtTally, isTally } from "../lib/utils/format";
+import { fillTemplate } from "./fillTemplate";
 
 interface OverlayBootstrap {
   id: string;
@@ -519,28 +520,6 @@ function formatAmountText(e: NormalizedEvent): string {
     return "";
   }
   return kMoneyTypes.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
-}
-
-const kTemplateToken = /\{(\w+)\}/g;
-// The lookbehind starts a match only at the head of a run of spaces, keeping a long run linear.
-const kEmptyTemplateToken = /(?<! ) *\{(\w+)\}/g;
-
-// Fill `{key}` tokens from `values`. A key absent from `values` is not a variable and stays
-// verbatim. An empty value (null, undefined or "") leaves along with the spaces before it,
-// so an absent value never leaves "sent  !" behind. The rest fill in one pass, so a value
-// that itself contains "{name}" is shown as typed, never expanded.
-function fillTemplate(text: string, values: Record<string, unknown>): string {
-  const valueOf = (key: string): string | null => {
-    if (!Object.prototype.hasOwnProperty.call(values, key)) {
-      return null;
-    }
-    const v = values[key];
-    return v == null ? "" : String(v);
-  };
-  return String(text ?? "")
-    .replace(kEmptyTemplateToken, (m, key: string) => (valueOf(key) === "" ? "" : m))
-    .replace(kTemplateToken, (m, key: string) => valueOf(key) ?? m)
-    .trim();
 }
 
 const OBSOverlay = {

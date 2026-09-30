@@ -37,6 +37,13 @@ export interface LayoutPersister {
 // every focus change, and a focus is nothing a restore needs to get right.
 const arrangement = (layout: SerializedDockview): string => JSON.stringify({ ...layout, activeGroup: undefined });
 
+// A failed save is retried this many times, 1 s after the failure and doubling up to the cap.
+// A save fails only on a bridge error or a layout.json write the host could not finish (a
+// file held open for a moment), so a short, bounded run is enough.
+export const SAVE_RETRIES = 6;
+const SAVE_RETRY_FIRST_MS = 1000;
+const SAVE_RETRY_MAX_MS = 30_000;
+
 // Writes the layout only once the user has armed it. Dockview fires onDidLayoutChange
 // for every change, including fromJSON on a restore, the fallback default, the
 // reconcilers' dock adds and a group merely taking focus, and each layout.save rotates
@@ -44,7 +51,9 @@ const arrangement = (layout: SerializedDockview): string => JSON.stringify({ ...
 // user's saved layout out to .bak, and the next save out of existence. Changes after
 // arming are coalesced (one per addPanel while a layout is assembled) into a single
 // trailing save, skipped when the arrangement is what was last saved or settled. Only a
-// write that succeeded counts as saved, so a failed one is retried on the next change.
+// write that succeeded counts as saved. A failed one is retried on a backoff, so the last
+// change before exit does not wait for another that never comes. A retry lives only as long
+// as the page: the next change or dispose cancels it, and closing the app drops it.
 export function createLayoutPersister(
   snapshot: () => SerializedDockview | null,
   write: (layout: string) => Promise<boolean>,
@@ -55,15 +64,24 @@ export function createLayoutPersister(
   let rewrite = false;
   let last: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const flush = async (): Promise<void> => {
+  // Bumped by every change and by dispose. A write that fails after either leaves the retry
+  // to the save that replaced it, or to nobody.
+  let generation = 0;
+  const schedule = (ms: number, retries: number): void => {
+    timer = setTimeout(() => void flush(retries), ms);
+  };
+  const flush = async (retries: number): Promise<void> => {
     const layout = snapshot();
     if (!layout) return;
     const key = arrangement(layout);
     if (key === last && !rewrite) return;
     const forced = rewrite;
+    const gen = generation;
     if (await write(JSON.stringify(layout))) {
       last = key;
       if (forced) rewrite = false;
+    } else if (gen === generation && retries < SAVE_RETRIES) {
+      schedule(Math.min(SAVE_RETRY_MAX_MS, SAVE_RETRY_FIRST_MS * 2 ** retries), retries + 1);
     }
   };
   return {
@@ -86,10 +104,12 @@ export function createLayoutPersister(
     },
     changed(): void {
       if (!armed) return;
+      generation++;
       clearTimeout(timer);
-      timer = setTimeout(() => void flush(), delayMs);
+      schedule(delayMs, 0);
     },
     dispose(): void {
+      generation++;
       clearTimeout(timer);
     },
   };
@@ -97,7 +117,7 @@ export function createLayoutPersister(
 
 export const layoutStore = {
   // Whether the layout reached disk. A failure is non-fatal: the layout stays live in
-  // memory, and the persister tries again on the next change.
+  // memory, and the persister tries again.
   async write(layout: string): Promise<boolean> {
     try {
       await obs.call("layout.save", { layout });
