@@ -13,6 +13,7 @@ function row(over: Partial<CaptureRateRow>): CaptureRateRow {
     fraction: null,
     inputFps: null,
     renderedFps: null,
+    copiesFps: null,
     below: false,
     lockedFraction: null,
     note: null,
@@ -68,9 +69,48 @@ describe("describeCapture", () => {
     const bitblt = describeCapture(row({ kind: "none", status: "unmeasurable" }));
     expect(bitblt.value).toBe("Unmeasurable");
     expect(bitblt.kind).toBe("");
-    const game = describeCapture(row({ kind: "gameHook", status: "unmeasurable" }));
-    expect(game.value).toBe("Unmeasurable");
-    expect(game.note).toContain("game capture");
+    expect(bitblt.note).toBe("this capture method reports no frames");
+    // A game still holding a hook from before frame counting: the host says why.
+    const oldHook = describeCapture(
+      row({ kind: "none", status: "unmeasurable", note: "the game's capture hook may predate frame counting" }),
+    );
+    expect(oldHook.value).toBe("Unmeasurable");
+    expect(oldHook.note).toBe("the game's capture hook may predate frame counting");
+    expect(oldHook.label).toContain("predate frame counting");
+  });
+
+  test("game capture reads presents, copies and new frames, and warns only on the host's below", () => {
+    const ok = describeCapture(
+      row({ name: "Game Capture", kind: "gameHook", inputFps: 120, copiesFps: 60, renderedFps: 59.9 }),
+    );
+    expect(ok.kind).toBe("Game");
+    expect(ok.value).toBe("presents 120.0/s · copies 60.0/s · new 59.9/s");
+    // A narrow view wraps between these, never inside one.
+    expect(ok.segments).toEqual(["presents 120.0/s", "copies 60.0/s", "new 59.9/s"]);
+    expect(ok.warn).toBeNull();
+    expect(ok.tone).toBe("ok");
+    expect(ok.label).toBe("Game Capture, Game: game presenting 120.0/s, copying 60.0/s, new to the canvas 59.9/s");
+
+    // Rates that look short are not a warning unless the host said below.
+    expect(describeCapture(row({ kind: "gameHook", inputFps: 60, copiesFps: 20, renderedFps: 20 })).warn).toBeNull();
+
+    // Copies keeping pace while new frames fall behind (copies landing two to a
+    // tick): the warning is about the number the row shows last, the new frames.
+    const below = describeCapture(row({ kind: "gameHook", inputFps: 60, copiesFps: 60, renderedFps: 50, below: true }));
+    expect(below.value).toBe("presents 60.0/s · copies 60.0/s · new 50.0/s");
+    expect(below.tone).toBe("warn");
+    expect(below.warn).toBe("Fewer new game frames than the canvas could show");
+    expect(below.label).toContain("Warning: fewer new game frames");
+  });
+
+  test("only game capture shows copies", () => {
+    expect(describeCapture(row({ kind: "async", inputFps: 30, copiesFps: 30, renderedFps: 30 })).value).toBe(
+      "in 30.0/s · out 30.0/s",
+    );
+  });
+
+  test("a game capture's first sample reads as measuring", () => {
+    expect(describeCapture(row({ kind: "gameHook" })).value).toBe("Measuring…");
   });
 });
 

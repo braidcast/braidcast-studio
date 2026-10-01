@@ -43,6 +43,7 @@ target_sources(
     duplicator-monitor-capture.c
     game-capture-file-init.c
     game-capture.c
+    hook-frame-relay.h
     load-graphics-offsets.c
     monitor-capture.c
     nt-stuff.c

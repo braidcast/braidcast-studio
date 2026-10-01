@@ -1,4 +1,5 @@
 #include "diag/capture_rate.hpp"
+#include "hook-frame-relay.h"
 
 #include <cmath>
 #include <cstring>
@@ -47,6 +48,15 @@ struct Feed {
 		src.counts.liveTicks += ticks;
 		src.counts.newFrameTicks += newTicks;
 		src.counts.framesDelivered += delivered;
+	}
+
+	// A hooked game's second: the plugin relays presents as offered frames and
+	// copies as delivered ones, and newTicks are the ticks that brought a frame
+	// the source had not shown (hook_frame_relay_step decides which).
+	void AdvanceGame(uint32_t ticks, uint32_t presents, uint32_t copies, uint32_t newTicks)
+	{
+		Advance(ticks, newTicks, copies);
+		src.counts.framesOffered += presents;
 	}
 };
 
@@ -332,13 +342,18 @@ static void test_listing_and_frame_signal(void **)
 	assert_true(IsListed(traits(kMonitorCaptureId)));
 	assert_true(HasFrameSignal(traits(kMonitorCaptureId)));
 
-	// Game capture's hook has no counter until Phase 4: listed, and once hooked
-	// (it has a size) never measured. Unhooked, it has nothing to count.
+	// A counting hook reports GAME_HOOK, so a game capture that reports no kind
+	// is either unhooked (no size, nothing to count) or hooked by a hook from
+	// before the counters (a size, no counter), and only the latter says why.
 	SourceTraits game = traits(kGameCaptureId);
 	assert_true(IsListed(game));
 	assert_true(HasFrameSignal(game));
 	game.hasSize = true;
 	assert_false(HasFrameSignal(game));
+	assert_non_null(UnmeasurableNote(game));
+	assert_non_null(strstr(UnmeasurableNote(game), "restart the game"));
+	assert_null(UnmeasurableNote(traits(kMonitorCaptureId)));
+	assert_null(UnmeasurableNote(traits(kWindowCaptureId)));
 
 	SourceTraits window = traits(kWindowCaptureId);
 	assert_true(IsListed(window));
@@ -358,7 +373,8 @@ static void test_listing_and_frame_signal(void **)
 	assert_false(IsListed(traits("")));
 }
 
-// A Game Capture feed as the sampler builds it for a source reporting no kind.
+// A Game Capture feed as the sampler builds it for a source reporting no kind:
+// unhooked, or hooked by a hook without the counters marker.
 static Feed GameCaptureFeed(bool hooked)
 {
 	SourceTraits traits;
@@ -366,13 +382,14 @@ static Feed GameCaptureFeed(bool hooked)
 	traits.hasSize = hooked;
 	Feed game("Game Capture", Kind::None, 30.0, true);
 	game.src.frameSignal = HasFrameSignal(traits);
+	game.src.unmeasurableNote = UnmeasurableNote(traits);
 	return game;
 }
 
-// A broadcast that captures only through a hooked Game Capture, on a 30 fps
-// canvas (a vertical Shorts destination): the source is named as unmeasurable,
-// never warns (C2), and the session line no longer claims there were no capture
-// sources.
+// Marker absent: a game still holding an older hook, on a 30 fps canvas (a
+// vertical Shorts destination). The source is named as unmeasurable with the
+// reason, never warns, and the session line no longer claims there were no
+// capture sources.
 static void test_game_capture_reads_unmeasurable(void **)
 {
 	Tracker t;
@@ -384,8 +401,10 @@ static void test_game_capture_reads_unmeasurable(void **)
 		const Row *r = RowFor(t, "Game Capture");
 		assert_non_null(r);
 		assert_int_equal((int)r->status, (int)Status::Unmeasurable);
+		assert_non_null(r->unmeasurableNote);
 		assert_false(r->below);
 		assert_false(r->rate.has_value());
+		assert_false(r->inputFps.has_value());
 		assert_null(r->lockedFraction);
 		assert_true(r->refFps.has_value());
 		assert_true(std::fabs(*r->refFps - 30.0) < 0.001);
@@ -418,32 +437,217 @@ static void test_unhooked_game_capture_reads_idle(void **)
 	const Row *r = RowFor(t, "Game Capture");
 	assert_non_null(r);
 	assert_int_equal((int)r->status, (int)Status::Idle);
+	assert_null(r->unmeasurableNote);
 	const std::string line = t.SessionEnd(2ull * 1000000000ull);
 	assert_non_null(strstr(line.c_str(), "'Game Capture' idle (never counted)"));
 	assert_null(strstr(line.c_str(), "no capture sources"));
 }
 
-// Once the hook reports its own kind (Phase 4) the game capture keeps its row:
-// unmeasurable until something measures that kind, and never read as a display
-// capture in the session line.
-static void test_game_hook_kind_keeps_its_row(void **)
+static void StepGame(Tracker &t, Feed &f, uint32_t ticks, uint32_t presents, uint32_t copies, uint32_t newTicks)
+{
+	f.AdvanceGame(ticks, presents, copies, newTicks);
+	SampleAll(t, {&f});
+}
+
+// A counting hook: presents/s, copies/s and new frames/s, never a display rate,
+// and a game outrunning the canvas is not "below" (new frames are judged against
+// the canvas). The session line names all three medians and the reference.
+static void test_game_hook_reports_presents_and_copies(void **)
 {
 	Tracker t;
 	t.SessionBegin(0);
-	Feed game("Game Capture", Kind::GameHook, 30.0, true);
+	Feed game("Game Capture", Kind::GameHook);
 	Prime(t, game);
-	for (int s = 0; s < 5; s++) {
-		Step(t, game, 60, 60, 60);
+	assert_false(RowFor(t, "Game Capture")->inputFps.has_value());
+	for (int s = 0; s < 10; s++) {
+		StepGame(t, game, 60, 120, 61, 60);
 		const Row *r = RowFor(t, "Game Capture");
 		assert_non_null(r);
-		assert_int_equal((int)r->status, (int)Status::Unmeasurable);
+		assert_int_equal((int)r->status, (int)Status::Ok);
+		assert_true(std::fabs(*r->inputFps - 120.0) < 0.01);
+		assert_true(std::fabs(*r->copiesFps - 61.0) < 0.01);
+		assert_true(std::fabs(*r->renderedFps - 60.0) < 0.01);
 		assert_false(r->rate.has_value());
+		assert_false(r->fraction.has_value());
+		assert_null(r->lockedFraction);
 		assert_false(r->below);
+		assert_null(r->unmeasurableNote);
 	}
-	const std::string line = t.SessionEnd(5ull * 1000000000ull);
-	assert_non_null(strstr(line.c_str(), "'Game Capture' unmeasurable"));
+	const std::string line = t.SessionEnd(10ull * 1000000000ull);
+	assert_non_null(
+		strstr(line.c_str(), "'Game Capture' game presents 120.0 copies 61.0 new 60.0 (ref 60), below 0.0%"));
+	assert_null(strstr(line.c_str(), "unmeasurable"));
 	assert_null(strstr(line.c_str(), "median"));
-	assert_null(strstr(line.c_str(), "no capture sources"));
+}
+
+// Warn when new frames < 0.9 x min(presents, expected), and only with a live
+// reference. The copies never decide it: they can outnumber the new frames.
+static void test_game_hook_below(void **)
+{
+	struct Case {
+		uint32_t presents;
+		uint32_t copies;
+		uint32_t newTicks;
+		bool below;
+	};
+	const Case cases[] = {
+		{60, 40, 40, true},    // lost a third of the game's frames
+		{60, 54, 54, false},   // exactly 0.9 x 60
+		{60, 53, 53, true},    // just under
+		{30, 30, 30, false},   // a 30 fps game on a 60 fps canvas
+		{30, 26, 26, true},    // 26 < 0.9 x 30
+		{120, 55, 55, false},  // judged against the canvas (60), not the presents
+		{120, 50, 50, true},   // 50 < 0.9 x 60
+		{60, 60, 50, true},    // phase drift: every frame copied, but ten pairs landed in one tick
+		{240, 120, 60, false}, // a frame generation ring copying two per tick, drawn one per tick
+		{240, 120, 50, true},  // the same ring, its slots drawn on only 50 ticks
+		{0, 0, 0, false},      // a paused game presents nothing, and misses nothing
+	};
+	for (const Case &c : cases) {
+		Tracker t;
+		Feed game("g", Kind::GameHook);
+		Prime(t, game);
+		StepGame(t, game, 60, c.presents, c.copies, c.newTicks);
+		const Row *r = RowFor(t, "g");
+		assert_non_null(r);
+		assert_int_equal((int)r->below, (int)c.below);
+		assert_true(std::fabs(*r->copiesFps - c.copies) < 0.01);
+		assert_true(std::fabs(*r->renderedFps - c.newTicks) < 0.01);
+	}
+
+	// Off air (no live canvas) there is no rule, so no warning.
+	Tracker off;
+	Feed game("g", Kind::GameHook, kMainFps, false);
+	Prime(off, game);
+	StepGame(off, game, 60, 60, 10, 10);
+	assert_false(RowFor(off, "g")->below);
+	assert_true(std::fabs(*RowFor(off, "g")->renderedFps - 10.0) < 0.01);
+
+	// A 30 fps canvas halves what the canvas can take: 28 new frames of 60
+	// presents is fine there, 26 is not.
+	for (uint32_t frames : {28u, 26u}) {
+		Tracker slow;
+		Feed g30("g", Kind::GameHook, 30.0, true);
+		Prime(slow, g30);
+		StepGame(slow, g30, 60, 60, frames, frames);
+		assert_int_equal((int)RowFor(slow, "g")->below, (int)(frames == 26u));
+	}
+
+	// The session line carries the share of live seconds that were below.
+	Tracker s;
+	s.SessionBegin(0);
+	Feed g("g", Kind::GameHook);
+	Prime(s, g);
+	for (int i = 0; i < 9; i++) {
+		StepGame(s, g, 60, 60, 60, 60);
+	}
+	StepGame(s, g, 60, 60, 30, 30);
+	assert_non_null(strstr(s.SessionEnd(10ull * 1000000000ull).c_str(), ", below 10.0%"));
+}
+
+// Unhook and re-hook: the kind goes NONE and back, and the counters come back
+// wherever the plugin's cumulative sum left them. No delta crosses the gap; the
+// first sample after the re-hook is a new baseline.
+static void test_game_hook_rebaselines_on_rehook(void **)
+{
+	Tracker t;
+	Feed game("g", Kind::GameHook);
+	Prime(t, game);
+	StepGame(t, game, 60, 60, 60, 60);
+	assert_true(std::fabs(*RowFor(t, "g")->renderedFps - 60.0) < 0.01);
+
+	game.src.counts.kind = Kind::None; // unhooked: no size, nothing to count
+	StepGame(t, game, 0, 0, 0, 0);
+	assert_int_equal((int)RowFor(t, "g")->status, (int)Status::Idle);
+
+	game.src.counts.kind = Kind::GameHook;
+	StepGame(t, game, 60, 5000, 5000, 60);
+	const Row *r = RowFor(t, "g");
+	assert_false(r->inputFps.has_value());
+	assert_false(r->renderedFps.has_value());
+	assert_false(r->copiesFps.has_value());
+	assert_false(r->below);
+	StepGame(t, game, 60, 60, 59, 59);
+	r = RowFor(t, "g");
+	assert_true(std::fabs(*r->inputFps - 60.0) < 0.01);
+	assert_true(std::fabs(*r->renderedFps - 59.0) < 0.01);
+
+	// A new source object behind the same uuid: new identity, lower counts, no
+	// delta and never read as a reset from the drop.
+	game.src.identity = 2;
+	game.src.counts = Counts{Kind::GameHook, 0, 0, 0, 0};
+	StepGame(t, game, 60, 60, 60, 60);
+	assert_false(RowFor(t, "g")->inputFps.has_value());
+}
+
+// Presents and copies wrap as uint32 like every other counter.
+static void test_game_hook_uint32_wrap(void **)
+{
+	Tracker t;
+	Feed game("g", Kind::GameHook);
+	game.src.counts = Counts{Kind::GameHook, 0xFFFFFFF0u, 0xFFFFFFF0u, 0xFFFFFFF0u, 0xFFFFFFE0u};
+	Prime(t, game);
+	StepGame(t, game, 60, 120, 60, 60);
+	const Row *r = RowFor(t, "g");
+	assert_true(std::fabs(*r->inputFps - 120.0) < 0.01);
+	assert_true(std::fabs(*r->copiesFps - 60.0) < 0.01);
+	assert_true(std::fabs(*r->renderedFps - 60.0) < 0.01);
+	assert_false(r->below);
+}
+
+static void AssertReport(const hook_frame_report &report, uint32_t offered, uint32_t delivered, bool newFrame)
+{
+	assert_int_equal(report.offered, offered);
+	assert_int_equal(report.delivered, delivered);
+	assert_int_equal((int)report.new_frame, (int)newFrame);
+}
+
+// The plugin's relay from the hook's counters to one tick's report. The first
+// step after a reset only baselines, whatever the counters read.
+static void test_hook_relay_baselines_after_reset(void **)
+{
+	hook_frame_relay relay = {};
+	hook_frame_relay_reset(&relay);
+	AssertReport(hook_frame_relay_step(&relay, 5000, 4000, false, 0), 0, 0, false);
+	AssertReport(hook_frame_relay_step(&relay, 5002, 4001, false, 0), 2, 1, true);
+
+	// A re-hook resets: counters that went down are a baseline, not a huge delta.
+	hook_frame_relay_reset(&relay);
+	AssertReport(hook_frame_relay_step(&relay, 3, 2, false, 0), 0, 0, false);
+	AssertReport(hook_frame_relay_step(&relay, 4, 3, false, 0), 1, 1, true);
+}
+
+// One shared texture: any copy since the last tick is a new frame, and two in
+// one tick are still one.
+static void test_hook_relay_plain_path(void **)
+{
+	hook_frame_relay relay = {};
+	hook_frame_relay_step(&relay, 100, 100, false, 0);
+	AssertReport(hook_frame_relay_step(&relay, 102, 102, false, 0), 2, 2, true);
+	AssertReport(hook_frame_relay_step(&relay, 103, 102, false, 0), 1, 0, false);
+	AssertReport(hook_frame_relay_step(&relay, 104, 103, false, 0), 1, 1, true);
+}
+
+// A frame generation ring: a burst of copies lands in one tick, and the source
+// draws it out over the following ones. A tick is new when the host drew a newer
+// slot, whatever the copies did.
+static void test_hook_relay_ring_path(void **)
+{
+	hook_frame_relay relay = {};
+	hook_frame_relay_step(&relay, 10, 10, true, 7);
+	AssertReport(hook_frame_relay_step(&relay, 12, 14, true, 8), 2, 4, true);  // burst, first slot drawn
+	AssertReport(hook_frame_relay_step(&relay, 12, 14, true, 9), 0, 0, true);  // no copy, next slot drawn
+	AssertReport(hook_frame_relay_step(&relay, 12, 14, true, 9), 0, 0, false); // nothing newer to draw
+	AssertReport(hook_frame_relay_step(&relay, 13, 16, true, 9), 1, 2, false); // copied, not yet due
+	AssertReport(hook_frame_relay_step(&relay, 13, 16, true, 11), 0, 0, true); // drawn, skipping one
+}
+
+// Counter wrap is an ordinary step.
+static void test_hook_relay_uint32_wrap(void **)
+{
+	hook_frame_relay relay = {};
+	hook_frame_relay_step(&relay, 0xFFFFFFFFu, 0xFFFFFFFEu, false, 0);
+	AssertReport(hook_frame_relay_step(&relay, 1, 0, false, 0), 2, 2, true);
 }
 
 // A display capture that showed all session and never counted a frame (a stale
@@ -706,7 +910,14 @@ int main(void)
 		cmocka_unit_test(test_listing_and_frame_signal),
 		cmocka_unit_test(test_game_capture_reads_unmeasurable),
 		cmocka_unit_test(test_unhooked_game_capture_reads_idle),
-		cmocka_unit_test(test_game_hook_kind_keeps_its_row),
+		cmocka_unit_test(test_game_hook_reports_presents_and_copies),
+		cmocka_unit_test(test_game_hook_below),
+		cmocka_unit_test(test_game_hook_rebaselines_on_rehook),
+		cmocka_unit_test(test_game_hook_uint32_wrap),
+		cmocka_unit_test(test_hook_relay_baselines_after_reset),
+		cmocka_unit_test(test_hook_relay_plain_path),
+		cmocka_unit_test(test_hook_relay_ring_path),
+		cmocka_unit_test(test_hook_relay_uint32_wrap),
 		cmocka_unit_test(test_display_capture_that_never_counted_is_named),
 		cmocka_unit_test(test_display_and_game_capture_share_the_line),
 		cmocka_unit_test(test_counted_under_heavy_lag_is_not_idle),

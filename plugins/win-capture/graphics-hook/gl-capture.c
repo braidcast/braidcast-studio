@@ -557,21 +557,21 @@ static int gl_init(HDC hdc)
 	return ret;
 }
 
-static void gl_copy_backbuffer(GLuint dst)
+static bool gl_copy_backbuffer(GLuint dst)
 {
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo);
 	if (gl_error("gl_copy_backbuffer", "failed to bind FBO")) {
-		return;
+		return false;
 	}
 
 	glBindTexture(GL_TEXTURE_2D, dst);
 	if (gl_error("gl_copy_backbuffer", "failed to bind texture")) {
-		return;
+		return false;
 	}
 
 	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
 	if (gl_error("gl_copy_backbuffer", "failed to set frame buffer")) {
-		return;
+		return false;
 	}
 
 	glReadBuffer(GL_BACK);
@@ -581,31 +581,32 @@ static void gl_copy_backbuffer(GLuint dst)
 
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	if (gl_error("gl_copy_backbuffer", "failed to set draw buffer")) {
-		return;
+		return false;
 	}
 
 	glBlitFramebuffer(0, 0, data.cx, data.cy, 0, 0, data.cx, data.cy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-	gl_error("gl_copy_backbuffer", "failed to blit");
+	return !gl_error("gl_copy_backbuffer", "failed to blit");
 }
 
-static void gl_shtex_capture(void)
+/* Returns whether the back buffer reached the shared texture. */
+static bool gl_shtex_capture(void)
 {
 	GLint last_fbo;
 	GLint last_tex;
 
-	obsglDXLockObjectsNV(data.gl_device, 1, &data.gl_dxobj);
+	const bool locked = !!obsglDXLockObjectsNV(data.gl_device, 1, &data.gl_dxobj);
 
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
 	if (gl_error("gl_shtex_capture", "failed to get last fbo")) {
-		return;
+		return false;
 	}
 
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_tex);
 	if (gl_error("gl_shtex_capture", "failed to get last texture")) {
-		return;
+		return false;
 	}
 
-	gl_copy_backbuffer(data.texture);
+	const bool copied = gl_copy_backbuffer(data.texture) && locked;
 
 	glBindTexture(GL_TEXTURE_2D, last_tex);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
@@ -613,6 +614,7 @@ static void gl_shtex_capture(void)
 	obsglDXUnlockObjectsNV(data.gl_device, 1, &data.gl_dxobj);
 
 	IDXGISwapChain_Present(data.dxgi_swap, 0, 0);
+	return copied;
 }
 
 static void gl_shmem_capture_copy(int i)
@@ -728,6 +730,9 @@ static void gl_capture(HDC hdc)
 			gl_init(hdc);
 		}
 	}
+	if (hdc == data.hdc) {
+		hook_count_present();
+	}
 	if (capture_ready() && hdc == data.hdc) {
 		uint32_t new_cx;
 		uint32_t new_cy;
@@ -742,7 +747,9 @@ static void gl_capture(HDC hdc)
 		}
 
 		if (data.using_shtex) {
-			gl_shtex_capture();
+			if (gl_shtex_capture()) {
+				hook_count_copy();
+			}
 		} else {
 			gl_shmem_capture();
 		}

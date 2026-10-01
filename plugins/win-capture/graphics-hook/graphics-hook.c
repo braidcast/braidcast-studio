@@ -185,6 +185,7 @@ static inline bool init_hook_info(void)
 		return false;
 	}
 
+	global_hook_info->bc_counters_magic = BC_COUNTERS_MAGIC;
 	return true;
 }
 
@@ -263,6 +264,7 @@ static void free_hook(void)
 		filemap_hook_info = NULL;
 	}
 	if (global_hook_info) {
+		global_hook_info->bc_counters_magic = 0;
 		UnmapViewOfFile(global_hook_info);
 		global_hook_info = NULL;
 	}
@@ -653,6 +655,7 @@ static DWORD CALLBACK copy_thread(LPVOID unused)
 
 				unlock_shmem_tex(lock_id);
 				((struct shmem_data *)shmem_info)->last_tex = lock_id;
+				hook_count_copy();
 
 				shmem_id = lock_id == 0 ? 1 : 0;
 			}

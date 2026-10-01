@@ -1042,13 +1042,17 @@ struct obs_source {
 	/* always-on capture-rate counters (obs_source_get_frame_counts).
 	 * source_profiler also counts async frames, but only under render
 	 * debug and with an rwlock per frame; these are the cheap truth.
-	 * frames_pending is filled during the tick and folded into the rest
-	 * once per loop, so an overrun loop counts one tick, not several. */
+	 * frames_pending, offered_pending and new_frame_pending are filled
+	 * during the tick and folded into the rest once per loop, so an overrun
+	 * loop counts one tick, not several. */
 	volatile long frame_count_kind;
 	volatile long frames_pending;
+	volatile long offered_pending;
+	volatile long new_frame_pending;
 	volatile long live_ticks;
 	volatile long new_frame_ticks;
 	volatile long frames_delivered;
+	volatile long frames_offered;
 
 	/* source is in the process of being destroyed */
 	volatile long destroying;

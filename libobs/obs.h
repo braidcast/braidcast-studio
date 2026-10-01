@@ -1268,15 +1268,21 @@ enum obs_frame_count_kind {
  *
  * live_ticks counts video ticks on which the source was showing and its kind
  * was not NONE, whether or not a frame arrived; new_frame_ticks counts the
- * subset of those that brought at least one new frame.  frames_delivered is
- * the producer's count: frames reported by the capture plugin, or for async
- * video sources every frame handed to obs_source_output_video.
+ * subset of those that brought a new frame the source could show.
+ * frames_delivered is the producer's count: frames reported by the capture
+ * plugin, or for async video sources every frame handed to
+ * obs_source_output_video.
+ * frames_offered counts frames the producer made that capture could have
+ * taken, over the same live ticks: a hooked game's presents, of which
+ * frames_delivered are the copies.  Stays zero for a source that never
+ * reports offered frames.
  */
 struct obs_source_frame_counts {
 	enum obs_frame_count_kind kind;
 	uint32_t live_ticks;
 	uint32_t new_frame_ticks;
 	uint32_t frames_delivered;
+	uint32_t frames_offered;
 };
 
 /**
@@ -1291,6 +1297,15 @@ EXPORT void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame
  * several times per tick (or with zero) is fine.
  */
 EXPORT void obs_source_add_new_frames(obs_source_t *source, uint32_t count);
+
+/**
+ * Reports, since the last call, the frames the producer offered (a hooked
+ * game's presents), the frames captured from them, and whether the source now
+ * has a frame it did not have at the previous tick.  Folded like
+ * obs_source_add_new_frames; use it where captured frames and shown frames
+ * differ, such as a ring of copies the source draws from by show time.
+ */
+EXPORT void obs_source_add_frame_report(obs_source_t *source, uint32_t offered, uint32_t delivered, bool new_frame);
 
 /** Reads the source's frame counters (see struct obs_source_frame_counts) */
 EXPORT void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts);

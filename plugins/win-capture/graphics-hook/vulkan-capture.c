@@ -1152,6 +1152,7 @@ static void vk_shtex_capture(struct vk_data *data, struct vk_device_funcs *funcs
 
 	if (res == VK_SUCCESS) {
 		frame_data->cmd_buffer_busy = true;
+		hook_count_copy();
 	}
 }
 
@@ -1197,6 +1198,9 @@ static void vk_capture(struct vk_data *data, VkQueue queue, const VkPresentInfoK
 			data->valid = false;
 			flog("vk_shtex_init failed");
 		}
+	}
+	if (swap == data->cur_swap) {
+		hook_count_present();
 	}
 	if (capture_ready()) {
 		if (swap != data->cur_swap) {

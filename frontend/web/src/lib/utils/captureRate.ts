@@ -4,8 +4,11 @@
 //   - WGC and DXGI count a frame only when the screen changes, so their rate is a
 //     fact about the content and never a warning. A steady lock is the host's neutral
 //     note, shown as written.
-//   - Async sources are the one kind that can warn: rendered fell below what the
-//     producer delivered. That warning always carries words, never colour alone.
+//   - Async sources and game capture are the kinds that can warn: the ticks that
+//     brought a new frame fell below what the producer offered (frames received,
+//     game presents) and the canvas could show. Game capture also shows the hook's
+//     copies, which can run ahead of the new frames, but the warning is never about
+//     them. That warning always carries words, never colour alone.
 //   - "unmeasurable" (showing, but nothing counts its frames) and "idle" (not
 //     capturing right now) are different facts and read differently.
 
@@ -32,7 +35,7 @@ export const CAPTURE_KIND_TITLE: Record<Kind, string> = {
   wgc: "Windows Graphics Capture: counts a frame only when the screen changes",
   dxgi: "Desktop Duplication: counts a frame only when the screen changes",
   async: "Asynchronous video (camera, media): frames received and frames rendered",
-  gameHook: "Game capture: its frames are not counted yet",
+  gameHook: "Game capture: frames the game presented, frames copied for capture, and new frames the canvas could show",
   none: "",
 };
 
@@ -42,8 +45,12 @@ export interface CaptureView {
   /** Short method badge ("WGC"); "" when the method is unknown. */
   kind: string;
   kindTitle: string;
-  /** The reading: a rate, "in … · out …", "Measuring…", "Unmeasurable" or "—". */
+  /** The reading: a rate, "in … · out …", "presents … · copies … · new …",
+   * "Measuring…", "Unmeasurable" or "—". */
   value: string;
+  /** The value's "label rate" pieces when it has several, so a view can wrap between
+   * them without splitting a label from its number; absent for a single reading. */
+  segments?: string[];
   /** Share of the canvas rate ("50% of canvas rate"), or null where it does not apply. */
   share: string | null;
   /** The live canvas rate the reading is judged against, or null off air. */
@@ -58,6 +65,46 @@ export interface CaptureView {
 }
 
 const MEASURING = "Measuring…";
+
+interface ProducerWords {
+  input: string;
+  output: string;
+  spokenInput: string;
+  spokenOutput: string;
+  /** Between input and output, where the producer path has a stage of its own. */
+  copies?: { word: string; spoken: string };
+  warn: string;
+}
+
+/** The kinds whose producer rate is known, each read in its own words: the row shows
+ * what the producer offered, then the new frames that reached capture, the number
+ * "below" judges. */
+const PRODUCER_WORDS = {
+  async: {
+    input: "in",
+    output: "out",
+    spokenInput: "receiving",
+    spokenOutput: "rendering",
+    warn: "Rendering fewer frames than it receives",
+  },
+  gameHook: {
+    input: "presents",
+    output: "new",
+    spokenInput: "game presenting",
+    spokenOutput: "new to the canvas",
+    copies: { word: "copies", spoken: "copying" },
+    warn: "Fewer new game frames than the canvas could show",
+  },
+} satisfies Partial<Record<Kind, ProducerWords>>;
+
+type ProducerKind = keyof typeof PRODUCER_WORDS;
+
+function isProducerKind(kind: Kind): kind is ProducerKind {
+  return Object.hasOwn(PRODUCER_WORDS, kind);
+}
+
+/** Why a showing source reads unmeasurable, when the host gives no reason. */
+const NO_COUNTER = "this capture method reports no frames";
 
 /** The section-level states both surfaces show around the rows. */
 export const CAPTURE_SECTION_TEXT = {
@@ -98,16 +145,27 @@ export function describeCapture(r: CaptureRateRow): CaptureView {
     return { ...base, value, share, note: r.note, tone: "ok", label: `${r.name}${method}: ${parts.join(", ")}` };
   }
 
-  if (r.status === "ok" && r.kind === "async") {
+  if (r.status === "ok" && isProducerKind(r.kind)) {
     if (r.inputFps === null || r.renderedFps === null) {
       return { ...base, value: MEASURING, tone: "muted", label: `${r.name}${method}: measuring` };
     }
-    const value = `in ${fmtRate(r.inputFps)} · out ${fmtRate(r.renderedFps)}`;
-    const warn = r.below ? "Rendering fewer frames than it receives" : null;
-    const spoken = `receiving ${fmtRate(r.inputFps)}, rendering ${fmtRate(r.renderedFps)}`;
+    const words: ProducerWords = PRODUCER_WORDS[r.kind];
+    const shown = [`${words.input} ${fmtRate(r.inputFps)}`];
+    const said = [`${words.spokenInput} ${fmtRate(r.inputFps)}`];
+    if (words.copies && r.copiesFps !== null) {
+      shown.push(`${words.copies.word} ${fmtRate(r.copiesFps)}`);
+      said.push(`${words.copies.spoken} ${fmtRate(r.copiesFps)}`);
+    }
+    shown.push(`${words.output} ${fmtRate(r.renderedFps)}`);
+    said.push(`${words.spokenOutput} ${fmtRate(r.renderedFps)}`);
+    const value = shown.join(" · ");
+    // The host decides "below"; this never re-derives it from the rates.
+    const warn = r.below ? words.warn : null;
+    const spoken = said.join(", ");
     return {
       ...base,
       value,
+      segments: shown,
       warn,
       tone: warn ? "warn" : "ok",
       label: `${r.name}${method}: ${spoken}` + (warn ? `. Warning: ${warn.toLowerCase()}` : ""),
@@ -115,9 +173,9 @@ export function describeCapture(r: CaptureRateRow): CaptureView {
   }
 
   // Showing, with no counter behind it: BitBlt, a deinterlaced async source, a window
-  // capture on "auto" without a live WGC session, a hooked game capture.
-  const why =
-    r.kind === "gameHook" ? "game capture frames are not counted yet" : "this capture method reports no frames";
+  // capture on "auto" without a live WGC session, a game capture whose hook predates
+  // frame counting (the host says so in its note).
+  const why = r.note ?? NO_COUNTER;
   return {
     ...base,
     value: "Unmeasurable",
@@ -128,7 +186,7 @@ export function describeCapture(r: CaptureRateRow): CaptureView {
 }
 
 /** The "since reset" window in words: how long it was measured, and the share of
- * that it spent locked (display capture) or below (async). "—" before any. */
+ * that it spent locked (display capture) or below (async, game). "—" before any. */
 export function fmtSinceReset(r: CaptureRateRow): string {
   const { liveSec, lockedSec, belowSec } = r.sinceReset;
   if (!(liveSec > 0)) {

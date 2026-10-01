@@ -865,7 +865,8 @@ void CheckCanvasOffAir(State &st)
 	      std::string("D canvas off air: ") + kCanvasDxgiName + " past its grace");
 
 	const std::vector<json> game = RowsOf(st, Phase::FullRate, kGameName, 2);
-	// Unhooked, it has no size and nothing to count; hooked, it would read unmeasurable.
+	// Unhooked, it has no size and nothing to count; hooked, it reads gameHook (or
+	// unmeasurable under a hook from before the counters).
 	Check(st, AllStatus(game, "idle") && game.back().value("kind", "") == "none",
 	      std::string("D game capture: unhooked ") + kGameName + " listed as idle");
 }

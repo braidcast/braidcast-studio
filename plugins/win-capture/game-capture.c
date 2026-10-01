@@ -19,6 +19,7 @@
 #include "app-helpers.h"
 #include "audio-helpers.h"
 #include "nt-stuff.h"
+#include "hook-frame-relay.h"
 
 #define do_log(level, format, ...) \
 	blog(level, "[game-capture: '%s'] " format, obs_source_get_name(gc->source), ##__VA_ARGS__)
@@ -205,6 +206,12 @@ struct game_capture {
 	bool frame_gen_requested;
 	uint64_t ring_read_delay_ns;
 
+	/* The hook's capture-rate counters as last read. Every new hook info
+	 * view and every capture start resets the relay, and a view logs once
+	 * when its hook predates the counters. */
+	struct hook_frame_relay hook_relay;
+	bool hook_counts_checked;
+
 	void (*copy_texture)(struct game_capture *);
 
 	PFN_SetThreadDpiAwarenessContext set_thread_dpi_awareness_context;
@@ -384,6 +391,7 @@ static void stop_capture(struct game_capture *gc)
 		UnmapViewOfFile(gc->global_hook_info);
 		gc->global_hook_info = NULL;
 	}
+	hook_frame_relay_reset(&gc->hook_relay);
 	if (gc->data) {
 		UnmapViewOfFile(gc->data);
 		gc->data = NULL;
@@ -860,6 +868,8 @@ static inline bool init_hook_info(struct game_capture *gc)
 		warn("init_hook_info: failed to map data view: %lu", GetLastError());
 		return false;
 	}
+	hook_frame_relay_reset(&gc->hook_relay);
+	gc->hook_counts_checked = false;
 
 	if (gc->config.force_shmem) {
 		warn("init_hook_info: user is forcing shared memory "
@@ -1889,6 +1899,13 @@ static bool start_capture(struct game_capture *gc)
 		     "setting off");
 	}
 
+	if (!gc->hook_counts_checked && !hook_counts_frames(gc->global_hook_info)) {
+		info("the game's hook (%" PRIu32 ".%" PRIu32 ") does not count frames, so its capture rate "
+		     "reads unmeasurable; restart the game to load the current hook",
+		     gc->global_hook_info->hook_ver_major, gc->global_hook_info->hook_ver_minor);
+	}
+	gc->hook_counts_checked = true;
+
 	return true;
 }
 
@@ -1917,9 +1934,30 @@ static void check_foreground_window(struct game_capture *gc, float seconds)
 	}
 }
 
-static void game_capture_tick(void *data, float seconds)
+/* Hands the hook's present and copy counts to libobs's capture-rate counters.
+ * Runs once the tick's hook state has settled and the ring slot for this tick
+ * is drawn, so the kind always matches whether this tick captured. A hook
+ * without the counters marker (a game still holding an older hook) keeps the
+ * kind at NONE. The path is the ring actually in use, not the setting, because
+ * the ring can fail to engage. */
+static void relay_hook_frame_counts(struct game_capture *gc)
 {
-	struct game_capture *gc = data;
+	const struct hook_info *hook = gc->global_hook_info;
+	if (!gc->capturing || !hook || !hook_counts_frames(hook)) {
+		hook_frame_relay_reset(&gc->hook_relay);
+		obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_NONE);
+		return;
+	}
+
+	/* volatile, 4-aligned: each read is one untorn 32-bit load */
+	const struct hook_frame_report report = hook_frame_relay_step(
+		&gc->hook_relay, hook->bc_presents, hook->bc_frames_copied, gc->ring_count != 0, gc->ring_frame_no);
+	obs_source_add_frame_report(gc->source, report.offered, report.delivered, report.new_frame);
+	obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_GAME_HOOK);
+}
+
+static void game_capture_update_hook(struct game_capture *gc, float seconds)
+{
 	bool deactivate = os_atomic_set_bool(&gc->deactivate_hook, false);
 	bool activate_now = os_atomic_set_bool(&gc->activate_hook_now, false);
 
@@ -2002,7 +2040,15 @@ static void game_capture_tick(void *data, float seconds)
 		enum capture_result result = init_capture_data(gc);
 
 		if (result == CAPTURE_SUCCESS) {
-			gc->capturing = start_capture(gc);
+			const bool started = start_capture(gc);
+			hook_frame_relay_reset(&gc->hook_relay);
+			/* The kind leads the size, which turns non-zero with capturing, so
+			 * a reader taking the size first never sees a sized source that
+			 * is not yet measured. */
+			if (started && hook_counts_frames(gc->global_hook_info)) {
+				obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_GAME_HOOK);
+			}
+			gc->capturing = started;
 		} else {
 			debug("init_capture_data failed");
 		}
@@ -2085,6 +2131,14 @@ static void game_capture_tick(void *data, float seconds)
 	if (!gc->showing) {
 		gc->showing = true;
 	}
+}
+
+static void game_capture_tick(void *data, float seconds)
+{
+	struct game_capture *gc = data;
+
+	game_capture_update_hook(gc, seconds);
+	relay_hook_frame_counts(gc);
 }
 
 static inline void game_capture_render_cursor(struct game_capture *gc)

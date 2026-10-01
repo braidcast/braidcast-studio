@@ -144,19 +144,27 @@ struct hook_info {
 	/* hook addresses */
 	struct graphics_offsets offsets;
 
-	uint32_t reserved[120];
+	uint32_t reserved[119];
 
-	/* Braidcast extensions. OBS writes bc_magic, bc_flags and
-	 * bc_canvas_interval_ns before it signals a restart, and the hook ignores
-	 * them unless bc_magic matches, so an older OBS reads as all off. */
+	/* Braidcast extensions. The hook writes bc_counters_magic once it has
+	 * mapped this struct and clears it before unmapping; bc_presents and
+	 * bc_frames_copied mean nothing without it, so an older hook (zero here)
+	 * reads as "not counted". */
+	uint32_t bc_counters_magic;
+	/* OBS writes bc_magic, bc_flags and bc_canvas_interval_ns before it signals
+	 * a restart, and the hook ignores them unless bc_magic matches, so an older
+	 * OBS reads as all off. */
 	uint32_t bc_magic;
 	uint32_t bc_flags;
 	uint64_t bc_canvas_interval_ns;
-	/* Reserved for capture-rate Phase 4's counters; not written yet. */
+	/* Hook -> OBS, cumulative and wrapping; OBS takes modular deltas. Presents
+	 * on the captured swap chain while the hook's capture is active, and copies
+	 * made for OBS (a frame generation ring slot counts as one). */
 	volatile uint32_t bc_presents;
 	volatile uint32_t bc_frames_copied;
 };
 static_assert(offsetof(struct hook_info, reserved) == 144, "ABI compatibility");
+static_assert(offsetof(struct hook_info, bc_counters_magic) == 620, "ABI compatibility");
 static_assert(offsetof(struct hook_info, bc_magic) == 624, "ABI compatibility");
 static_assert(offsetof(struct hook_info, bc_flags) == 628, "ABI compatibility");
 static_assert(offsetof(struct hook_info, bc_canvas_interval_ns) == 632, "ABI compatibility");
@@ -164,10 +172,18 @@ static_assert(offsetof(struct hook_info, bc_presents) == 640, "ABI compatibility
 static_assert(offsetof(struct hook_info, bc_frames_copied) == 644, "ABI compatibility");
 static_assert(sizeof(struct hook_info) == 648, "ABI compatibility");
 
-#define BC_HOOK_MAGIC 0x31464342 /* 'BCF1' */
+#define BC_HOOK_MAGIC 0x31464342     /* 'BCF1' */
+#define BC_COUNTERS_MAGIC 0x31434342 /* 'BCC1' */
 #define BC_FLAG_FRAME_GEN_CAPTURE (1u << 0)
 
 #pragma pack(pop)
+
+/* A hook older than the frame counters leaves bc_presents and bc_frames_copied
+ * at zero, which would read as a stalled capture rather than an unmeasured one. */
+static inline bool hook_counts_frames(const struct hook_info *info)
+{
+	return info->bc_counters_magic == BC_COUNTERS_MAGIC;
+}
 
 #define GC_MAPPING_FLAGS (FILE_MAP_READ | FILE_MAP_WRITE)
 

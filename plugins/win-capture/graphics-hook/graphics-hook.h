@@ -61,12 +61,15 @@ extern bool hook_vulkan(void);
 
 extern void d3d10_capture(void *swap, void *backbuffer);
 extern void d3d10_free(void);
+extern bool d3d10_owns_capture(void);
 extern void d3d11_capture(void *swap, void *backbuffer);
 extern void d3d11_free(void);
+extern bool d3d11_owns_capture(void);
 
 #ifdef COMPILE_D3D12_HOOK
 extern void d3d12_capture(void *swap, void *backbuffer);
 extern void d3d12_free(void);
+extern bool d3d12_owns_capture(void);
 #endif
 
 extern bool rehook_gl(void);
@@ -193,6 +196,27 @@ static inline bool frame_ready(uint64_t interval)
 static inline bool capture_ready(void)
 {
 	return capture_active() && frame_ready(global_hook_info->frame_interval);
+}
+
+/* Capture-rate counters OBS reads across processes (hook_info bc_presents and
+ * bc_frames_copied). Interlocked because a Vulkan game may present from more
+ * than one thread and shared-memory copies land on copy_thread; each counter is
+ * a 4-aligned uint32, so OBS's plain 32-bit read of it is never torn.
+ * - A present counts once, on the API that owns the capture (another API can
+ *   share the window or swap chain), and only while capture_active(), so
+ *   presents with no consumer never show up as missing copies.
+ * - A copy counts once it reached OBS: a completed shared-texture copy, or a
+ *   shared-memory buffer copy_thread published. */
+static inline void hook_count_present(void)
+{
+	if (capture_active()) {
+		InterlockedIncrement((volatile LONG *)&global_hook_info->bc_presents);
+	}
+}
+
+static inline void hook_count_copy(void)
+{
+	InterlockedIncrement((volatile LONG *)&global_hook_info->bc_frames_copied);
 }
 
 static inline bool frame_gen_capture_requested(void)

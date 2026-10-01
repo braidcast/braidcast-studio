@@ -343,7 +343,11 @@
               <div class="cap-line1" aria-hidden="true">
                 <span class="cap-name" title={row.name}>{row.name}</span>
                 {#if view.kind}<span class="cap-kind" title={view.kindTitle}>{view.kind}</span>{/if}
-                <span class="cap-val" class:muted={view.tone === "muted"}>{view.value}</span>
+                <span class="cap-val" class:muted={view.tone === "muted"}
+                  >{#each view.segments ?? [view.value] as seg, i (i)}{#if i > 0}{" · "}{/if}<span class="cap-seg"
+                      >{seg}</span
+                    >{/each}</span
+                >
               </div>
               {#if view.warn || view.share || view.note}
                 <div class="cap-line2" aria-hidden="true">
@@ -800,8 +804,8 @@
     color: var(--color-muted);
   }
   /* Same hairline row as an output, with a neutral edge: a capture row has no state
-     colour to carry. Only an async row that renders below its input takes the warn
-     edge, and it says so in words on line 2. */
+     colour to carry. Only an async or game row whose output falls below its input
+     takes the warn edge, and it says so in words on line 2. */
   .cap {
     display: flex;
     flex-direction: column;
@@ -842,14 +846,19 @@
     color: var(--color-muted);
     border: var(--border-weight) solid var(--color-border);
   }
-  /* Right-aligned tabular figures, so a ticking rate never shifts the row. */
+  /* Right-aligned tabular figures, so a ticking rate never shifts the row. A game row's
+     three readings wrap between pieces in a narrow dock, never inside one. */
   .cap-val {
     margin-left: auto;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: 10.5px;
     color: var(--color-text);
     font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .cap-seg {
     white-space: nowrap;
   }
   .cap-val.muted {

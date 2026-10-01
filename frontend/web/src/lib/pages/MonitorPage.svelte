@@ -279,7 +279,11 @@
               <span class="out-name" title={row.name}>{row.name}</span>
             </span>
             <span aria-hidden="true" title={view.kindTitle || undefined}>{view.kind || "—"}</span>
-            <span aria-hidden="true" class="cap-val" class:muted={view.tone === "muted"}>{view.value}</span>
+            <span aria-hidden="true" class="cap-val" class:muted={view.tone === "muted"}
+              >{#each view.segments ?? [view.value] as seg, i (i)}{#if i > 0}{" · "}{/if}<span class="cap-seg"
+                  >{seg}</span
+                >{/each}</span
+            >
             <span aria-hidden="true">{view.share ?? "—"}</span>
             <span aria-hidden="true">{view.ref ?? "not live"}</span>
             <span aria-hidden="true">{since}</span>
@@ -464,8 +468,9 @@
     padding-left: 14px;
     font-variant-numeric: tabular-nums;
   }
-  /* The one capture reading that is a warning (async rendering below its input): the
-     edge marks it, and the sub-line under the row says it in words. */
+  /* The one capture reading that is a warning (an async or game row whose output
+     falls below its input): the edge marks it, and the sub-line under the row says
+     it in words. */
   .trow.cap.warn {
     border-left-color: var(--color-warn);
     background: color-mix(in srgb, var(--color-warn) 6%, var(--color-surface));
@@ -475,6 +480,9 @@
   }
   .cap-val.muted {
     color: var(--color-muted);
+  }
+  .cap-seg {
+    white-space: nowrap;
   }
   .cap-sub {
     grid-column: 1 / -1;

@@ -294,6 +294,7 @@ static inline void d3d10_shtex_capture(ID3D10Resource *backbuffer)
 {
 	if (data.texture) {
 		d3d10_copy_texture(data.texture, backbuffer);
+		hook_count_copy();
 	}
 }
 
@@ -334,6 +335,13 @@ static inline void d3d10_shmem_capture(ID3D10Resource *backbuffer)
 	}
 
 	data.cur_tex = next_tex;
+}
+
+/* handle shares its union slot with the shared-memory surfaces, so it is set
+ * once either capture mode is initialized. */
+bool d3d10_owns_capture(void)
+{
+	return data.handle != nullptr;
 }
 
 void d3d10_capture(void *swap_ptr, void *backbuffer_ptr)

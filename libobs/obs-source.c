@@ -1576,7 +1576,7 @@ static void async_tick(obs_source_t *source)
 
 		source->cur_async_frame = get_closest_frame(source, sys_time);
 		if (source->cur_async_frame) {
-			os_atomic_inc_long(&source->frames_pending);
+			os_atomic_set_long(&source->new_frame_pending, 1);
 		}
 	}
 
@@ -1607,6 +1607,8 @@ static inline void atomic_add_long(volatile long *val, long n)
 static void fold_frame_counts(obs_source_t *source)
 {
 	const long pending = os_atomic_set_long(&source->frames_pending, 0);
+	const long offered = os_atomic_set_long(&source->offered_pending, 0);
+	const bool new_frame = os_atomic_set_long(&source->new_frame_pending, 0) != 0;
 
 	if ((source->info.output_flags & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
 		/* deinterlaced frames are picked by deinterlace_process_last_frame,
@@ -1622,13 +1624,14 @@ static void fold_frame_counts(obs_source_t *source)
 	}
 
 	os_atomic_inc_long(&source->live_ticks);
-	if (pending != 0) {
+	if (new_frame) {
 		os_atomic_inc_long(&source->new_frame_ticks);
 	}
 	/* async input is counted by the producer as each frame arrives */
 	if (kind != OBS_FRAME_COUNT_ASYNC) {
 		atomic_add_long(&source->frames_delivered, pending);
 	}
+	atomic_add_long(&source->frames_offered, offered);
 }
 
 void obs_source_video_tick(obs_source_t *source, float seconds)
@@ -5263,12 +5266,33 @@ void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame_count_
 	os_atomic_set_long(&source->frame_count_kind, (long)kind);
 }
 
+static void add_frame_report(obs_source_t *source, uint32_t offered, uint32_t delivered, bool new_frame)
+{
+	if (offered) {
+		atomic_add_long(&source->offered_pending, (long)offered);
+	}
+	if (delivered) {
+		atomic_add_long(&source->frames_pending, (long)delivered);
+	}
+	if (new_frame) {
+		os_atomic_set_long(&source->new_frame_pending, 1);
+	}
+}
+
 void obs_source_add_new_frames(obs_source_t *source, uint32_t count)
 {
-	if (!obs_source_valid(source, "obs_source_add_new_frames") || !count) {
+	if (!obs_source_valid(source, "obs_source_add_new_frames")) {
 		return;
 	}
-	atomic_add_long(&source->frames_pending, (long)count);
+	add_frame_report(source, 0, count, count != 0);
+}
+
+void obs_source_add_frame_report(obs_source_t *source, uint32_t offered, uint32_t delivered, bool new_frame)
+{
+	if (!obs_source_valid(source, "obs_source_add_frame_report")) {
+		return;
+	}
+	add_frame_report(source, offered, delivered, new_frame);
 }
 
 void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts)
@@ -5284,6 +5308,7 @@ void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_f
 	counts->live_ticks = (uint32_t)os_atomic_load_long(&source->live_ticks);
 	counts->new_frame_ticks = (uint32_t)os_atomic_load_long(&source->new_frame_ticks);
 	counts->frames_delivered = (uint32_t)os_atomic_load_long(&source->frames_delivered);
+	counts->frames_offered = (uint32_t)os_atomic_load_long(&source->frames_offered);
 }
 
 static inline void signal_flags_updated(obs_source_t *source)

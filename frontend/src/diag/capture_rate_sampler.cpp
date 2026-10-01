@@ -33,13 +33,13 @@ Kind ToKind(enum obs_frame_count_kind kind)
 	return Kind::None;
 }
 
-SourceTraits TraitsOf(obs_source_t *source)
+SourceTraits TraitsOf(obs_source_t *source, bool hasSize)
 {
 	SourceTraits traits;
 	const char *id = obs_source_get_id(source);
 	traits.id = id ? id : "";
 	traits.async = (obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO;
-	traits.hasSize = obs_source_get_base_width(source) > 0;
+	traits.hasSize = hasSize;
 	if (traits.async) {
 		traits.deinterlaced = obs_source_get_deinterlace_mode(source) != OBS_DEINTERLACE_MODE_DISABLE;
 	} else if (traits.id == kWindowCaptureId) {
@@ -66,6 +66,8 @@ nlohmann::json RowJson(const Row &r)
 	if (r.lockedFraction) {
 		// A rate, never a cause: the screen may simply update at that pace.
 		note = std::string("delivering ") + r.lockedFraction + " of canvas rate";
+	} else if (r.unmeasurableNote) {
+		note = r.unmeasurableNote;
 	}
 	return nlohmann::json{
 		{"uuid", r.uuid},
@@ -77,6 +79,7 @@ nlohmann::json RowJson(const Row &r)
 		{"fraction", OptionalNumber(r.fraction)},
 		{"inputFps", OptionalNumber(r.inputFps)},
 		{"renderedFps", OptionalNumber(r.renderedFps)},
+		{"copiesFps", OptionalNumber(r.copiesFps)},
 		{"below", r.below},
 		{"lockedFraction", r.lockedFraction ? nlohmann::json(r.lockedFraction) : nlohmann::json(nullptr)},
 		{"note", note},
@@ -150,12 +153,15 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 
 	std::map<std::string, Held> nextHeld;
 	for (auto &[uuid, p] : pending) {
+		// Size before kind: a capture sets its kind no later than it gains a size,
+		// so a sized source read here is never mistaken for one with no counter.
+		const bool hasSize = obs_source_get_base_width(p.source) > 0;
 		struct obs_source_frame_counts raw = {};
 		obs_source_get_frame_counts(p.source, &raw);
 		const Kind kind = ToKind(raw.kind);
 		std::optional<SourceTraits> traits;
 		if (kind == Kind::None) {
-			traits = TraitsOf(p.source);
+			traits = TraitsOf(p.source, hasSize);
 			if (!IsListed(*traits)) {
 				continue;
 			}
@@ -179,7 +185,9 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		src.identity = held.identity;
 		src.showing = obs_source_showing(p.source);
 		src.frameSignal = !traits || HasFrameSignal(*traits);
-		src.counts = Counts{kind, raw.live_ticks, raw.new_frame_ticks, raw.frames_delivered};
+		src.unmeasurableNote = traits ? UnmeasurableNote(*traits) : nullptr;
+		src.counts =
+			Counts{kind, raw.live_ticks, raw.new_frame_ticks, raw.frames_delivered, raw.frames_offered};
 		src.reach = std::move(p.reach);
 		in.sources.push_back(std::move(src));
 		nextHeld.emplace(uuid, std::move(held));

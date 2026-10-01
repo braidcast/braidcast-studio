@@ -1255,8 +1255,9 @@ export interface OutputStat {
 }
 
 /** A capture-rate row's status. "ok" is measured; "unmeasurable" is showing but its
- * capture method counts no frames (BitBlt, deinterlaced, a hooked game capture);
- * "idle" is not capturing right now (hidden, camera stopped, capture not open). */
+ * capture method counts no frames (BitBlt, deinterlaced, a game capture whose hook
+ * predates frame counting); "idle" is not capturing right now (hidden, camera
+ * stopped, capture not open). */
 export type CaptureStatus = "ok" | "unmeasurable" | "idle";
 
 /** One browser source's paint rate, as diagnostics.get's `overlayPaints` reports it.
@@ -1287,15 +1288,21 @@ export interface CaptureRateRow {
   rate: number | null;
   /** WGC / DXGI: `rate` as a share of what the canvas could show; needs `refFps`. */
   fraction: number | null;
-  /** Async: frames the producer delivered, and frames that reached the render. */
+  /** Async: frames the producer delivered. Game hook: the game's presents. */
   inputFps: number | null;
+  /** Async and game hook: ticks per second that brought a frame the canvas had not
+   * shown, at most one per tick. The number `below` judges. */
   renderedFps: number | null;
-  /** Async only: rendered fell below 0.9 × min(input, expected) this second. The one
-   * capture-rate reading that is a warning. */
+  /** Game hook only: the hook's copies for capture. Can run ahead of `renderedFps`
+   * (two copies in one tick, or a frame generation ring's burst); never judged. */
+  copiesFps: number | null;
+  /** Async and game hook only: `renderedFps` fell below 0.9 × min(input, expected)
+   * this second. The one capture-rate reading that is a warning. */
   below: boolean;
   /** WGC / DXGI while locked to a simple fraction of the canvas ("1/2", "2/3"...). */
   lockedFraction: string | null;
-  /** The host's neutral wording of the lock, a rate never a cause. Never a warning. */
+  /** The host's neutral wording of the lock, a rate never a cause; or, while
+   * unmeasurable, why, when the host knows more than "no counter". Never a warning. */
   note: string | null;
   inGrace: boolean;
   /** Since the last stats.reset (or since listed): seconds measured, seconds below,

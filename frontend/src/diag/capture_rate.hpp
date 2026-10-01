@@ -21,8 +21,8 @@
 //   - WGC and DXGI report only when the screen changes, and a browser source only
 //     when its page repaints, so a low rate there is a fact about the content,
 //     never a fault. They show a rate; display capture adds a neutral lock note
-//     when it holds steady at a simple fraction of the canvas. Only async sources,
-//     whose producer rate is known, can read "below".
+//     when it holds steady at a simple fraction of the canvas. Only async sources
+//     and the game hook, whose producer rate is known, can read "below".
 //   - Browser (overlay) rows go to the session line and diagnostics.get only,
 //     never stats.get or the Stats panel; the sampler hands them out separately.
 //
@@ -39,6 +39,7 @@ struct Counts {
 	uint32_t liveTicks = 0;
 	uint32_t newFrameTicks = 0;
 	uint32_t framesDelivered = 0;
+	uint32_t framesOffered = 0; // game hook: presents (framesDelivered are its copies)
 };
 
 // One canvas root that reaches a source.
@@ -56,10 +57,13 @@ struct SourceInput {
 	uint64_t identity = 0;
 	bool showing = false;
 	// False when the capture method delivers frames with no counter behind them
-	// (BitBlt window capture, a deinterlaced async source, a hooked game
-	// capture). Only then does a showing source that counts nothing read
-	// "unmeasurable"; otherwise it is simply not capturing right now.
+	// (BitBlt window capture, a deinterlaced async source, a game capture whose
+	// hook predates the counters). Only then does a showing source that counts
+	// nothing read "unmeasurable"; otherwise it is simply not capturing right now.
 	bool frameSignal = true;
+	// Why an unmeasurable reading is missing, where the capture type knows more
+	// than "no counter" (UnmeasurableNote); nullptr otherwise.
+	const char *unmeasurableNote = nullptr;
 	Counts counts;
 	std::vector<Reach> reach;
 };
@@ -89,6 +93,9 @@ bool IsListed(const SourceTraits &traits);
 // that reports no kind. SourceInput::frameSignal.
 bool HasFrameSignal(const SourceTraits &traits);
 
+// SourceInput::unmeasurableNote for a source that reports no kind.
+const char *UnmeasurableNote(const SourceTraits &traits);
+
 struct SampleInput {
 	double dtSec = 0.0; // measured time since the previous sample
 	double mainFps = 0.0;
@@ -97,7 +104,7 @@ struct SampleInput {
 
 enum class Status {
 	Ok,           // measured
-	Unmeasurable, // showing, but no frame signal or none this phase measures (the game hook)
+	Unmeasurable, // showing, but its capture method has no frame signal
 	Idle,         // not capturing now: hidden, or nothing to count (camera stopped, capture failed)
 };
 
@@ -113,11 +120,17 @@ struct Row {
 	// that as a share of what the canvas could show over the same ticks.
 	std::optional<double> rate;
 	std::optional<double> fraction;
-	// Async: frames the producer delivered and frames that reached the render.
+	// Async: frames the producer delivered. Game hook: the game's presents.
 	std::optional<double> inputFps;
+	// Both: ticks that brought a frame the canvas had not shown, the measure
+	// "below" judges.
 	std::optional<double> renderedFps;
-	bool below = false;                   // async only
-	const char *lockedFraction = nullptr; // "1/2", ... while locked
+	// Game hook: the hook's copies, which can exceed renderedFps (two copies in
+	// one tick, or a frame generation ring's burst).
+	std::optional<double> copiesFps;
+	bool below = false;                     // async and game hook only
+	const char *unmeasurableNote = nullptr; // SourceInput's, while unmeasurable
+	const char *lockedFraction = nullptr;   // "1/2", ... while locked
 	bool inGrace = false;
 	struct {
 		double liveSec = 0.0;
@@ -162,8 +175,9 @@ private:
 	struct Session {
 		Kind measuredAs = Kind::None;
 		double liveSec = 0.0;
-		Histogram rate;  // WGC/DXGI displayed, async rendered
-		Histogram input; // async input
+		Histogram rate;   // WGC/DXGI displayed, async rendered, game new frames
+		Histogram input;  // async input, game presents
+		Histogram copies; // game copies
 		Histogram ref;
 		std::map<int, double> lockedSec; // by fraction index
 		double belowSec = 0.0;
@@ -194,6 +208,7 @@ private:
 	Row Evaluate(Entry &e, const SourceInput &src, double dt, double mainFps);
 	void UpdateLock(Entry &e, std::optional<double> fraction, bool eligible);
 	void NoteSession(Entry &e, const SourceInput &src, Status status);
+	static std::string RefNote(const Session &s);
 	std::string Summarize(const std::string &name, const Entry &e) const;
 
 	std::map<std::string, Entry> entries_;

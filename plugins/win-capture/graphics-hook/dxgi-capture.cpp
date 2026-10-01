@@ -29,6 +29,9 @@ struct dxgi_swap_data {
 	IDXGISwapChain *swap;
 	void (*capture)(void *, void *);
 	void (*free)(void);
+	/* Whether this API holds the capture. Another API can share the swap chain
+	 * (OpenGL presented through DXGI), and its presents are its own to count. */
+	bool (*owns_capture)(void);
 };
 
 static struct dxgi_swap_data data = {};
@@ -40,6 +43,7 @@ static void STDMETHODCALLTYPE SwapChainDestructed(void *pData)
 	if (pData == data.swap) {
 		data.swap = nullptr;
 		data.capture = nullptr;
+		data.owns_capture = nullptr;
 		memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
 		dxgi_possible_swap_queue_count = 0;
 		dxgi_present_attempted = false;
@@ -51,11 +55,13 @@ static void STDMETHODCALLTYPE SwapChainDestructed(void *pData)
 	}
 }
 
-static void init_swap_data(IDXGISwapChain *swap, void (*capture)(void *, void *), void (*free)(void))
+static void init_swap_data(IDXGISwapChain *swap, void (*capture)(void *, void *), void (*free)(void),
+			   bool (*owns_capture)(void))
 {
 	data.swap = swap;
 	data.capture = capture;
 	data.free = free;
+	data.owns_capture = owns_capture;
 
 	ID3DDestructionNotifier *notifier;
 	if (SUCCEEDED(swap->QueryInterface<ID3DDestructionNotifier>(&notifier))) {
@@ -79,7 +85,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 		if (level >= D3D_FEATURE_LEVEL_11_0) {
 			hlog("Found D3D11 11.0 device on swap chain");
 
-			init_swap_data(swap, d3d11_capture, d3d11_free);
+			init_swap_data(swap, d3d11_capture, d3d11_free, d3d11_owns_capture);
 			return true;
 		}
 	}
@@ -90,7 +96,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 
 		hlog("Found D3D10 device on swap chain");
 
-		init_swap_data(swap, d3d10_capture, d3d10_free);
+		init_swap_data(swap, d3d10_capture, d3d10_free, d3d10_owns_capture);
 		return true;
 	}
 
@@ -100,7 +106,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 
 		hlog("Found D3D11 device on swap chain");
 
-		init_swap_data(swap, d3d11_capture, d3d11_free);
+		init_swap_data(swap, d3d11_capture, d3d11_free, d3d11_owns_capture);
 		return true;
 	}
 
@@ -116,7 +122,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 		}
 
 		if (dxgi_possible_swap_queue_count > 0) {
-			init_swap_data(swap, d3d12_capture, d3d12_free);
+			init_swap_data(swap, d3d12_capture, d3d12_free, d3d12_owns_capture);
 			return true;
 		}
 	}
@@ -135,6 +141,7 @@ static HRESULT STDMETHODCALLTYPE hook_resize_buffers(IDXGISwapChain *swap, UINT 
 
 	data.swap = nullptr;
 	data.capture = nullptr;
+	data.owns_capture = nullptr;
 	memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
 	dxgi_possible_swap_queue_count = 0;
 	dxgi_present_attempted = false;
@@ -163,6 +170,18 @@ static inline IUnknown *get_dxgi_backbuffer(IDXGISwapChain *swap)
 	return res;
 }
 
+/* Counted here rather than in the API's capture function, so a present whose back
+ * buffer could not be fetched, or whose post-overlay capture was skipped, still
+ * counts once. Only the outermost present counts, and owns_capture is loaded once:
+ * another swap chain's present can null it while this one is blocked in RealPresent. */
+static void count_present(bool capture)
+{
+	bool (*const owns)() = *static_cast<bool (*volatile *)()>(&data.owns_capture);
+	if (capture && dxgi_presenting == 0 && owns && owns()) {
+		hook_count_present();
+	}
+}
+
 static void update_mismatch_count(bool match)
 {
 	if (match) {
@@ -173,6 +192,7 @@ static void update_mismatch_count(bool match)
 		if (swap_chain_mismatch_count == swap_chain_mismtach_limit) {
 			data.swap = nullptr;
 			data.capture = nullptr;
+			data.owns_capture = nullptr;
 			memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
 			dxgi_possible_swap_queue_count = 0;
 			dxgi_present_attempted = false;
@@ -244,6 +264,7 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap, UINT sync_in
 			}
 		}
 	}
+	count_present(capture);
 
 	return hr;
 }
@@ -299,6 +320,7 @@ static HRESULT STDMETHODCALLTYPE hook_present1(IDXGISwapChain1 *swap, UINT sync_
 			}
 		}
 	}
+	count_present(capture);
 
 	return hr;
 }

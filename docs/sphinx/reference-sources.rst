@@ -1337,18 +1337,34 @@ General Source Functions
 
 ---------------------
 
+.. function:: void obs_source_add_frame_report(obs_source_t *source, uint32_t offered, uint32_t delivered, bool new_frame)
+
+   Reports, since its previous call, the frames the producer offered
+   (such as a hooked game's presents), the frames captured from them,
+   and whether the source now has a frame it did not have at the
+   previous tick.  Folded the same way, once per video tick.  Use it
+   where captured frames and shown frames differ, such as a ring of
+   copies the source draws from by show time;
+   :c:func:`obs_source_add_new_frames()` is the case where every
+   captured frame is shown.
+
+---------------------
+
 .. function:: void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts)
 
-   Reads the source's cumulative frame counters.  All three counts wrap
+   Reads the source's cumulative frame counters.  All four counts wrap
    as ``uint32_t``; take modular deltas between two reads.
 
    - **live_ticks** - video ticks on which the source was showing and
      its kind was not NONE, whether or not a frame arrived
-   - **new_frame_ticks** - the subset of those ticks that brought at
-     least one new frame
+   - **new_frame_ticks** - the subset of those ticks that brought a new
+     frame the source could show
    - **frames_delivered** - frames the producer delivered; for async
      video sources, every frame passed to
      :c:func:`obs_source_output_video()`
+   - **frames_offered** - frames the producer offered over the same
+     live ticks (a hooked game's presents); stays zero for a source that
+     never calls :c:func:`obs_source_add_frame_report()`
 
 ---------------------
 

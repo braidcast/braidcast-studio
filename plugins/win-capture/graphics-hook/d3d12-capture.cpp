@@ -459,6 +459,7 @@ static bool d3d12_copy_backbuffer(IDXGISwapChain *swap, ID3D11Texture2D *dst, ID
 
 			backbuffer->Release();
 			copied = true;
+			hook_count_copy();
 		}
 
 		backbuffer12->Release();
@@ -575,6 +576,11 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 	}
 
 	InterlockedDecrement(&ring.presenting);
+}
+
+bool d3d12_owns_capture(void)
+{
+	return data.ring.count != 0 || data.handle != nullptr;
 }
 
 void d3d12_capture(void *swap_ptr, void *)

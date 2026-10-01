@@ -485,6 +485,8 @@ static inline void d3d9_shtex_capture(IDirect3DSurface9 *backbuffer)
 	hr = data.device->StretchRect(backbuffer, nullptr, data.d3d9_copytex, nullptr, D3DTEXF_NONE);
 	if (FAILED(hr)) {
 		hlog_hr("d3d9_shtex_capture: StretchRect failed", hr);
+	} else {
+		hook_count_copy();
 	}
 }
 
@@ -551,6 +553,9 @@ static void d3d9_capture(IDirect3DDevice9 *device, IDirect3DSurface9 *backbuffer
 	}
 	if (capture_should_init()) {
 		d3d9_init(device);
+	}
+	if (data.device == device && (data.handle != nullptr || data.shmem_info != nullptr)) {
+		hook_count_present();
 	}
 	if (data.handle != nullptr && capture_ready()) {
 		if (data.device != device) {

@@ -243,6 +243,9 @@ static void d3d8_capture(IDirect3DDevice8 *device, IDirect3DSurface8 *backbuffer
 	if (capture_should_init()) {
 		d3d8_init(device);
 	}
+	if (data.shmem_info) {
+		hook_count_present();
+	}
 	if (capture_ready()) {
 		d3d8_shmem_capture(device, backbuffer);
 	}

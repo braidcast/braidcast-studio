@@ -34,7 +34,8 @@ constexpr int kExitSeconds = 5;
 constexpr double kMinLiveShare = 0.5;
 constexpr double kMinLockRatio = 0.2;
 
-// Async "below": rendered fell under this share of what it could have rendered.
+// "Below" (async, game hook): the ticks that brought a new frame fell under
+// this share of what the producer offered and the canvas could show.
 constexpr double kBelowFactor = 0.9;
 
 constexpr double kEpsilon = 1e-9;
@@ -75,20 +76,24 @@ int MatchFraction(double fraction)
 enum class Signal {
 	Always,        // counting nothing means not capturing
 	WgcMethodOnly, // BitBlt delivers frames no counter sees
-	NoneOnceSized, // the game hook's frames have no counter; unhooked, it has no size and nothing to count
+	// A counting hook reports GAME_HOOK; hooked without it (a game still holding
+	// an older hook) it has frames and no counter. Unhooked, it has no size and
+	// nothing to count.
+	NoneOnceSized,
 };
 
 struct CaptureType {
 	const char *id;
 	Signal signal;
+	const char *unmeasurableNote; // why it reads unmeasurable, when more is known than "no counter"
 };
 
 // Capture types that may count nothing right now (a failed duplicator, a BitBlt
 // window capture, a game capture), so they get a row without a kind.
 constexpr CaptureType kCaptureTypes[] = {
-	{kMonitorCaptureId, Signal::Always},
-	{kWindowCaptureId, Signal::WgcMethodOnly},
-	{kGameCaptureId, Signal::NoneOnceSized},
+	{kMonitorCaptureId, Signal::Always, nullptr},
+	{kWindowCaptureId, Signal::WgcMethodOnly, nullptr},
+	{kGameCaptureId, Signal::NoneOnceSized, "the game's capture hook may predate frame counting; restart the game"},
 };
 
 const CaptureType *CaptureTypeOf(const std::string &id)
@@ -113,11 +118,16 @@ bool IsChangeRate(Kind kind)
 	return IsDisplayRate(kind) || kind == Kind::BrowserPaint;
 }
 
-// The game hook's kind is not measured yet, but still gets a row, so a game
-// capture never drops out of the stats or the session line.
+// Kinds whose producer rate is known, so they can read "below": an async source
+// (frames received) and the game hook (presents).
+bool HasProducerRate(Kind kind)
+{
+	return kind == Kind::Async || kind == Kind::GameHook;
+}
+
 bool IsMeasured(Kind kind)
 {
-	return IsChangeRate(kind) || kind == Kind::Async;
+	return IsChangeRate(kind) || HasProducerRate(kind);
 }
 
 Status StatusOf(const SourceInput &src)
@@ -128,9 +138,20 @@ Status StatusOf(const SourceInput &src)
 	if (src.counts.kind == Kind::None) {
 		return src.frameSignal ? Status::Idle : Status::Unmeasurable;
 	}
-	// An unhooked game capture reads idle only while the hook sets GAME_HOOK solely while
-	// capturing, as window-capture.c does for WGC; set from creation, it would read unmeasurable.
 	return IsMeasured(src.counts.kind) ? Status::Ok : Status::Unmeasurable;
+}
+
+// What a row says of a source before any delta: who it is and whether it counts.
+Row RowOf(const SourceInput &src, double mainFps)
+{
+	Row r;
+	r.uuid = src.uuid;
+	r.name = src.name;
+	r.kind = src.counts.kind;
+	r.refFps = RefFps(src.reach, mainFps);
+	r.status = StatusOf(src);
+	r.unmeasurableNote = r.status == Status::Unmeasurable ? src.unmeasurableNote : nullptr;
+	return r;
 }
 
 // A counted kind as the session line names it.
@@ -143,6 +164,8 @@ const char *LineLabel(Kind kind)
 		return "WGC";
 	case Kind::BrowserPaint:
 		return "paint";
+	case Kind::GameHook:
+		return "game";
 	default:
 		return KindName(kind);
 	}
@@ -214,6 +237,12 @@ bool HasFrameSignal(const SourceTraits &traits)
 		return !traits.hasSize;
 	}
 	return true;
+}
+
+const char *UnmeasurableNote(const SourceTraits &traits)
+{
+	const CaptureType *type = traits.async ? nullptr : CaptureTypeOf(traits.id);
+	return type ? type->unmeasurableNote : nullptr;
 }
 
 std::optional<double> RefFps(const std::vector<Reach> &reach, double mainFps)
@@ -294,12 +323,7 @@ void Tracker::NoteSession(Entry &e, const SourceInput &src, Status status)
 
 Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFps)
 {
-	Row r;
-	r.uuid = src.uuid;
-	r.name = src.name;
-	r.kind = src.counts.kind;
-	r.refFps = RefFps(src.reach, mainFps);
-	r.status = StatusOf(src);
+	Row r = RowOf(src, mainFps);
 
 	if (r.refFps && !e.hadRef) {
 		// Going live: grace runs from here, and a lock from watching before does
@@ -317,6 +341,7 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 	const uint32_t dLive = src.counts.liveTicks - e.last.liveTicks;
 	const uint32_t dNew = src.counts.newFrameTicks - e.last.newFrameTicks;
 	const uint32_t dDelivered = src.counts.framesDelivered - e.last.framesDelivered;
+	const uint32_t dOffered = src.counts.framesOffered - e.last.framesOffered;
 	e.last = src.counts;
 	e.sinceBaselineSec += dt;
 
@@ -327,6 +352,7 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 
 	std::optional<double> sessionRate;
 	std::optional<double> sessionInput;
+	std::optional<double> sessionCopies;
 	if (r.status == Status::Ok && IsChangeRate(r.kind)) {
 		// Capped at what the canvas could show, one frame per tick: WGC can land two
 		// frames in one pump, and a browser set to a custom rate above the canvas
@@ -344,11 +370,22 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 					      *r.fraction >= kMinLockRatio;
 			UpdateLock(e, r.fraction, eligible);
 		}
-	} else if (r.status == Status::Ok && r.kind == Kind::Async) {
-		r.inputFps = dDelivered / dt;
+	} else if (r.status == Status::Ok && HasProducerRate(r.kind)) {
+		// What the producer offered (an async source's frames, a game's presents)
+		// against the ticks that brought a frame the canvas had not shown, at most
+		// one per tick. The hook's copies are not that measure: two copies landing
+		// in one tick show as one frame, and a frame generation ring copies a burst
+		// at once that the source draws out over the following ticks.
+		const bool game = r.kind == Kind::GameHook;
+		const uint32_t in = game ? dOffered : dDelivered;
+		r.inputFps = in / dt;
 		r.renderedFps = dNew / dt;
+		if (game) {
+			r.copiesFps = dDelivered / dt;
+			sessionCopies = r.copiesFps;
+		}
 		if (r.refFps && dLive > 0) {
-			r.below = dNew < kBelowFactor * std::min(static_cast<double>(dDelivered), expected);
+			r.below = dNew < kBelowFactor * std::min(static_cast<double>(in), expected);
 		}
 		sessionRate = r.renderedFps;
 		sessionInput = r.inputFps;
@@ -370,6 +407,9 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 			}
 			if (sessionInput) {
 				s.input[Bin(*sessionInput)] += dt;
+			}
+			if (sessionCopies) {
+				s.copies[Bin(*sessionCopies)] += dt;
 			}
 			if (r.refFps) {
 				s.ref[static_cast<int>(std::lround(*r.refFps))] += dt;
@@ -400,12 +440,7 @@ void Tracker::Sample(const SampleInput &in)
 		if (restart) {
 			// A new window: no delta across it, and the grace period runs again.
 			Rebaseline(e, src, in.mainFps);
-			Row r;
-			r.uuid = src.uuid;
-			r.name = src.name;
-			r.kind = src.counts.kind;
-			r.refFps = RefFps(src.reach, in.mainFps);
-			r.status = StatusOf(src);
+			Row r = RowOf(src, in.mainFps);
 			r.inGrace = IsDisplayRate(r.kind);
 			r.sinceReset = e.window;
 			NoteSession(e, src, r.status);
@@ -458,6 +493,17 @@ void Tracker::SessionBegin(uint64_t nowNs)
 	}
 }
 
+// The reference the session was mostly judged against: " (ref 60)", or " (no ref)".
+std::string Tracker::RefNote(const Session &s)
+{
+	if (s.ref.empty()) {
+		return " (no ref)";
+	}
+	const auto mode = std::max_element(s.ref.begin(), s.ref.end(),
+					   [](const auto &a, const auto &b) { return a.second < b.second; });
+	return Format(" (ref %.0f)", static_cast<double>(mode->first));
+}
+
 std::string Tracker::Summarize(const std::string &name, const Entry &e) const
 {
 	const Session &s = e.session;
@@ -475,20 +521,20 @@ std::string Tracker::Summarize(const std::string &name, const Entry &e) const
 		// failed duplicator), not an absence.
 		return s.everShowing ? quoted + " idle (never counted)" : std::string();
 	}
+	const double belowPct = s.belowSec / s.liveSec * 100.0;
 	if (s.measuredAs == Kind::Async) {
-		const double belowPct = s.belowSec / s.liveSec * 100.0;
 		return quoted +
 		       Format(" async in %.1f out %.1f, below %.1f%%", Median(s.input), Median(s.rate), belowPct);
 	}
-
-	std::string out = quoted + " " + LineLabel(s.measuredAs) + Format(" median %.1f/s", Median(s.rate));
-	if (s.ref.empty()) {
-		out += " (no ref)";
-	} else {
-		const auto mode = std::max_element(s.ref.begin(), s.ref.end(),
-						   [](const auto &a, const auto &b) { return a.second < b.second; });
-		out += Format(" (ref %.0f)", static_cast<double>(mode->first));
+	if (s.measuredAs == Kind::GameHook) {
+		return quoted + " " + LineLabel(s.measuredAs) +
+		       Format(" presents %.1f copies %.1f new %.1f", Median(s.input), Median(s.copies),
+			      Median(s.rate)) +
+		       RefNote(s) + Format(", below %.1f%%", belowPct);
 	}
+
+	std::string out =
+		quoted + " " + LineLabel(s.measuredAs) + Format(" median %.1f/s", Median(s.rate)) + RefNote(s);
 	if (!s.lockedSec.empty()) {
 		const auto most = std::max_element(s.lockedSec.begin(), s.lockedSec.end(),
 						   [](const auto &a, const auto &b) { return a.second < b.second; });
