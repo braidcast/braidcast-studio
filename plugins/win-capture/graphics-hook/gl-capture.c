@@ -95,22 +95,30 @@ static void gl_free(void)
 	capture_free();
 
 	if (data.using_shtex) {
-		if (data.gl_dxobj)
+		if (data.gl_dxobj) {
 			obsglDXUnregisterObjectNV(data.gl_device, data.gl_dxobj);
-		if (data.gl_device)
+		}
+		if (data.gl_device) {
 			obsglDXCloseDeviceNV(data.gl_device);
-		if (data.texture)
+		}
+		if (data.texture) {
 			glDeleteTextures(1, &data.texture);
-		if (data.d3d11_tex)
+		}
+		if (data.d3d11_tex) {
 			ID3D11Resource_Release(data.d3d11_tex);
-		if (data.d3d11_context)
+		}
+		if (data.d3d11_context) {
 			ID3D11DeviceContext_Release(data.d3d11_context);
-		if (data.d3d11_device)
+		}
+		if (data.d3d11_device) {
 			ID3D11Device_Release(data.d3d11_device);
-		if (data.dxgi_swap)
+		}
+		if (data.dxgi_swap) {
 			IDXGISwapChain_Release(data.dxgi_swap);
-		if (data.hwnd)
+		}
+		if (data.hwnd) {
 			DestroyWindow(data.hwnd);
+		}
 	} else {
 		for (size_t i = 0; i < NUM_BUFFERS; i++) {
 			if (data.pbos[i]) {
@@ -123,13 +131,15 @@ static void gl_free(void)
 				glDeleteBuffers(1, &data.pbos[i]);
 			}
 
-			if (data.textures[i])
+			if (data.textures[i]) {
 				glDeleteTextures(1, &data.textures[i]);
+			}
 		}
 	}
 
-	if (data.fbo)
+	if (data.fbo) {
 		glDeleteFramebuffers(1, &data.fbo);
+	}
 
 	gl_error("gl_free", "GL error occurred on free");
 
@@ -151,8 +161,9 @@ static inline void *wgl_get_proc(const char *name)
 static inline void *get_proc(const char *name)
 {
 	void *func = wgl_get_proc(name);
-	if (!func)
+	if (!func) {
 		func = base_get_proc(name);
+	}
 
 	return func;
 }
@@ -172,8 +183,9 @@ static void init_nv_functions(void)
 			       !!obsglDXRegisterObjectNV && !!obsglDXUnregisterObjectNV && !!obsglDXObjectAccessNV &&
 			       !!obsglDXLockObjectsNV && !!obsglDXUnlockObjectsNV;
 
-	if (nv_capture_available)
+	if (nv_capture_available) {
 		hlog("Shared-texture OpenGL capture available");
+	}
 }
 
 #define GET_PROC(cur_func, ptr, func)                                              \
@@ -529,16 +541,18 @@ static int gl_init(HDC hdc)
 
 	if (data.using_shtex) {
 		success = gl_shtex_init(window);
-		if (!success)
+		if (!success) {
 			ret = INIT_SHTEX_FAILED;
+		}
 	} else {
 		success = gl_shmem_init(window);
 	}
 
-	if (!success)
+	if (!success) {
 		gl_free();
-	else
+	} else {
 		ret = INIT_SUCCESS;
+	}
 
 	return ret;
 }
@@ -721,15 +735,17 @@ static void gl_capture(HDC hdc)
 		/* reset capture if resized */
 		get_window_size(hdc, &new_cx, &new_cy);
 		if (new_cx != data.cx || new_cy != data.cy) {
-			if (new_cx != 0 && new_cy != 0)
+			if (new_cx != 0 && new_cy != 0) {
 				gl_free();
+			}
 			return;
 		}
 
-		if (data.using_shtex)
+		if (data.using_shtex) {
 			gl_shtex_capture();
-		else
+		} else {
 			gl_shmem_capture();
+		}
 	}
 }
 
@@ -738,8 +754,9 @@ static inline void gl_swap_begin(HDC hdc)
 	const bool first = swap_recurse == 0;
 	++swap_recurse;
 
-	if (first && !global_hook_info->capture_overlay)
+	if (first && !global_hook_info->capture_overlay) {
 		gl_capture(hdc);
+	}
 }
 
 static inline void gl_swap_end(HDC hdc)
@@ -747,8 +764,9 @@ static inline void gl_swap_end(HDC hdc)
 	--swap_recurse;
 	const bool first = swap_recurse == 0;
 
-	if (first && global_hook_info->capture_overlay)
+	if (first && global_hook_info->capture_overlay) {
 		gl_capture(hdc);
+	}
 }
 
 static BOOL WINAPI hook_swap_buffers(HDC hdc)
@@ -862,12 +880,15 @@ bool hook_gl(void)
 	const bool success = error == NO_ERROR;
 	if (success) {
 		hlog("Hooked SwapBuffers");
-		if (RealWglDeleteContext)
+		if (RealWglDeleteContext) {
 			hlog("Hooked wglDeleteContext");
-		if (RealWglSwapLayerBuffers)
+		}
+		if (RealWglSwapLayerBuffers) {
 			hlog("Hooked wglSwapLayerBuffers");
-		if (RealWglSwapBuffers)
+		}
+		if (RealWglSwapBuffers) {
 			hlog("Hooked wglSwapBuffers");
+		}
 		hlog("Hooked GL");
 	} else {
 		RealSwapBuffers = NULL;
