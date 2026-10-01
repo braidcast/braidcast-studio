@@ -153,6 +153,88 @@ bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath)
 	return obs_data_save_json_pretty_safe(root, absPath.c_str(), "tmp", "bak");
 }
 
+namespace {
+
+// Whether the file at `path` loads: obs_data's own parser (jansson, duplicate keys refused)
+// accepts it, as it must for the store's load. A temp file a write abandoned midway does not,
+// so this tells a finished one apart. nlohmann looks first so that text which is not JSON at
+// all never reaches jansson, whose error line quotes the text it stopped at.
+bool LoadsAsObsData(const std::filesystem::path &path)
+{
+	std::string text;
+	if (!FileUtil::ReadBinaryFile(path, text) || !nlohmann::json::accept(text)) {
+		return false;
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(text.c_str());
+	return data != nullptr;
+}
+
+// Make "<absPath>.bak" a copy of the store file, or remove it when the copy fails. A backup
+// that can be neither is logged; the next save or load of the store tries again.
+void ReplaceBackupWithCurrent(const std::string &absPath)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path bak = fs::u8path(absPath + ".bak");
+	if (fs::copy_file(fs::u8path(absPath), bak, fs::copy_options::overwrite_existing, ec)) {
+		return;
+	}
+	ec.clear();
+	if (!fs::remove(bak, ec) && ec) {
+		HostLog("[storage] the backup of " + absPath +
+			" still holds an older state; cleared at the next save or load");
+	}
+}
+
+} // namespace
+
+bool DropStoreHistory(const std::string &absPath)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path file = fs::u8path(absPath);
+	const fs::path tmp = fs::u8path(absPath + ".tmp");
+	bool promoted = false;
+	if (!fs::exists(file, ec)) {
+		// A replace that gave up after moving the old file into ".bak" leaves the new state
+		// only in the temp file: that is the newest state there is, so it goes into place.
+		// A temp file that does not load is an abandoned write and stays where it is.
+		if (!LoadsAsObsData(tmp)) {
+			return false;
+		}
+		fs::rename(tmp, file, ec);
+		if (ec) {
+			HostLog("[storage] " + absPath +
+				" is missing and its finished write could not be moved into place");
+			return false;
+		}
+		promoted = true;
+	}
+	if (!LoadsAsObsData(file)) {
+		return promoted; // unreadable: the backup is what a load falls back to
+	}
+	fs::remove(tmp, ec);
+	ReplaceBackupWithCurrent(absPath);
+	return promoted;
+}
+
+bool SaveJsonAtomicDroppingHistory(obs_data_t *root, const std::string &absPath)
+{
+	if (SaveJsonAtomic(root, absPath)) {
+		// The save rotated the outgoing file into ".bak".
+		ReplaceBackupWithCurrent(absPath);
+		return true;
+	}
+	// The temp file DropStoreHistory may move into place can be an older save's, when this
+	// one failed before writing its own: only one holding exactly what this save wrote puts
+	// the new state in the file.
+	const char *json = obs_data_get_json_pretty(root);
+	std::string tmp;
+	const bool tmpIsThisSave = json && FileUtil::ReadBinaryFile(std::filesystem::u8path(absPath + ".tmp"), tmp) &&
+				   tmp == json;
+	return DropStoreHistory(absPath) && tmpIsThisSave;
+}
+
 bool ReportSaveResult(bool saved, const std::string &path)
 {
 	if (!saved) {
@@ -246,10 +328,12 @@ nlohmann::json LoadStoreJson(const std::string &absPath, OnUnusable onUnusable, 
 	return JsonFromData(root);
 }
 
-bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath)
+bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath, SaveHistory history)
 {
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-	return ReportSaveResult(SaveJsonAtomic(data, absPath), absPath);
+	const bool saved = history == SaveHistory::Drop ? SaveJsonAtomicDroppingHistory(data, absPath)
+							: SaveJsonAtomic(data, absPath);
+	return ReportSaveResult(saved, absPath);
 }
 
 nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr)

@@ -104,6 +104,10 @@ struct ModerationOp {
 	// "" when it gave nothing usable. Shown beside the removed text in the dock and held in
 	// memory only: a Redaction does not carry it, so it never reaches chat.db.
 	std::string label;
+	// When the platform says the action happened, on its own clock, for an op read live that
+	// carries a time. Never a bound on chat lines, whose seq bound is exact for a live op; it
+	// bounds a ban against events stamped by the same platform (Events::RecentRemovals).
+	std::optional<int64_t> happenedAt;
 };
 
 // Whether `op` may be applied when it was read out of a platform's history (a backlog or a

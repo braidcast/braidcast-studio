@@ -14450,12 +14450,11 @@ bool MethodEventsReplay(const json &p, json &result, std::string &error)
 			"so no overlay widget is connected to anything";
 		return false;
 	}
-	for (const Events::NormalizedEvent &ev : Events::Store().List()) {
-		if (ev.id == id) {
-			const size_t delivered = Overlay::Server().Broadcast(ev, /*replay=*/true);
-			result = json{{"ok", true}, {"delivered", delivered}};
-			return true;
-		}
+	// Through the hub, so a replay cannot carry words a moderator's removal has already told
+	// the widgets were removed (EventHub::admitMutex_).
+	if (const std::optional<size_t> delivered = Events::Hub().Replay(id)) {
+		result = json{{"ok", true}, {"delivered", *delivered}};
+		return true;
 	}
 	// The id is not embedded here: a Kick event id carries the viewer's username
 	// (kick_events.cpp) and so can a Twitch follow id, and this error reaches the

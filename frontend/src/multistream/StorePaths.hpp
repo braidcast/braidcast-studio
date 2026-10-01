@@ -56,6 +56,26 @@ typedef struct obs_data_array obs_data_array_t;
 // save envelope the multistream stores share.
 bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath);
 
+// SaveJsonAtomic for a store under a removal rule (a secret, viewer text a moderator
+// removed, a purge, an age limit): "<absPath>.bak" is replaced by a copy of the file just
+// written, or removed, so a load's fallback never holds an older state. True when the new
+// state is in the file. A backup that could not be cleared is logged on its own line, not
+// reported as a failed save, and is cleared at the next save or DropStoreHistory. A failed
+// save goes through DropStoreHistory, so it never leaves the old state as the only copy; it
+// still reports failure unless the temp file moved into place holds exactly this save.
+bool SaveJsonAtomicDroppingHistory(obs_data_t *root, const std::string &absPath);
+
+// For a store saved with SaveJsonAtomicDroppingHistory, before each load: leave nothing
+// older than the store file beside it. When the file is missing but "<absPath>.tmp" loads
+// (obs_data's parser accepts it; a replace that gave up after moving the old file into
+// ".bak"), the temp file is the newest state and is moved into place first. Then, when the
+// file loads, the temp file is removed and ".bak" becomes a copy of the file, or is removed.
+// A file that is missing or does not load is left alone, with the backup a load falls back
+// to. Returns whether
+// a temp file was moved into place. This is what clears a backup left by a crash between a
+// save's replace and its backup copy, or one a save could not clear.
+bool DropStoreHistory(const std::string &absPath);
+
 // Log-and-forward the result of a SaveJsonAtomic (or any atomic save): on failure
 // emit a "[storage] failed to save <path>" line so a disk-full/permission loss is
 // never silent, then return `saved` unchanged so callers can propagate it. The one
@@ -83,9 +103,14 @@ enum class OnUnusable { Keep, Leave };
 nlohmann::json LoadStoreJson(const std::string &absPath, OnUnusable onUnusable = OnUnusable::Keep,
 			     bool *unusable = nullptr);
 
-// Persist `root` to `absPath` through SaveJsonAtomic and ReportSaveResult: the
-// whole save envelope a store's Save() is, minus the model-to-JSON step.
-bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath);
+// Whether a save may leave the previous state behind in "<absPath>.bak". Drop is for a
+// store under a secret, retention or purge rule (SaveJsonAtomicDroppingHistory).
+enum class SaveHistory { Keep, Drop };
+
+// Persist `root` to `absPath` through SaveJsonAtomic (or SaveJsonAtomicDroppingHistory)
+// and ReportSaveResult: the whole save envelope a store's Save() is, minus the
+// model-to-JSON step.
+bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath, SaveHistory history = SaveHistory::Keep);
 
 // A store file the app found but could not use, kept beside the original so that a
 // later save of the fallback cannot destroy it.

@@ -55,6 +55,7 @@ void StreamProfileStore::Load(const std::string &path)
 	// Not kept aside when unusable: streams.json holds stream keys and bearer tokens, and an
 	// account's removal rewrites it, so a kept copy would outlive a deleted key and a disconnect.
 	// Held in place instead, which is all that protects it.
+	DropStoreHistory(path);
 	bool unusable = false;
 	FromJson(LoadStoreJson(path, OnUnusable::Leave, &unusable));
 	hold.AfterLoad(unusable, ToJson().dump());
@@ -71,7 +72,9 @@ bool StreamProfileStore::Save(const std::string &path) const
 	if (hold.Skips(root.dump())) {
 		return true;
 	}
-	return SaveStoreJson(root, path);
+	// A removed profile or disconnected account must not leave its stream key or token
+	// behind in the backup.
+	return SaveStoreJson(root, path, SaveHistory::Drop);
 }
 
 StreamProfile *StreamProfileStore::Primary()

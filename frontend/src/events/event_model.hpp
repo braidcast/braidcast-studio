@@ -40,6 +40,14 @@ struct NormalizedEvent {
 	int months = 0;       // resub cumulative months
 	int count = 0;        // gift count
 	std::string message;  // resub/superchat/Kicks user message (plain text; the dock escapes it)
+	// Who and what a moderator's removal can name, never text. `msgId` is the chat message
+	// the event arrived as, when it did (YouTube's live-chat sink); `authorId` the viewer's
+	// platform user id, the one chat frames carry as `author.id`. `deleted` is the chat
+	// moderation mark ("message", "user") once a removal took `message` away
+	// (RedactModeratedEvents); the event itself stays.
+	std::string msgId;
+	std::string authorId;
+	std::string deleted;
 
 	// The JS/persistence shape: always id/platform/type/ts/actorName; every other
 	// field is omitted when empty-string or zero so a follow event carries no stray
@@ -75,6 +83,15 @@ struct NormalizedEvent {
 		}
 		if (!message.empty()) {
 			j["message"] = message;
+		}
+		if (!msgId.empty()) {
+			j["msgId"] = msgId;
+		}
+		if (!authorId.empty()) {
+			j["authorId"] = authorId;
+		}
+		if (!deleted.empty()) {
+			j["deleted"] = deleted;
 		}
 		return j;
 	}

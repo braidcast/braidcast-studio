@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "util/http_client.hpp"
+#include "util/random_util.hpp"
 #include "util/string_util.hpp"
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
@@ -433,6 +434,14 @@ json UserMessageFragments(const IrcLine &m, const Chat::ThirdPartyEmoteMap &emot
 // PRIVMSG and USERNOTICE become chat lines; anything else is null. A USERNOTICE is the
 // channel's own announcement of a sub/gift/raid/etc. and renders in chat ONLY: EventSub
 // already raises those events, so raising one here would double every alert.
+// When Twitch says it sent the line (`tmi-sent-ts`, epoch ms on Twitch's clock), when the
+// line carries a usable one.
+std::optional<int64_t> SentTs(const IrcLine &m)
+{
+	const int64_t ts = std::strtoll(m.tag("tmi-sent-ts").c_str(), nullptr, 10);
+	return ts > 0 ? std::optional<int64_t>(ts) : std::nullopt;
+}
+
 json NormalizeChatLine(const IrcLine &m, const std::string &channel, const Chat::ThirdPartyEmoteMap &emotes)
 {
 	const bool privmsg = m.command == "PRIVMSG";
@@ -475,10 +484,7 @@ json NormalizeChatLine(const IrcLine &m, const std::string &channel, const Chat:
 		}
 	}
 
-	int64_t ts = std::strtoll(m.tag("tmi-sent-ts").c_str(), nullptr, 10);
-	if (ts <= 0) {
-		ts = NowMs();
-	}
+	const int64_t ts = SentTs(m).value_or(NowMs());
 	return Chat::BuildChatMessage("twitch", channel, m.tag("id"), ts, name, m.tag("user-id"), m.tag("color"),
 				      BuildBadges(m.tag("badges")), fragments, paid);
 }
@@ -499,6 +505,7 @@ std::optional<Chat::ModerationOp> ModerationFromLine(const IrcLine &m)
 	op.authorId = m.tag("target-user-id");
 	if (!op.authorId.empty()) {
 		op.action = Chat::ModerationAction::ClearUser;
+		op.happenedAt = SentTs(m);
 		return op;
 	}
 	// The trailing param names the removed user's login. With no id to match their lines
@@ -511,7 +518,139 @@ std::optional<Chat::ModerationOp> ModerationFromLine(const IrcLine &m)
 	return op;
 }
 
+// The USERSTATE that answers a PRIVMSG carries the sent message's `id`, and hands back the
+// `client-nonce` we tagged it with when Twitch returns it; see TwitchEchoQueue. The JOIN
+// USERSTATE carries neither.
+EchoAnswer AnswerOf(const IrcLine &m)
+{
+	if (m.command != "USERSTATE" || m.tag("id").empty()) {
+		return EchoAnswer::None;
+	}
+	return m.tag("client-nonce").empty() ? EchoAnswer::WithoutNonce : EchoAnswer::WithNonce;
+}
+
+std::vector<json> ClaimEcho(const IrcLine &m, TwitchEchoQueue &echoes)
+{
+	switch (AnswerOf(m)) {
+	case EchoAnswer::WithNonce:
+		if (std::optional<json> echo = echoes.Resolve(m.tag("client-nonce"), m.tag("id"))) {
+			return {std::move(*echo)};
+		}
+		return {};
+	case EchoAnswer::WithoutNonce:
+		return echoes.NonceMissing();
+	case EchoAnswer::None:
+		break;
+	}
+	return {};
+}
+
 } // namespace
+
+bool TwitchEchoQueue::Stage(const std::string &nonce, json &echo)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (nonceMissing_ || pending_.size() >= kMaxPending) {
+		return false;
+	}
+	pending_.push_back({nonce, std::move(echo)});
+	echo = json();
+	return true;
+}
+
+std::optional<json> TwitchEchoQueue::MarkSent(const std::string &nonce, int64_t deadlineMs)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const auto it =
+		std::find_if(pending_.begin(), pending_.end(), [&nonce](const Pending &p) { return p.nonce == nonce; });
+	if (it == pending_.end()) {
+		return std::nullopt; // claimed by its USERSTATE already
+	}
+	if (nonceMissing_) {
+		json echo = std::move(it->echo);
+		pending_.erase(it);
+		return echo;
+	}
+	it->sent = true;
+	it->deadlineMs = deadlineMs;
+	return std::nullopt;
+}
+
+void TwitchEchoQueue::Drop(const std::string &nonce)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
+				      [&nonce](const Pending &p) { return p.nonce == nonce; }),
+		       pending_.end());
+}
+
+std::optional<json> TwitchEchoQueue::Resolve(const std::string &nonce, const std::string &id)
+{
+	json echo;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const auto it = std::find_if(pending_.begin(), pending_.end(),
+					     [&nonce](const Pending &p) { return p.nonce == nonce; });
+		if (it == pending_.end()) {
+			return std::nullopt;
+		}
+		echo = std::move(it->echo);
+		pending_.erase(it);
+	}
+	if (!id.empty()) {
+		echo["id"] = id;
+	}
+	return echo;
+}
+
+template<typename Pick> std::vector<json> TwitchEchoQueue::TakeSentLocked(Pick take)
+{
+	std::vector<json> out;
+	for (auto it = pending_.begin(); it != pending_.end();) {
+		if (!it->sent || !take(*it)) {
+			++it;
+			continue;
+		}
+		out.push_back(std::move(it->echo));
+		it = pending_.erase(it);
+	}
+	return out;
+}
+
+std::vector<json> TwitchEchoQueue::NonceMissing()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	nonceMissing_ = true;
+	return TakeSentLocked([](const Pending &) { return true; });
+}
+
+void TwitchEchoQueue::NewConnection()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	nonceMissing_ = false;
+}
+
+std::vector<json> TwitchEchoQueue::TakeExpired(int64_t nowMs)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return TakeSentLocked([nowMs](const Pending &p) { return p.deadlineMs <= nowMs; });
+}
+
+std::vector<json> TwitchEchoQueue::TakeSent()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return TakeSentLocked([](const Pending &) { return true; });
+}
+
+EchoAnswer ReadTwitchEchoAnswer(const std::string &line)
+{
+	return AnswerOf(ParseIrc(line));
+}
+
+std::vector<json> ClaimTwitchEcho(const std::string &line, TwitchEchoQueue &echoes)
+{
+	return ClaimEcho(ParseIrc(line), echoes);
+}
 
 json NormalizeTwitchChatLine(const std::string &line, const std::string &channel,
 			     const Chat::ThirdPartyEmoteMap &emotes)
@@ -522,6 +661,13 @@ json NormalizeTwitchChatLine(const std::string &line, const std::string &channel
 std::optional<Chat::ModerationOp> ParseTwitchModerationLine(const std::string &line)
 {
 	return ModerationFromLine(ParseIrc(line));
+}
+
+void TwitchChat::releaseEchoes(const Chat::ChatContext &ctx)
+{
+	for (const json &echo : echoes_.TakeSent()) {
+		ctx.emit(echo);
+	}
 }
 
 bool TwitchChat::sendLine(const std::string &line)
@@ -592,6 +738,8 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			continue;
 		}
 
+		echoes_.NewConnection();
+
 		// Handshake. CAP first (so tags/commands apply to the welcome burst), then
 		// PASS / NICK to authenticate, then JOIN the channel.
 		const bool handshakeOk =
@@ -613,6 +761,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 		// Read loop. recv() polls with a ~250ms timeout, so canceled() is re-checked
 		// frequently and a Stop() returns within that window.
 		bool authFailed = false;
+		bool nonceReported = false; // logged once per connection: yes or no, never the value
 		while (!canceled()) {
 			std::string frame;
 			bool isText = false;
@@ -620,6 +769,17 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			if (!Chat::LockedRecv(wsMutex_, ws_, frame, isText, rerr)) {
 				err = rerr;
 				break; // peer closed / transport error -> reconnect
+			}
+			// Checked on every poll, so an echo whose USERSTATE never comes waits at most
+			// one poll past its deadline.
+			const std::vector<json> unclaimed = echoes_.TakeExpired(NowMs());
+			if (!unclaimed.empty()) {
+				DBG(LogCat::Chat,
+				    "twitch: %zu sent message(s) got no USERSTATE in %lld ms; echoed without an id",
+				    unclaimed.size(), static_cast<long long>(TwitchEchoQueue::kEchoIdWaitMs));
+			}
+			for (const json &echo : unclaimed) {
+				ctx.emit(echo);
 			}
 			if (frame.empty() || !isText) {
 				continue; // poll timeout, auto-PONGed ping, or partial chunk
@@ -650,6 +810,22 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 					err = "Twitch chat login failed: " + m.trailing;
 					break;
 				}
+				// Admitted here on the read worker, in socket order, so a CLEARCHAT read
+				// after it reaches it like any other line.
+				if (m.command == "USERSTATE") {
+					const EchoAnswer answer = AnswerOf(m);
+					if (answer != EchoAnswer::None && !nonceReported) {
+						nonceReported = true;
+						HostLog(std::string(
+								"[chat] twitch: USERSTATE for a sent message returned "
+								"client-nonce: ") +
+							(answer == EchoAnswer::WithNonce ? "yes" : "no"));
+					}
+					for (const json &echo : ClaimEcho(m, echoes_)) {
+						ctx.emit(echo);
+					}
+					continue;
+				}
 				if (const std::optional<Chat::ModerationOp> op = ModerationFromLine(m)) {
 					if (ctx.emitModeration) {
 						ctx.emitModeration(*op);
@@ -668,6 +844,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 
 		ready_.store(false);
 		Chat::LockedClose(wsMutex_, ws_);
+		releaseEchoes(ctx);
 		if (canceled()) {
 			break;
 		}
@@ -701,15 +878,15 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 
 	ready_.store(false);
 	Chat::LockedClose(wsMutex_, ws_);
+	releaseEchoes(ctx);
 	if (canceled()) {
 		err.clear(); // clean cancel: hub suppresses the log
 	}
 	return false;
 }
 
-bool TwitchChat::send(OAuthAccount &acct, const std::string &text, std::string &err)
+bool TwitchChat::sendPrivmsg(const std::string &text, const std::string &nonce, std::string &err)
 {
-	(void)acct; // IRC sends over the already-authenticated socket; no per-send token
 	if (!ready_.load()) {
 		err = "Twitch chat not connected";
 		return false;
@@ -719,10 +896,47 @@ bool TwitchChat::send(OAuthAccount &acct, const std::string &text, std::string &
 		std::lock_guard<std::mutex> lock(wsMutex_);
 		channel = channel_;
 	}
-	const std::string line = "PRIVMSG #" + channel + " :" + SanitizeOutbound(text) + "\r\n";
+	// The nonce is lowercase hex, so it needs no tag-value escaping.
+	const std::string tags = nonce.empty() ? std::string() : "@client-nonce=" + nonce + " ";
+	const std::string line = tags + "PRIVMSG #" + channel + " :" + SanitizeOutbound(text) + "\r\n";
 	if (!sendLine(line)) {
 		err = "Twitch chat send failed";
 		return false;
+	}
+	return true;
+}
+
+bool TwitchChat::send(OAuthAccount &acct, const std::string &text, std::string &err)
+{
+	(void)acct; // IRC sends over the already-authenticated socket; no per-send token
+	// Tagged even with no echo to key: every USERSTATE answering our PRIVMSGs then carries a
+	// nonce when Twitch returns them, so one without it means this connection does not.
+	return sendPrivmsg(text, RandomUtil::HexToken(16), err);
+}
+
+bool TwitchChat::sendEchoed(OAuthAccount &acct, const std::string &text, json &echo, std::string &err)
+{
+	(void)acct;
+	// Staged before the PRIVMSG goes out, so its USERSTATE always finds it. Without a nonce
+	// (the RNG refused), room in the queue, or a connection that returns the nonce, the echo
+	// stays with the hub, which shows it once the send succeeded, with no id.
+	const std::string nonce = RandomUtil::HexToken(16);
+	if (nonce.empty() || !echoes_.Stage(nonce, echo)) {
+		return sendPrivmsg(text, nonce, err);
+	}
+	bool ok = false;
+	try {
+		ok = sendPrivmsg(text, nonce, err);
+	} catch (...) {
+		echoes_.Drop(nonce);
+		throw;
+	}
+	if (!ok) {
+		echoes_.Drop(nonce);
+		return false;
+	}
+	if (std::optional<json> now = echoes_.MarkSent(nonce, NowMs() + TwitchEchoQueue::kEchoIdWaitMs)) {
+		echo = std::move(*now); // the connection returns no nonce: the hub shows it now
 	}
 	return true;
 }

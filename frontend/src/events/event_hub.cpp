@@ -1,14 +1,17 @@
 #include "event_hub.hpp"
 #include "../event_names.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "util/async_task.hpp"
 #include "../bridge.hpp"
-#include "../chat/ws_client.hpp" // Chat::CancelableSleep
+#include "../chat/chat_archive.hpp" // Chat::ModerationOp, Chat::Redaction
+#include "../chat/ws_client.hpp"    // Chat::CancelableSleep
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
@@ -144,9 +147,14 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			if (!ok && !err.empty()) {
 				HostLog("[events] backfill '" + providerId + "' failed: " + err);
 			}
+			// Admitted and posted under one hold of the admission lock, so a removal lands
+			// wholly before the batch (it is scrubbed) or wholly after (its events.redacted
+			// follows the batch).
+			std::lock_guard<std::mutex> admission(admitMutex_);
 			json added = json::array();
-			for (const NormalizedEvent &ev : seed) {
-				if (Store().Add(ev)) {
+			for (NormalizedEvent &ev : seed) {
+				// Stamped like an emitted event, so a removal on this account reaches it.
+				if (Admit(ev, accountId)) {
 					added.push_back(ev.ToJson());
 				}
 			}
@@ -296,9 +304,37 @@ void EventHub::StopAll()
 	}
 }
 
+bool EventHub::Admit(NormalizedEvent &ev, const std::string &accountId)
+{
+	if (ev.accountId.empty()) {
+		ev.accountId = accountId;
+	}
+	// A duplicate is not stored (Add only fills in the stored copy's ids), so it is not
+	// scrubbed either.
+	if (!ev.id.empty() && !Store().Contains(ev.id)) {
+		removals_.Scrub(ev, Store(), TimeUtil::NowMs());
+	}
+	return Store().Add(ev);
+}
+
+void EventHub::Observe(const char *name, const json &payload) const
+{
+	if (fanoutObserver_) {
+		fanoutObserver_(name, payload);
+	}
+}
+
+void EventHub::SetFanoutObserver(std::function<void(const char *name, const json &payload)> observer)
+{
+	std::lock_guard<std::mutex> admission(admitMutex_);
+	fanoutObserver_ = std::move(observer);
+}
+
 void EventHub::Ingest(const NormalizedEvent &ev)
 {
-	if (!Store().Add(ev)) {
+	std::lock_guard<std::mutex> admission(admitMutex_);
+	NormalizedEvent admitted = ev;
+	if (!Admit(admitted, ev.accountId)) {
 		// Mostly the expected case -- the YouTube REST transport re-emits its whole poll
 		// window every tick and leans on this drop. The one worth catching is a real-time
 		// event whose id backfill already seeded into the store (it seeds without
@@ -308,12 +344,160 @@ void EventHub::Ingest(const NormalizedEvent &ev)
 		return; // duplicate / no id -> already emitted or unusable; drop
 	}
 	DBG(LogCat::Events, "ingest %s %s id=%s", ev.platform.c_str(), ev.type.c_str(), ev.id.c_str());
-	json payload = ev.ToJson();
+	json payload = admitted.ToJson();
+	Observe(EventNames::kEventsNew, payload);
 	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent(EventNames::kEventsNew, payload); });
 	// Phase 9.3: fan the same event to every open overlay widget (SSE). Called off the
 	// event worker thread; Broadcast is mutex-guarded + thread-safe. Only reached for a
 	// newly-stored (non-duplicate) event, so widgets never double-fire.
-	Overlay::Server().Broadcast(ev);
+	Overlay::Server().Broadcast(admitted);
+}
+
+std::optional<size_t> EventHub::Replay(const std::string &id)
+{
+	std::lock_guard<std::mutex> admission(admitMutex_);
+	const std::vector<NormalizedEvent> stored =
+		Store().Select([&id](const NormalizedEvent &ev) { return ev.id == id; });
+	if (stored.empty()) {
+		return std::nullopt;
+	}
+	return Overlay::Server().Broadcast(stored.front(), /*replay=*/true);
+}
+
+namespace {
+
+// The time two copies of one purchase can disagree by: each surface keys it to a whole second
+// (YouTubeMoneyEventId), and a copy just either side of a second boundary gets another id.
+constexpr int64_t kSamePurchaseSkewMs = 2000;
+
+// Whether `other` is the copy of `paid` the Super Chat REST poll stored under another id: it
+// knows no chat message id, and the same viewer paid the same amount on the same account at
+// the same moment.
+bool SamePurchase(const NormalizedEvent &paid, const NormalizedEvent &other)
+{
+	const int64_t skew = paid.ts > other.ts ? paid.ts - other.ts : other.ts - paid.ts;
+	return other.id != paid.id && other.msgId.empty() && !paid.authorId.empty() &&
+	       other.authorId == paid.authorId && other.accountId == paid.accountId &&
+	       other.platform == paid.platform && other.type == paid.type && other.amount == paid.amount &&
+	       skew <= kSamePurchaseSkewMs;
+}
+
+// Whether `redaction`, an op on `opDest`, reaches `ev`. An event stored with no broadcast (the
+// account-wide Super Chat REST poll) belongs to one of its account's destinations, not known
+// which, so it is held to be on `opDest`.
+bool Reaches(const Chat::Redaction &redaction, const OAuth::DestinationId &opDest, const NormalizedEvent &ev)
+{
+	const OAuth::DestinationId on = ev.profileUuid.empty() && ev.accountId == opDest.accountId
+						? opDest
+						: OAuth::DestinationId{ev.accountId, ev.profileUuid};
+	return redaction.Matches(OAuth::DestinationKey(on), 0, ev.ts, ev.msgId, ev.authorId);
+}
+
+} // namespace
+
+std::vector<NormalizedEvent> RedactModeratedEvents(EventStore &store, const OAuth::DestinationId &dest,
+						   const Chat::ModerationOp &op)
+{
+	if (op.action == Chat::ModerationAction::ClearAll) {
+		return {};
+	}
+	Chat::ModerationOp stamped = op;
+	stamped.dest = dest;
+	// The chat rule itself, so an event is reached exactly when a chat line with its ids
+	// would be. Seq 0 under the highest bound: the store holds only events admitted before.
+	const Chat::Redaction redaction = Chat::Redaction::From(stamped, std::numeric_limits<uint64_t>::max());
+	const auto reaches = [&redaction, &dest](const NormalizedEvent &ev) {
+		return Reaches(redaction, dest, ev);
+	};
+	if (op.action != Chat::ModerationAction::Delete) {
+		return store.RedactMessages(reaches, Chat::DeletedMark(op.action));
+	}
+	// A delete names one chat message; the REST poll's copy of the same purchase carries no
+	// message id, so it is found through the copy the message id names.
+	const std::vector<NormalizedEvent> named = store.Select(reaches);
+	if (named.empty()) {
+		return {};
+	}
+	return store.RedactMessages(
+		[&reaches, &named](const NormalizedEvent &ev) {
+			return reaches(ev) ||
+			       std::any_of(named.begin(), named.end(),
+					   [&ev](const NormalizedEvent &paid) { return SamePurchase(paid, ev); });
+		},
+		Chat::DeletedMark(op.action));
+}
+
+void RecentRemovals::Remember(const OAuth::DestinationId &dest, const Chat::ModerationOp &op, int64_t seenMs)
+{
+	if (op.action == Chat::ModerationAction::ClearAll) {
+		return;
+	}
+	Chat::ModerationOp stamped = op;
+	stamped.dest = dest;
+	Removal removal{dest, Chat::Redaction::From(stamped, std::numeric_limits<uint64_t>::max()), seenMs};
+	if (op.action == Chat::ModerationAction::ClearUser && !removal.reach.beforeTs) {
+		removal.reach.beforeTs = op.happenedAt ? *op.happenedAt : seenMs + kSeenMarginMs;
+	}
+	std::lock_guard<std::mutex> lock(mutex_);
+	removals_.push_back(std::move(removal));
+	while (removals_.size() > kMax || seenMs - removals_.front().seenMs > kKeepMs) {
+		removals_.pop_front();
+	}
+}
+
+bool RecentRemovals::Scrub(NormalizedEvent &ev, const EventStore &store, int64_t nowMs) const
+{
+	if (ev.message.empty()) {
+		return false;
+	}
+	std::string mark;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const Removal &r : removals_) {
+			if (nowMs - r.seenMs <= kKeepMs && Reaches(r.reach, r.dest, ev)) {
+				mark = Chat::DeletedMark(r.reach.action);
+				break;
+			}
+		}
+	}
+	// The same purchase already stored with its words removed, whenever that was: the
+	// REST poll's copy of a Super Chat deleted before the poll came round.
+	if (mark.empty() && ev.msgId.empty()) {
+		const std::vector<NormalizedEvent> twin = store.Select(
+			[&ev](const NormalizedEvent &paid) { return !paid.deleted.empty() && SamePurchase(paid, ev); });
+		if (!twin.empty()) {
+			mark = twin.front().deleted;
+		}
+	}
+	if (mark.empty()) {
+		return false;
+	}
+	ev.message.clear();
+	ev.deleted = mark;
+	return true;
+}
+
+void EventHub::ApplyModeration(const OAuth::DestinationId &dest, const Chat::ModerationOp &op)
+{
+	// Held through the fan-out below: an event admitted before this is reached by the store
+	// pass and its frames went out first; one admitted after is scrubbed (admitMutex_).
+	std::lock_guard<std::mutex> admission(admitMutex_);
+	removals_.Remember(dest, op, TimeUtil::NowMs());
+	const std::vector<NormalizedEvent> redacted = RedactModeratedEvents(Store(), dest, op);
+	if (redacted.empty()) {
+		return;
+	}
+	DBG(LogCat::Events, "moderation removed the message of %zu stored event(s)", redacted.size());
+	json ids = json::array();
+	json events = json::array();
+	for (const NormalizedEvent &ev : redacted) {
+		ids.push_back(ev.id);
+		events.push_back(ev.ToJson());
+	}
+	Observe(EventNames::kEventsRedacted, events);
+	// Ids only: a widget drops the words from the events it holds, and needs nothing else.
+	Overlay::Server().BroadcastEventRedaction(json{{"ids", std::move(ids)}});
+	AsyncTask::PostToUi([events = std::move(events)]() { Bridge::EmitEvent(EventNames::kEventsRedacted, events); });
 }
 
 EventHub &Hub()

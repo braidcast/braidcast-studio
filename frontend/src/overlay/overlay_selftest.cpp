@@ -424,6 +424,12 @@ void ObsBootstrap::RunOverlaySelfTest()
 				 op["before"] = 1;
 				 server.BroadcastChatModeration(op);
 			 }},
+			{"eventredaction", "selftest-redacted-1",
+			 [&] {
+				 Overlay::json ids = Overlay::json::object();
+				 ids["ids"] = Overlay::json::array({"selftest-redacted-1"});
+				 server.BroadcastEventRedaction(ids);
+			 }},
 			{"viewers", "selftest:viewers",
 			 [&] {
 				 Overlay::json counts = Overlay::json::object();
@@ -488,10 +494,12 @@ void ObsBootstrap::RunOverlaySelfTest()
 			});
 			replayOk = gotChannels && gotStream && gotBackfill;
 			// A replayed chat message would put a moment back on screen as if it had just
-			// happened, a replayed moderation op names lines a fresh page never drew, and a
-			// replayed viewer count would assert an audience that may no longer be watching.
+			// happened, a replayed moderation op or event redaction names what a fresh page
+			// never drew, and a replayed viewer count would assert an audience that may no
+			// longer be watching.
 			replayScopeOk = acc.find("event: chat") == std::string::npos &&
 					acc.find("event: moderation") == std::string::npos &&
+					acc.find("event: eventredaction") == std::string::npos &&
 					acc.find("event: viewers") == std::string::npos;
 			closesocket(fresh);
 		}

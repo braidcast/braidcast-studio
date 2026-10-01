@@ -52,6 +52,7 @@ function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
     onEvent(fn: (e: unknown) => void) {
       handler = fn;
     },
+    onEventRedaction() {},
     formatAmount: () => "",
     formatAmountText: () => "",
     formatCount: (n: number) => String(n),

@@ -24,9 +24,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "util/async_task.hpp"
@@ -10290,6 +10292,24 @@ void ObsBootstrap::RunEventSelfTest()
 	const std::optional<std::string> origMain = FileUtil::ReadUtf8File(path);
 	const std::optional<std::string> origBak = FileUtil::ReadUtf8File(bakPath);
 
+	// The stores this test opens on a file are opened on a file of their own: a load cleans
+	// up beside its file (DropStoreHistory), which only the instance writing that file may
+	// do, and Store() writes events.json. `copyFromStore` copies what Store() has on disk
+	// there first; `withMain` false leaves only the backup.
+	const std::string ownPath = MultistreamBasicPath("events-selftest.json");
+	const std::string ownBak = ownPath + ".bak";
+	const std::string ownTmp = ownPath + ".tmp";
+	const auto clearOwn = [&] {
+		restore(ownPath, std::nullopt);
+		restore(ownBak, std::nullopt);
+		restore(ownTmp, std::nullopt);
+	};
+	const auto copyFromStore = [&](bool withMain) {
+		clearOwn();
+		restore(ownPath, withMain ? FileUtil::ReadUtf8File(path) : std::nullopt);
+		restore(ownBak, FileUtil::ReadUtf8File(bakPath));
+	};
+
 	// Start from a known-empty store so the counts below are deterministic regardless
 	// of any pre-existing history.
 	Events::Store().Clear();
@@ -10328,16 +10348,406 @@ void ObsBootstrap::RunEventSelfTest()
 	// how the app persists that trailing state (bridge shutdown does the same call), so
 	// reading back without it asserts against a write the product never promised.
 	Events::Store().Flush();
-	Events::EventStore reloaded;
+	copyFromStore(true);
+	Events::EventStore reloaded{ownPath};
 	const size_t reloadedCount = reloaded.List().size();
 	HostLog(std::string("[selftest] events round-trip -> reloaded ") + std::to_string(reloadedCount) +
 		(reloadedCount == 3 ? " (OK)" : " (MISMATCH)"));
+
+	// A chat moderator's removal reaches the viewer's words in stored events, by the chat
+	// rule: a delete names the event that arrived as that message, a ban or timeout every
+	// event of that viewer, on that destination only, within a timed op's bound. The event
+	// keeps its amount, actor and tier; one with no words is left alone; a clear of the whole
+	// chat reaches nothing. In a private store, so the cases cannot touch the user's file.
+	{
+		using Chat::ModerationAction;
+		Events::EventStore store{Events::EventStore::InMemory{}};
+		const OAuth::DestinationId ytA{"youtube:7", "profile-a"};
+		const OAuth::DestinationId ytB{"youtube:7", "profile-b"};
+		const OAuth::DestinationId tw{"twitch:7", ""};
+		const auto paid = [&store](const std::string &id, const OAuth::DestinationId &dest,
+					   const std::string &msgId, const std::string &authorId, int64_t ts,
+					   const std::string &message) {
+			Events::NormalizedEvent ev;
+			ev.id = id;
+			ev.platform = dest.profileUuid.empty() ? "twitch" : "youtube";
+			ev.type = dest.profileUuid.empty() ? "cheer" : "superchat";
+			ev.ts = ts;
+			ev.accountId = dest.accountId;
+			ev.profileUuid = dest.profileUuid;
+			ev.actorName = "viewer";
+			ev.amount = 500;
+			ev.currency = "USD";
+			ev.tier = "tier";
+			ev.msgId = msgId;
+			ev.authorId = authorId;
+			ev.message = message;
+			return store.Add(ev);
+		};
+		const bool seeded = paid("sc-1", ytA, "m1", "UCa", 1000, "words one") &&
+				    paid("sc-2", ytA, "m2", "UCa", 3000, "words two") &&
+				    paid("sc-3", ytA, "m3", "UCb", 1000, "words three") &&
+				    paid("sc-4", ytB, "m4", "UCa", 1000, "words four") &&
+				    paid("sc-5", ytA, "m5", "UCa", 1000, "") &&
+				    paid("ch-1", tw, "", "123", 1000, "cheer words");
+		const auto op = [](ModerationAction action, const std::string &msgId, const std::string &authorId,
+				   std::optional<int64_t> beforeTs = std::nullopt) {
+			Chat::ModerationOp o;
+			o.action = action;
+			o.msgId = msgId;
+			o.authorId = authorId;
+			o.beforeTs = beforeTs;
+			o.label = "[label]";
+			return o;
+		};
+		const auto stored = [&store](const std::string &id) {
+			for (const Events::NormalizedEvent &ev : store.List()) {
+				if (ev.id == id) {
+					return ev;
+				}
+			}
+			return Events::NormalizedEvent{};
+		};
+		const auto kept = [&stored](const std::string &id, const std::string &message) {
+			const Events::NormalizedEvent ev = stored(id);
+			return ev.message == message && ev.deleted.empty();
+		};
+		const auto ids = [](const std::vector<Events::NormalizedEvent> &evs) {
+			std::string out;
+			for (const Events::NormalizedEvent &ev : evs) {
+				out += (out.empty() ? "" : ",") + ev.id;
+			}
+			return out;
+		};
+		const std::string all =
+			ids(Events::RedactModeratedEvents(store, ytA, op(ModerationAction::ClearAll, "", "")));
+		const std::string elsewhere =
+			ids(Events::RedactModeratedEvents(store, ytB, op(ModerationAction::Delete, "m1", "")));
+		const std::string deleted =
+			ids(Events::RedactModeratedEvents(store, ytA, op(ModerationAction::Delete, "m1", "")));
+		const Events::NormalizedEvent sc1 = stored("sc-1");
+		const bool deleteOk = all.empty() && elsewhere.empty() && deleted == "sc-1" && sc1.message.empty() &&
+				      sc1.deleted == "message" && sc1.amount == 500 && sc1.actorName == "viewer" &&
+				      sc1.tier == "tier" && kept("sc-2", "words two") &&
+				      !sc1.ToJson().contains("message");
+		// Timed out at ts 2000: the words said before it go, the ones after stay.
+		const std::string timedOut = ids(
+			Events::RedactModeratedEvents(store, ytA, op(ModerationAction::ClearUser, "", "UCa", 2000)));
+		const std::string banned =
+			ids(Events::RedactModeratedEvents(store, ytA, op(ModerationAction::ClearUser, "", "UCa")));
+		const std::string cheer =
+			ids(Events::RedactModeratedEvents(store, tw, op(ModerationAction::ClearUser, "", "123")));
+		const bool userOk = timedOut.empty() && banned == "sc-2" && stored("sc-2").deleted == "user" &&
+				    kept("sc-3", "words three") && kept("sc-4", "words four") && kept("sc-5", "") &&
+				    cheer == "ch-1" && stored("ch-1").message.empty();
+
+		// The Super Chat REST poll's copies carry no broadcast and no message id. Live chat's
+		// copy under the same id fills those in; one stored under another id (a second
+		// boundary apart) is reached through the copy the message id names; a ban on any of
+		// the account's broadcasts reaches one, and only on that account.
+		Events::EventStore polled{Events::EventStore::InMemory{}};
+		const auto copy = [&polled](const std::string &id, const std::string &accountId,
+					    const std::string &profileUuid, const std::string &msgId,
+					    const std::string &authorId, int64_t ts, const std::string &message) {
+			Events::NormalizedEvent ev;
+			ev.id = id;
+			ev.platform = "youtube";
+			ev.type = "superchat";
+			ev.ts = ts;
+			ev.accountId = accountId;
+			ev.profileUuid = profileUuid;
+			ev.amount = 500;
+			ev.msgId = msgId;
+			ev.authorId = authorId;
+			ev.message = message;
+			return polled.Add(ev);
+		};
+		const bool polledSeeded = copy("r1", "youtube:7", "", "", "UCr", 1000, "polled one") &&
+					  !copy("r1", "youtube:7", "profile-a", "mr1", "UCr", 1000, "polled one") &&
+					  copy("r2-poll", "youtube:7", "", "", "UCr", 5000, "polled two") &&
+					  copy("r2-live", "youtube:7", "profile-a", "mr2", "UCr", 5400, "polled two") &&
+					  copy("r2-far", "youtube:7", "", "", "UCr", 8000, "polled far") &&
+					  copy("r3", "youtube:7", "", "", "UCq", 9000, "polled three") &&
+					  copy("r4", "youtube:8", "", "", "UCq", 9000, "polled four");
+		const auto polledEv = [&polled](const std::string &id) {
+			for (const Events::NormalizedEvent &ev : polled.List()) {
+				if (ev.id == id) {
+					return ev;
+				}
+			}
+			return Events::NormalizedEvent{};
+		};
+		const bool adopted = polledEv("r1").msgId == "mr1" && polledEv("r1").profileUuid == "profile-a" &&
+				     polledEv("r1").message == "polled one";
+		const std::string polledDelete =
+			ids(Events::RedactModeratedEvents(polled, ytA, op(ModerationAction::Delete, "mr1", "")));
+		const std::string twinDelete =
+			ids(Events::RedactModeratedEvents(polled, ytA, op(ModerationAction::Delete, "mr2", "")));
+		const std::string polledBan =
+			ids(Events::RedactModeratedEvents(polled, ytB, op(ModerationAction::ClearUser, "", "UCq")));
+		const bool polledOk = polledSeeded && adopted && polledDelete == "r1" &&
+				      twinDelete == "r2-poll,r2-live" && polledEv("r2-far").message == "polled far" &&
+				      polledBan == "r3" && polledEv("r4").message == "polled four";
+		// Events that reach the store after their removal: a ban seen at 10000 takes the
+		// viewer's words said by then (plus kSeenMarginMs) on that account (the poll copy has
+		// no broadcast), not ones said later or on another account, and a ban the platform
+		// timed takes them up to its own time; a delete takes a late copy carrying its id at
+		// any time; the poll copy of a purchase already removed in the store loses its words
+		// too; a clear of everyone is not kept; a removal older than kKeepMs reaches nothing.
+		Events::RecentRemovals recent;
+		recent.Remember(ytA, op(ModerationAction::ClearUser, "", "UCz"), 10000);
+		recent.Remember(ytA, op(ModerationAction::Delete, "mz", ""), 10000);
+		recent.Remember(ytA, op(ModerationAction::ClearAll, "", ""), 10000);
+		Chat::ModerationOp timed = op(ModerationAction::ClearUser, "", "UCt");
+		timed.happenedAt = 4000;
+		recent.Remember(ytA, timed, 10000);
+		const auto late = [](const std::string &id, const std::string &accountId,
+				     const std::string &profileUuid, const std::string &msgId,
+				     const std::string &authorId, int64_t ts) {
+			Events::NormalizedEvent ev;
+			ev.id = id;
+			ev.platform = "youtube";
+			ev.type = "superchat";
+			ev.ts = ts;
+			ev.accountId = accountId;
+			ev.profileUuid = profileUuid;
+			ev.amount = 500;
+			ev.msgId = msgId;
+			ev.authorId = authorId;
+			ev.message = "late words";
+			return ev;
+		};
+		Events::NormalizedEvent lateBanned = late("z1", "youtube:7", "", "", "UCz", 9000);
+		Events::NormalizedEvent lateLater = late("z2", "youtube:7", "profile-a", "", "UCz",
+							 10000 + Events::RecentRemovals::kSeenMarginMs + 1);
+		Events::NormalizedEvent lateDeleted = late("z3", "youtube:7", "profile-a", "mz", "UCy", 12000);
+		Events::NormalizedEvent lateElsewhere = late("z4", "youtube:8", "", "", "UCz", 9000);
+		Events::NormalizedEvent lateTwin = late("r2-late", "youtube:7", "", "", "UCr", 5600);
+		Events::NormalizedEvent lateExpired = late("z5", "youtube:7", "", "", "UCz", 9000);
+		Events::NormalizedEvent timedBefore = late("t1", "youtube:7", "", "", "UCt", 4000);
+		Events::NormalizedEvent timedAfter = late("t2", "youtube:7", "", "", "UCt", 4001);
+		const bool lateOk = recent.Scrub(lateBanned, polled, 10000) && lateBanned.message.empty() &&
+				    lateBanned.deleted == "user" && !recent.Scrub(lateLater, polled, 10000) &&
+				    lateLater.message == "late words" && recent.Scrub(lateDeleted, polled, 10000) &&
+				    lateDeleted.deleted == "message" && !recent.Scrub(lateElsewhere, polled, 10000) &&
+				    recent.Scrub(lateTwin, polled, 10000) && lateTwin.deleted == "message" &&
+				    !recent.Scrub(lateExpired, polled, 10000 + Events::RecentRemovals::kKeepMs + 1) &&
+				    recent.Scrub(timedBefore, polled, 10000) &&
+				    !recent.Scrub(timedAfter, polled, 10000);
+		const bool redactOk = seeded && deleteOk && userOk && polledOk && lateOk;
+		HostLog(std::string("[selftest] events moderation redaction -> ") + (redactOk ? "OK" : "FAIL") +
+			" (delete " + (deleteOk ? "1" : "0") + ", user " + (userOk ? "1" : "0") + ", polled " +
+			(polledOk ? "1" : "0") + ", late " + (lateOk ? "1" : "0") + "; timed=" + timedOut +
+			" banned=" + banned + " twin=" + twinDelete + ")");
+	}
+
+	// The redaction reaches events.json at once, and the file never holds the removed words.
+	{
+		Events::NormalizedEvent ev;
+		ev.id = "selftest-ev-sc";
+		ev.platform = "youtube";
+		ev.type = "superchat";
+		ev.ts = TimeUtil::NowMs(); // inside YouTube's 30-day limit, which a reload applies
+		ev.accountId = "youtube:selftest";
+		ev.profileUuid = "selftest-profile";
+		ev.actorName = "selftest-viewer";
+		ev.amount = 500;
+		ev.msgId = "selftest-msg";
+		ev.authorId = "UCselftest";
+		ev.message = "selftest removed words";
+		const bool added = Events::Store().Add(ev);
+		Events::Store().Flush();
+		const bool before = FileUtil::ReadUtf8File(path).value_or("").find(ev.message) != std::string::npos;
+		Chat::ModerationOp del;
+		del.action = Chat::ModerationAction::Delete;
+		del.msgId = ev.msgId;
+		const size_t redacted =
+			Events::RedactModeratedEvents(Events::Store(), {ev.accountId, ev.profileUuid}, del).size();
+		const std::string onDisk = FileUtil::ReadUtf8File(path).value_or("");
+		copyFromStore(true);
+		Events::EventStore reread{ownPath};
+		Events::NormalizedEvent back;
+		for (const Events::NormalizedEvent &e : reread.List()) {
+			if (e.id == ev.id) {
+				back = e;
+			}
+		}
+		// No file the store owns keeps the words: not the backup the write rotated the old
+		// file into, not a temp file, and a load from the backup alone does not bring them back.
+		const auto holds = [](const std::string &file, const std::string &text) {
+			return FileUtil::ReadUtf8File(file).value_or("").find(text) != std::string::npos;
+		};
+		const bool backupClean = !holds(bakPath, ev.message) && !holds(path + ".tmp", ev.message);
+		copyFromStore(false);
+		Events::EventStore fromBackup{ownPath};
+		bool backupLoaded = false;
+		for (const Events::NormalizedEvent &e : fromBackup.List()) {
+			if (e.id == ev.id) {
+				backupLoaded = e.message.empty() && e.deleted == "message";
+			}
+		}
+		// The same for a removal of the whole event (an account's purge).
+		const size_t purged = Events::Store().PurgeAccount(ev.accountId);
+		const bool purgeClean = purged == 1 && !holds(path, ev.id) && !holds(bakPath, ev.id);
+
+		// What a save interrupted midway leaves, cleared by the next load (DropStoreHistory):
+		// a crash between the replace and the backup copy (new file, old backup); a replace
+		// that gave up after moving the old file aside (no file, the new state only in the
+		// temp file, old backup); and a write abandoned midway (no file, a torn temp file),
+		// where the backup is all there is and stays.
+		Events::NormalizedEvent kept = ev;
+		kept.message.clear();
+		kept.deleted = "message";
+		const std::string newState = nlohmann::json{{"events", nlohmann::json::array({kept.ToJson()})}}.dump();
+		const std::string oldState = nlohmann::json{{"events", nlohmann::json::array({ev.ToJson()})}}.dump();
+		const auto loadedWords = [&ev, &ownPath] {
+			Events::EventStore loaded{ownPath};
+			for (const Events::NormalizedEvent &e : loaded.List()) {
+				if (e.id == ev.id) {
+					return e.message;
+				}
+			}
+			return std::string("absent");
+		};
+		clearOwn();
+		restore(ownPath, newState);
+		restore(ownBak, oldState);
+		const bool crashCleared = loadedWords().empty() && !holds(ownBak, ev.message);
+		clearOwn();
+		restore(ownTmp, newState);
+		restore(ownBak, oldState);
+		const bool gaveUpCleared = loadedWords().empty() && holds(ownPath, ev.id) &&
+					   !holds(ownBak, ev.message) && !FileUtil::ReadUtf8File(ownTmp);
+		clearOwn();
+		restore(ownTmp, std::string("{\"events\": ["));
+		restore(ownBak, oldState);
+		const bool tornKept = !DropStoreHistory(ownPath) && holds(ownBak, ev.message) &&
+				      FileUtil::ReadUtf8File(ownTmp) && !FileUtil::ReadUtf8File(ownPath);
+		clearOwn();
+		const bool interruptedOk = crashCleared && gaveUpCleared && tornKept;
+
+		const bool diskOk = added && before && redacted == 1 && onDisk.find(ev.message) == std::string::npos &&
+				    back.message.empty() && back.deleted == "message" && back.msgId == ev.msgId &&
+				    back.authorId == ev.authorId && back.amount == 500 && backupClean && backupLoaded &&
+				    purgeClean && interruptedOk;
+		HostLog(std::string("[selftest] events redaction on disk -> ") + (diskOk ? "OK" : "FAIL") + " (file " +
+			(onDisk.find(ev.message) == std::string::npos ? "1" : "0") + ", backup " +
+			(backupClean ? "1" : "0") + ", from backup " + (backupLoaded ? "1" : "0") + ", purge " +
+			(purgeClean ? "1" : "0") + ", interrupted " + (crashCleared ? "1" : "0") +
+			(gaveUpCleared ? "1" : "0") + (tornKept ? "1" : "0") + ")");
+	}
+
+	// An admission and a removal never interleave (EventHub::admitMutex_). Each case starts
+	// the other side from inside the first one's fan-out and gives it time to reach the hub:
+	// an event admitted behind a ban is stored and sent without its words, and a ban behind
+	// an event sends its events.redacted after that event's events.new, with the stored copy
+	// redacted. Synthetic ids on a synthetic account, cleared below with the rest.
+	{
+		const OAuth::DestinationId dest{"twitch:selftest-serial", ""};
+		const int64_t now = TimeUtil::NowMs();
+		const auto cheer = [&dest](const std::string &id, int64_t ts) {
+			Events::NormalizedEvent ev;
+			ev.id = id;
+			ev.platform = "twitch";
+			ev.type = "cheer";
+			ev.ts = ts;
+			ev.accountId = dest.accountId;
+			ev.actorName = "selftest-cheerer";
+			ev.authorId = "selftest-cheerer";
+			ev.amount = 100;
+			ev.message = "selftest serial words";
+			return ev;
+		};
+		const auto storedCopy = [](const std::string &id) {
+			const std::vector<Events::NormalizedEvent> found = Events::Store().Select(
+				[&id](const Events::NormalizedEvent &ev) { return ev.id == id; });
+			return found.empty() ? Events::NormalizedEvent{} : found.front();
+		};
+		Chat::ModerationOp ban;
+		ban.action = Chat::ModerationAction::ClearUser;
+		ban.authorId = "selftest-cheerer";
+		ban.happenedAt = now;
+
+		// Read and written only under the hub's admission lock, or after the threads joined.
+		std::vector<std::pair<std::string, nlohmann::json>> fanout;
+		std::function<void()> inFirstFanout;
+		Events::Hub().SetFanoutObserver([&](const char *name, const nlohmann::json &payload) {
+			fanout.emplace_back(name, payload);
+			if (inFirstFanout) {
+				const std::function<void()> run = std::move(inFirstFanout);
+				inFirstFanout = nullptr;
+				run();
+			}
+		});
+		// The event `id` as fanout[at] carried it, when that is a `name` payload naming only it.
+		const auto sentOnce = [&fanout](size_t at, const char *name, const std::string &id) {
+			if (at >= fanout.size() || fanout[at].first != name) {
+				return nlohmann::json();
+			}
+			const nlohmann::json &payload = fanout[at].second;
+			const nlohmann::json ev =
+				payload.is_array() ? (payload.size() == 1 ? payload[0] : nlohmann::json()) : payload;
+			return ev.is_object() && ev.value("id", "") == id ? ev : nlohmann::json();
+		};
+
+		// A removal running, an admission waiting: the seed gives the ban a stored event to
+		// redact, so it fans out.
+		const bool seeded = Events::Store().Add(cheer("selftest-serial-seed", now - 2000));
+		std::thread admitting;
+		bool admitWaited = false;
+		inFirstFanout = [&] {
+			admitting =
+				std::thread([&] { Events::Hub().Ingest(cheer("selftest-serial-late", now - 1000)); });
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			admitWaited = !Events::Store().Contains("selftest-serial-late");
+		};
+		Events::Hub().ApplyModeration(dest, ban);
+		if (admitting.joinable()) {
+			admitting.join();
+		}
+		const nlohmann::json lateSent = sentOnce(1, EventNames::kEventsNew, "selftest-serial-late");
+		const Events::NormalizedEvent lateStored = storedCopy("selftest-serial-late");
+		const bool removalFirstOk =
+			seeded && admitWaited && fanout.size() == 2 &&
+			!sentOnce(0, EventNames::kEventsRedacted, "selftest-serial-seed").is_null() &&
+			!lateSent.is_null() && !lateSent.contains("message") &&
+			lateSent.value("deleted", "") == "user" && lateStored.id == "selftest-serial-late" &&
+			lateStored.message.empty() && lateStored.deleted == "user";
+
+		// An admission running, a removal waiting. Past the first ban's time, so only the
+		// second one reaches it.
+		fanout.clear();
+		std::thread removing;
+		bool removalWaited = false;
+		inFirstFanout = [&] {
+			removing = std::thread([&] { Events::Hub().ApplyModeration(dest, ban); });
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			removalWaited = storedCopy("selftest-serial-live").message == "selftest serial words";
+		};
+		Events::Hub().Ingest(cheer("selftest-serial-live", now + 60000));
+		if (removing.joinable()) {
+			removing.join();
+		}
+		const nlohmann::json liveSent = sentOnce(0, EventNames::kEventsNew, "selftest-serial-live");
+		const nlohmann::json liveRedacted = sentOnce(1, EventNames::kEventsRedacted, "selftest-serial-live");
+		const Events::NormalizedEvent liveStored = storedCopy("selftest-serial-live");
+		const bool admissionFirstOk = removalWaited && fanout.size() == 2 && !liveSent.is_null() &&
+					      liveSent.contains("message") && !liveRedacted.is_null() &&
+					      !liveRedacted.contains("message") && liveStored.message.empty() &&
+					      liveStored.deleted == "user";
+		Events::Hub().SetFanoutObserver(nullptr);
+		HostLog(std::string("[selftest] events admission vs removal -> ") +
+			(removalFirstOk && admissionFirstOk ? "OK" : "FAIL") + " (removal first " +
+			(removalFirstOk ? "1" : "0") + ", admission first " + (admissionFirstOk ? "1" : "0") +
+			"; waited " + (admitWaited ? "1" : "0") + (removalWaited ? "1" : "0") + ")");
+	}
 
 	// Restore: wipe the synthetic history from memory, then put the user's original
 	// files back byte-for-byte (or remove them if there were none).
 	Events::Store().Clear();
 	restore(path, origMain);
 	restore(bakPath, origBak);
+	clearOwn();
 	HostLog(std::string("[selftest] events cleanup -> restored user events.json ") +
 		(origMain ? "(original contents)" : "(removed test file)"));
 }
@@ -10484,7 +10894,8 @@ void ObsBootstrap::RunChatHistorySelfTest()
 	HostLog(std::string("[selftest] chat-history bad utf-8 -> ") + (utf8Ok ? "OK" : "FAIL"));
 
 	// Twitch moderation lines, offline: CLEARMSG deletes one message, CLEARCHAT with a user
-	// id removes that user's, a bare CLEARCHAT clears everything, a CLEARCHAT naming a user
+	// id removes that user's (Twitch's time kept as happenedAt, not a bound on chat lines), a
+	// bare CLEARCHAT clears everything, a CLEARCHAT naming a user
 	// it gives no id for is not a clear of everyone, and a chat line is no op at all.
 	const auto parse = [](const std::string &raw) {
 		return OAuth::ParseTwitchModerationLine(raw);
@@ -10496,12 +10907,12 @@ void ObsBootstrap::RunChatHistorySelfTest()
 	const auto clearAll = parse("@room-id=12345678;tmi-sent-ts=1642715695392 :tmi.twitch.tv CLEARCHAT #dallas");
 	const auto unnamed = parse("@room-id=12345678 :tmi.twitch.tv CLEARCHAT #dallas :ronni");
 	const auto privmsg = parse("@id=abc-1;user-id=87654321 :ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :hi");
-	const bool parseOk = clearMsg && clearMsg->action == Chat::ModerationAction::Delete &&
-			     clearMsg->msgId == "abc-1" && clearMsg->authorId.empty() &&
-			     clearMsg->dest.accountId.empty() && clearUser &&
-			     clearUser->action == Chat::ModerationAction::ClearUser &&
-			     clearUser->authorId == "87654321" && clearUser->msgId.empty() && clearAll &&
-			     clearAll->action == Chat::ModerationAction::ClearAll && !unnamed && !privmsg;
+	const bool parseOk =
+		clearMsg && clearMsg->action == Chat::ModerationAction::Delete && clearMsg->msgId == "abc-1" &&
+		clearMsg->authorId.empty() && clearMsg->dest.accountId.empty() && clearUser &&
+		clearUser->action == Chat::ModerationAction::ClearUser && clearUser->authorId == "87654321" &&
+		clearUser->msgId.empty() && clearUser->happenedAt == 1642719320727 && !clearUser->beforeTs &&
+		clearAll && clearAll->action == Chat::ModerationAction::ClearAll && !unnamed && !privmsg;
 	HostLog(std::string("[selftest] chat-history twitch moderation parse -> ") + (parseOk ? "OK" : "FAIL"));
 
 	// The moderation round trip the hub runs: a Twitch line normalized and admitted, then the
@@ -10633,6 +11044,167 @@ void ObsBootstrap::RunChatHistorySelfTest()
 		" (admitted " + (admitted ? "1" : "0") + ", delete " + (deleteOk ? "1" : "0") + ", user " +
 		(userOk ? "1" : "0") + ", unheld " + (goneOk ? "1" : "0") + ", all " + (allOk ? "1" : "0") +
 		", label " + (labelOk ? "1" : "0") + ")");
+
+	// The streamer's own Twitch echo, offline: each sent echo is claimed by the USERSTATE
+	// carrying its client-nonce, whatever order those come back in, and comes out keyed by the
+	// USERSTATE's id, so Twitch's CLEARMSG for that id removes it. The JOIN USERSTATE (no id),
+	// a nonce nothing staged and a chat line claim nothing; an echo nothing claims goes out at
+	// its deadline without an id, and a full queue leaves the echo with the hub. An echo whose
+	// write has not succeeded never goes out on its own (a failed send shows nothing), and a
+	// clear read while echoes are held leaves them.
+	{
+		OAuth::TwitchEchoQueue echoes;
+		const auto echoOf = [](const std::string &text) {
+			return nlohmann::json{{"platform", "twitch"},
+					      {"author", {{"name", "streamer"}, {"id", "s1"}}},
+					      {"fragments",
+					       nlohmann::json::array({{{"type", "text"}, {"text", text}}})}};
+		};
+		const auto userstate = [](const std::string &tags) {
+			return "@badge-info=;badges=broadcaster/1;" + tags +
+			       ";color=;display-name=streamer;emote-sets=0;mod=0;subscriber=0;user-type= "
+			       ":tmi.twitch.tv USERSTATE #dallas";
+		};
+		const auto textOf = [](const nlohmann::json &echo) {
+			return echo["fragments"][0].value("text", "");
+		};
+		const std::string joinState = "@badge-info=;color=;display-name=streamer;emote-sets=0 "
+					      ":tmi.twitch.tv USERSTATE #dallas";
+		nlohmann::json firstEcho = echoOf("first");
+		nlohmann::json secondEcho = echoOf("second");
+		const bool staged = echoes.Stage("n1", firstEcho) && echoes.Stage("n2", secondEcho) &&
+				    firstEcho.is_null() && secondEcho.is_null() && !echoes.MarkSent("n1", 2000) &&
+				    !echoes.MarkSent("n2", 2000);
+		const std::vector<nlohmann::json> claimedSecond =
+			OAuth::ClaimTwitchEcho(userstate("client-nonce=n2;id=id-second"), echoes);
+		const bool strayOk =
+			OAuth::ClaimTwitchEcho(userstate("client-nonce=n9;id=id-stray"), echoes).empty() &&
+			OAuth::ClaimTwitchEcho(joinState, echoes).empty() &&
+			OAuth::ReadTwitchEchoAnswer(joinState) == OAuth::EchoAnswer::None &&
+			OAuth::ClaimTwitchEcho("@client-nonce=n1;id=id-first :streamer!streamer@streamer.tmi.twitch.tv "
+					       "PRIVMSG #dallas :first",
+					       echoes)
+				.empty();
+		const bool claimedOk = claimedSecond.size() == 1 && claimedSecond[0].value("id", "") == "id-second" &&
+				       textOf(claimedSecond[0]) == "second";
+		const bool notYet = echoes.TakeExpired(1999).empty();
+		const std::vector<nlohmann::json> expired = echoes.TakeExpired(2000);
+		const bool expiredOk = expired.size() == 1 && !expired[0].contains("id") &&
+				       textOf(expired[0]) == "first" &&
+				       OAuth::ClaimTwitchEcho(userstate("client-nonce=n1;id=id-first"), echoes).empty();
+		bool filled = true;
+		for (size_t i = 0; i < OAuth::TwitchEchoQueue::kMaxPending; ++i) {
+			nlohmann::json e = echoOf("fill");
+			const std::string nonce = "f" + std::to_string(i);
+			filled = filled && echoes.Stage(nonce, e) && !echoes.MarkSent(nonce, 5000);
+		}
+		nlohmann::json overflow = echoOf("overflow");
+		const bool fullOk = filled && !echoes.Stage("over", overflow) && overflow.is_object() &&
+				    echoes.TakeSent().size() == OAuth::TwitchEchoQueue::kMaxPending &&
+				    echoes.TakeExpired(std::numeric_limits<int64_t>::max()).empty();
+
+		// Not yet written: neither the deadline nor a dropped socket shows it, a failed write
+		// forgets it, and its USERSTATE (which proves the write) still claims it.
+		nlohmann::json inFlight = echoOf("in flight");
+		nlohmann::json failed = echoOf("failed");
+		nlohmann::json early = echoOf("early");
+		const bool unsentHeld =
+			echoes.Stage("u1", inFlight) && echoes.Stage("u2", failed) && echoes.Stage("u3", early) &&
+			echoes.TakeExpired(std::numeric_limits<int64_t>::max()).empty() && echoes.TakeSent().empty();
+		echoes.Drop("u2");
+		const std::vector<nlohmann::json> earlyClaim =
+			OAuth::ClaimTwitchEcho(userstate("client-nonce=u3;id=id-early"), echoes);
+		const bool unsentOk = unsentHeld && earlyClaim.size() == 1 && textOf(earlyClaim[0]) == "early" &&
+				      !echoes.MarkSent("u3", 0) && !echoes.MarkSent("u2", 0) &&
+				      !echoes.MarkSent("u1", 0) && echoes.TakeExpired(0).size() == 1 &&
+				      echoes.TakeSent().empty();
+
+		// A clear read while echoes are held leaves them, sent or still being written: in
+		// socket order Twitch accepted them after the clear, or not yet. Each is admitted after
+		// the clear and keeps its words, while an echo admitted before the clear is removed by
+		// the ring's own rule.
+		Chat::ChatHistory clearRing;
+		const auto admitEcho = [&clearRing, &twitch](const std::vector<nlohmann::json> &claimed) {
+			bool ok = claimed.size() == 1;
+			for (nlohmann::json frame : claimed) {
+				frame["accountId"] = twitch.accountId;
+				ok = ok && clearRing.Add(twitch, frame);
+			}
+			return ok;
+		};
+		const auto ringMark = [&clearRing](const std::string &id) {
+			for (const nlohmann::json &m : clearRing.Page(std::nullopt, 10, Feed::Filter{}).items) {
+				if (m.value("id", "") == id) {
+					return m.value("deleted", std::string("kept"));
+				}
+			}
+			return std::string("absent");
+		};
+		nlohmann::json echoBefore = echoOf("before the clear");
+		nlohmann::json echoSent = echoOf("sent, unanswered");
+		nlohmann::json echoWriting = echoOf("still being written");
+		const bool beforeAdmitted =
+			echoes.Stage("c0", echoBefore) && !echoes.MarkSent("c0", 1000) &&
+			admitEcho(OAuth::ClaimTwitchEcho(userstate("client-nonce=c0;id=id-c0"), echoes));
+		const bool heldStaged = echoes.Stage("c1", echoSent) && !echoes.MarkSent("c1", 1000) &&
+					echoes.Stage("c2", echoWriting);
+		const std::optional<Chat::ModerationOp> clearEveryoneLine = parse(":tmi.twitch.tv CLEARCHAT #dallas");
+		if (clearEveryoneLine) {
+			Chat::ApplyModeration(clearRing, "twitch", twitch, *clearEveryoneLine);
+		}
+		const bool sentAfter = admitEcho(OAuth::ClaimTwitchEcho(userstate("client-nonce=c1;id=id-c1"), echoes));
+		const bool writingAfter =
+			!echoes.MarkSent("c2", 1000) &&
+			admitEcho(OAuth::ClaimTwitchEcho(userstate("client-nonce=c2;id=id-c2"), echoes));
+		const bool heldClearOk = clearEveryoneLine && beforeAdmitted && heldStaged && sentAfter &&
+					 writingAfter && ringMark("id-c0") == "all" && ringMark("id-c1") == "kept" &&
+					 ringMark("id-c2") == "kept" && echoes.TakeSent().empty();
+
+		// A connection that answers a sent PRIVMSG without the nonce: every sent echo held goes
+		// out at once, unkeyed; one still being written goes out from its send; none is held
+		// again until the next connection.
+		nlohmann::json sentA = echoOf("sent a");
+		nlohmann::json writing = echoOf("writing");
+		const bool latchStaged = echoes.Stage("l1", sentA) && !echoes.MarkSent("l1", 9000) &&
+					 echoes.Stage("l2", writing);
+		const std::string noNonce = userstate("id=id-l1");
+		const std::vector<nlohmann::json> released = OAuth::ClaimTwitchEcho(noNonce, echoes);
+		const std::optional<nlohmann::json> fromSend = echoes.MarkSent("l2", 9000);
+		nlohmann::json afterLatch = echoOf("after");
+		const bool latched = !echoes.Stage("l3", afterLatch) && afterLatch.is_object();
+		echoes.NewConnection();
+		nlohmann::json nextConnection = echoOf("next");
+		const bool latchOk =
+			latchStaged && OAuth::ReadTwitchEchoAnswer(noNonce) == OAuth::EchoAnswer::WithoutNonce &&
+			OAuth::ReadTwitchEchoAnswer(userstate("client-nonce=x;id=y")) == OAuth::EchoAnswer::WithNonce &&
+			released.size() == 1 && textOf(released[0]) == "sent a" && !released[0].contains("id") &&
+			fromSend && textOf(*fromSend) == "writing" && latched && echoes.Stage("l4", nextConnection) &&
+			nextConnection.is_null();
+		echoes.Drop("l4");
+
+		// Admitted with its id, the echo is named by the CLEARMSG for it.
+		Chat::ChatHistory echoRing;
+		bool removedOk = false;
+		const auto clearMsgEcho = parse("@target-msg-id=id-second :tmi.twitch.tv CLEARMSG #dallas :second");
+		if (claimedSecond.size() == 1 && clearMsgEcho) {
+			nlohmann::json frame = claimedSecond[0];
+			frame["accountId"] = twitch.accountId;
+			const bool admittedEcho = echoRing.Add(twitch, frame);
+			Chat::ApplyModeration(echoRing, "twitch", twitch, *clearMsgEcho);
+			const nlohmann::json echoHeld = echoRing.Page(std::nullopt, 10, Feed::Filter{}).items;
+			removedOk = admittedEcho && echoHeld.size() == 1 &&
+				    echoHeld[0].value("id", "") == "id-second" &&
+				    echoHeld[0].value("deleted", "") == "message";
+		}
+		const bool echoOk = staged && claimedOk && strayOk && notYet && expiredOk && fullOk && unsentOk &&
+				    heldClearOk && latchOk && removedOk;
+		HostLog(std::string("[selftest] chat-history twitch echo id -> ") + (echoOk ? "OK" : "FAIL") +
+			" (staged " + (staged ? "1" : "0") + ", claimed " + (claimedOk ? "1" : "0") + ", stray " +
+			(strayOk ? "1" : "0") + ", expiry " + (notYet && expiredOk ? "1" : "0") + ", full " +
+			(fullOk ? "1" : "0") + ", unsent " + (unsentOk ? "1" : "0") + ", clear " +
+			(heldClearOk ? "1" : "0") + ", no nonce " + (latchOk ? "1" : "0") + ", removed " +
+			(removedOk ? "1" : "0") + ")");
+	}
 
 	// YouTube moderation, offline, over both reads. Mostly unverified shapes: only
 	// markChatItemAsDeletedAction has been seen live (2026-09-30); the other InnerTube actions

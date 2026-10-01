@@ -349,6 +349,9 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 	ev.platform = "youtube";
 	ev.actorName = actor;
 	ev.ts = ts;
+	// The item's own ids, which a moderator's removal of it names.
+	ev.msgId = itemId;
+	ev.authorId = channelId;
 
 	if (type == "superChatEvent") {
 		const json &d = Obj(snippet, "superChatDetails");
@@ -422,8 +425,10 @@ void ProcessYouTubeChatItems(const ChatContext &ctx, const json &items, const st
 		// tombstone is only the place a deleted one stood.
 		if (std::optional<ModerationOp> op = DecodeYouTubeModerationItem(item)) {
 			// Read live, the op reaches everything admitted before it, which the seq bound
-			// already says exactly; the platform time only bounds a replay.
+			// already says exactly; the platform time only bounds a replay, and the events
+			// that reach the store after the ban (happenedAt).
 			if (!backlog) {
+				op->happenedAt = op->beforeTs;
 				op->beforeTs.reset();
 			}
 			if (backlog && !SafeToReplay(*op)) {

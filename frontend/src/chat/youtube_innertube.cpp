@@ -602,6 +602,9 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 		d.ev.platform = "youtube";
 		d.ev.actorName = d.authorName;
 		d.ev.ts = d.tsMs;
+		// The line's own ids, which a moderator's removal of it names.
+		d.ev.msgId = d.id;
+		d.ev.authorId = d.authorChannelId;
 		lp.cb.emitEvent(d.ev);
 	}
 }

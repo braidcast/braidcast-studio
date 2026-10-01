@@ -560,11 +560,18 @@ void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 }
 
 // Called on the chat transport worker right after the op redacted the ring, so it lands
-// behind every `chat` line that destination's read worker admitted before it. A Twitch local
-// echo is fanned out from its send worker instead, so it is not ordered against the op.
+// behind every `chat` line that destination's read worker admitted before it. That includes a
+// Twitch local echo, which the read worker admits on its USERSTATE; only an echo the hub sends
+// itself (no nonce, or too many sends in flight) goes out from the send worker, unordered.
 void OverlayServer::BroadcastChatModeration(const nlohmann::json &op)
 {
 	BroadcastFrame(NamedFrame("moderation", op));
+}
+
+// Called on the chat transport worker, after the store dropped the messages it names.
+void OverlayServer::BroadcastEventRedaction(const nlohmann::json &ids)
+{
+	BroadcastFrame(NamedFrame("eventredaction", ids));
 }
 
 // Named `viewers` event for the same reason `chat` is named: an unnamed frame lands on every

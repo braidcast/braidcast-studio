@@ -81,6 +81,11 @@ type ChatHandler = (m: ChatMessage) => void;
  * whether this op takes it -- the same rule the app's chat dock uses, so a widget never
  * re-derives which destination, author or bound an op reaches. */
 type ChatModerationHandler = (op: ChatModeration, removes: (m: ChatIdentity) => boolean) => void;
+/** A moderator's removal took the viewer's words (`message`) off the events `ids` names.
+ * `redacts` answers, for an event the widget holds, whether it is one of them; such an event
+ * must not show its message again. The host has already dropped it from its own copy, so a
+ * backfill or a replay never carries it. */
+type EventRedactionHandler = (ids: string[], redacts: (e: Pick<NormalizedEvent, "id">) => boolean) => void;
 type ViewersHandler = (v: ViewerSnapshot) => void;
 type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
 // No Snapshot type alongside this one: the host already sends per-destination rows carrying
@@ -98,6 +103,7 @@ const loadHandlers: LoadHandler[] = [];
 const eventHandlers: EventHandler[] = [];
 const chatHandlers: ChatHandler[] = [];
 const chatModerationHandlers: ChatModerationHandler[] = [];
+const eventRedactionHandlers: EventRedactionHandler[] = [];
 const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
 const streamHandlers: StreamHandler[] = [];
@@ -589,6 +595,12 @@ const OBSOverlay = {
   onChatModeration(fn: ChatModerationHandler) {
     chatModerationHandlers.push(fn);
   },
+  /** A moderator deleted the chat message an event arrived as, or removed its viewer's
+   * messages (a ban or a timeout). The events keep their name, amount and tier; a widget
+   * that shows an event's message drops it from every event `redacts` picks. */
+  onEventRedaction(fn: EventRedactionHandler) {
+    eventRedactionHandlers.push(fn);
+  },
   onViewers(fn: ViewersHandler) {
     viewersHandlers.push(fn);
   },
@@ -658,6 +670,20 @@ function fireChatModeration(op: ChatModeration) {
     }
   }
   window.dispatchEvent(new CustomEvent("obs:chatmoderation", { detail: op }));
+}
+
+function fireEventRedaction(body: { ids?: unknown }) {
+  const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string") : [];
+  const gone = new Set(ids);
+  const redacts = (e: Pick<NormalizedEvent, "id">) => gone.has(e.id);
+  for (const fn of eventRedactionHandlers) {
+    try {
+      fn(ids, redacts);
+    } catch (err) {
+      console.log("OBSOverlay onEventRedaction threw: " + (err as Error).message);
+    }
+  }
+  window.dispatchEvent(new CustomEvent("obs:eventredaction", { detail: { ids } }));
 }
 
 // The per-platform sum lives here rather than in each template.js: the host payload is
@@ -753,6 +779,15 @@ src.addEventListener("chat", (msg) => {
 src.addEventListener("moderation", (msg) => {
   try {
     fireChatModeration(JSON.parse((msg as MessageEvent).data) as ChatModeration);
+  } catch {
+    /* ignore a malformed frame */
+  }
+});
+// So does the removal of an event's message: ids only, never replayed on connect, since the
+// backfill and a replay already come from the redacted store.
+src.addEventListener("eventredaction", (msg) => {
+  try {
+    fireEventRedaction(JSON.parse((msg as MessageEvent).data) as { ids?: unknown });
   } catch {
     /* ignore a malformed frame */
   }

@@ -216,6 +216,16 @@ public:
 	// the same refresh-propagation reason as connect.
 	virtual bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) = 0;
 
+	// send() for a platform whose read side never reflects the sender's own message
+	// (reflectsOwnSend() false), handed the hub's local echo of it. The default sends and
+	// leaves `echo` for the hub to emit once the send succeeds. A transport that learns the
+	// sent message's platform id takes the echo instead, leaving `echo` null, and emits it
+	// through its read context once the id is known, so a moderator's removal can name it.
+	virtual bool sendEchoed(OAuth::OAuthAccount &acct, const std::string &text, json & /*echo*/, std::string &err)
+	{
+		return send(acct, text, err);
+	}
+
 	// Whether the platform's read transport reflects the sender's own outbound
 	// messages back to us (so the chat pane shows them without a local echo).
 	// Default false: echo locally so a sent message is never invisible.

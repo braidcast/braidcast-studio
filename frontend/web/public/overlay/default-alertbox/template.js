@@ -126,6 +126,31 @@ OBSOverlay.onEvent((e) => {
   if (!current) next();
 });
 
+// A moderator removed the words of events this deck holds: they leave every waiting alert,
+// and the cards on the deck that showed them are drawn again without them. Such a card still
+// sliding off goes at once rather than at the end of its exit; a deck already leaving is
+// cleared, and so is what the live region last said.
+OBSOverlay.onEventRedaction((ids, redacts) => {
+  const hit = new Set(); // keys of the deck's cards that showed removed words
+  for (const b of current ? [current, ...queue] : queue) {
+    b.events.forEach((e, k) => {
+      if (!e.message || !redacts(e)) return;
+      delete e.message;
+      if (b === current) hit.add("e" + k);
+    });
+  }
+  if (hit.size === 0) return;
+  if (current.leaving) {
+    clearCards();
+    liveEl.textContent = "";
+    return;
+  }
+  for (const el of deckEl.querySelectorAll(".alert.exiting")) if (hit.has(el.dataset.key)) el.remove();
+  for (const el of standing()) if (hit.has(el.dataset.key)) delete el.dataset.filled;
+  layout(current);
+  if (hit.has(cardKey(current, current.front))) announce(current);
+});
+
 // A play-alone type's waiting backlog: its overflow burst if one waits, and whether its whole
 // cards have reached MAX_ALONE_WAITING -- then a new one starts the overflow burst, which
 // shows as one "+N more" card once it holds two (a lone one still shows whole). It waits

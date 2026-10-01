@@ -1769,6 +1769,13 @@ export interface NormalizedEvent {
   months?: number;
   count?: number;
   message?: string;
+  /** The chat message this event arrived as, when it did (YouTube's live-chat read), and the
+   * viewer's platform user id: what a moderator's removal names, never text. */
+  msgId?: string;
+  authorId?: string;
+  /** Set once a moderator's removal reached the event (`events.redacted`): its `message` is
+   * gone, and this is the removal's kind. A clear of the whole chat never sets it. */
+  deleted?: Exclude<ChatModerationAction, "all">;
   /** Set only on the copy an `events.replay` broadcast delivers to overlay widgets —
    * never on the stored event, never on `events.new`/`events.list`/`events.backfill`. The
    * host already gates delivery by widget TYPE (only the alert box receives a replay at
@@ -2766,6 +2773,10 @@ export interface ObsEvents {
   "events.new": NormalizedEvent;
   "events.backfill": NormalizedEvent[];
   "events.cleared": { epoch: number };
+  // A moderator's removal took the viewer's words off these stored events (deleted the chat
+  // message one arrived as, or banned or timed out its viewer). Each is the event as the host
+  // now stores it, without `message`; a feed swaps its copy for it.
+  "events.redacted": NormalizedEvent[];
   // A widget was created/updated/duplicated/deleted; the Overlays page re-runs
   // overlays.list (and re-fetches the open widget if it changed elsewhere).
   "overlays.changed": Record<string, never>;

@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "event_model.hpp"
@@ -42,7 +44,11 @@ struct EventPage {
 
 class EventStore {
 public:
-	EventStore()
+	EventStore() : EventStore(FilePath()) {}
+
+	// A store kept in the file at `path` instead of events.json, for self-tests: the cleanup
+	// a load runs (DropStoreHistory) may only touch files no other instance writes.
+	explicit EventStore(std::string path) : path_(std::move(path))
 	{
 		Load();
 		PruneExpired();
@@ -53,10 +59,17 @@ public:
 	struct InMemory {};
 	explicit EventStore(InMemory) : persist_(false) {}
 
-	// Append `ev` if its id is new; returns false (a no-op) when the id is empty or
-	// already present (dedupe). On a new id: append, evict the oldest past the cap,
-	// persist. Callable from any worker thread.
+	// Append `ev` if its id is new; returns false when the id is empty or already present
+	// (dedupe). On a new id: append, evict the oldest past the cap, persist. A duplicate
+	// only fills in the stored copy's missing msgId, authorId and profileUuid
+	// (AdoptIdentityLocked). Callable from any worker thread.
 	bool Add(const NormalizedEvent &ev);
+
+	// Whether an event with this id is stored.
+	bool Contains(const std::string &id) const;
+
+	// Copies of the stored events `pick` selects, oldest first.
+	std::vector<NormalizedEvent> Select(const std::function<bool(const NormalizedEvent &)> &pick) const;
 
 	// The whole history newest-first (arrival order).
 	std::vector<NormalizedEvent> List() const;
@@ -80,6 +93,12 @@ public:
 	// Apply every platform's storage limit (kMaxAge) as of now. Runs at load and hourly.
 	size_t PruneExpired();
 
+	// Take the viewer's words (`message`) off every stored event `reaches` picks that still
+	// carries some, mark it `deleted` with `mark`, and persist at once. The event stays.
+	// Returns the events it changed, as now stored.
+	std::vector<NormalizedEvent> RedactMessages(const std::function<bool(const NormalizedEvent &)> &reaches,
+						    const std::string &mark);
+
 	// How long a platform's events may be kept: YouTube's API policy caps stored API data
 	// at 30 days.
 	struct MaxAge {
@@ -100,6 +119,10 @@ public:
 private:
 	void Load(); // read events.json into events_/ids_ (called from the ctor)
 
+	// A duplicate of a stored event: fill in what the stored copy is missing of the ids a
+	// removal names it by. Caller holds mutex_.
+	void AdoptIdentityLocked(const NormalizedEvent &copy);
+
 	// Drop every event `drop` selects and persist the rest. Opens a new write epoch, as
 	// Clear does, so an in-flight snapshot that still holds a dropped event cannot be
 	// written after this and bring it back.
@@ -107,11 +130,21 @@ private:
 
 	// Serialize events_ into the on-disk shape. Caller must hold mutex_.
 	json BuildJsonLocked() const;
+	// Open a new write epoch after a change that must reach disk now (a clear, a removal, a
+	// redaction) and snapshot it: an in-flight snapshot from before it can then never be
+	// written after it. Caller must hold mutex_, then Persist the result with it released.
+	json NewEpochSnapshotLocked(uint64_t &writeSeq);
 	// Write a prebuilt snapshot to disk. Does its own file I/O with NO deque lock held
 	// (serialized against other writers by writeMutex_), so a write never blocks Add's
 	// deque access -- the point of the debounce. `seq` is the epoch the snapshot was
 	// captured at; a snapshot older than the last one written is dropped (see below).
-	void WriteToDisk(const json &root, uint64_t seq) const;
+	// Every write replaces events.json.bak with the new state (SaveJsonAtomicDroppingHistory),
+	// and Load clears what a crash or a locked backup left (DropStoreHistory), so a removed
+	// event or removed text cannot come back from the backup Load falls back to. False when
+	// the new state is not in events.json.
+	bool WriteToDisk(const json &root, uint64_t seq) const;
+	// WriteToDisk, marking the store dirty again when it failed so Flush retries it.
+	void Persist(const json &root, uint64_t seq);
 
 	// Coalesce disk writes to at most one per this interval; bursts of events (a raid,
 	// a sub train) then cost a single write instead of one rewrite per event.
@@ -131,6 +164,7 @@ private:
 	uint64_t seq_ = 0; // guarded by mutex_
 
 	const bool persist_ = true; // false: never read or write events.json (InMemory)
+	const std::string path_;    // the file this store reads and writes (empty when InMemory)
 
 	mutable std::mutex writeMutex_; // serializes WriteToDisk; never held with mutex_
 	// Highest epoch written to disk. Guarded by writeMutex_ ONLY (never mutex_), so the

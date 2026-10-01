@@ -45,6 +45,9 @@ NormalizedEvent EventFromJson(const json &j)
 	ev.months = j.value("months", 0);
 	ev.count = j.value("count", 0);
 	ev.message = j.value("message", std::string());
+	ev.msgId = j.value("msgId", std::string());
+	ev.authorId = j.value("authorId", std::string());
+	ev.deleted = j.value("deleted", std::string());
 	return ev;
 }
 
@@ -60,8 +63,12 @@ bool EventStore::Add(const NormalizedEvent &ev)
 	uint64_t writeSeq = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		if (ev.id.empty() || ids_.count(ev.id)) {
-			return false; // no id (undedupable) or already stored -> drop
+		if (ev.id.empty()) {
+			return false; // no id -> undedupable, drop
+		}
+		if (ids_.count(ev.id)) {
+			AdoptIdentityLocked(ev);
+			return false; // already stored -> drop
 		}
 		ids_.insert(ev.id);
 		events_.push_back(ev);
@@ -84,9 +91,54 @@ bool EventStore::Add(const NormalizedEvent &ev)
 		}
 	}
 	if (doWrite) {
-		WriteToDisk(snapshot, writeSeq);
+		Persist(snapshot, writeSeq);
 	}
 	return true;
+}
+
+void EventStore::AdoptIdentityLocked(const NormalizedEvent &copy)
+{
+	// The same purchase can reach the store twice under one content-derived id: from the
+	// Super Chat REST poll, which knows neither the chat message id nor the broadcast, and
+	// from live chat, which knows both. The first copy is kept, so it takes what the
+	// second knows that it doesn't, and a removal of that message or on its broadcast then
+	// reaches it. Never the text.
+	const auto it = std::find_if(events_.begin(), events_.end(),
+				     [&copy](const NormalizedEvent &ev) { return ev.id == copy.id; });
+	if (it == events_.end() || it->accountId != copy.accountId) {
+		return;
+	}
+	bool changed = false;
+	const auto adopt = [&changed](std::string &field, const std::string &known) {
+		if (field.empty() && !known.empty()) {
+			field = known;
+			changed = true;
+		}
+	};
+	adopt(it->msgId, copy.msgId);
+	adopt(it->authorId, copy.authorId);
+	adopt(it->profileUuid, copy.profileUuid);
+	if (changed) {
+		dirty_ = true; // persisted by the next write or Flush
+	}
+}
+
+bool EventStore::Contains(const std::string &id) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return ids_.count(id) != 0;
+}
+
+std::vector<NormalizedEvent> EventStore::Select(const std::function<bool(const NormalizedEvent &)> &pick) const
+{
+	std::vector<NormalizedEvent> out;
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const NormalizedEvent &ev : events_) {
+		if (pick(ev)) {
+			out.push_back(ev);
+		}
+	}
+	return out;
 }
 
 std::vector<NormalizedEvent> EventStore::List() const
@@ -137,14 +189,9 @@ uint64_t EventStore::Clear()
 		std::lock_guard<std::mutex> lock(mutex_);
 		events_.clear();
 		ids_.clear();
-		// Open a new epoch: any in-flight Add snapshot built before this point is now
-		// stale, so WriteToDisk will drop it even if it wins writeMutex_ after us.
-		writeSeq = ++seq_;
-		snapshot = BuildJsonLocked(); // empty feed
-		dirty_ = false;
-		lastSaveNs_ = os_gettime_ns();
+		snapshot = NewEpochSnapshotLocked(writeSeq); // empty feed
 	}
-	WriteToDisk(snapshot, writeSeq);
+	Persist(snapshot, writeSeq);
 	return writeSeq;
 }
 
@@ -165,13 +212,35 @@ template<typename Pred> size_t EventStore::RemoveIf(Pred drop)
 			return 0;
 		}
 		events_.erase(std::remove_if(events_.begin(), events_.end(), drop), events_.end());
-		writeSeq = ++seq_;
-		snapshot = BuildJsonLocked();
-		dirty_ = false;
-		lastSaveNs_ = os_gettime_ns();
+		snapshot = NewEpochSnapshotLocked(writeSeq);
 	}
-	WriteToDisk(snapshot, writeSeq);
+	Persist(snapshot, writeSeq);
 	return removed;
+}
+
+std::vector<NormalizedEvent> EventStore::RedactMessages(const std::function<bool(const NormalizedEvent &)> &reaches,
+							const std::string &mark)
+{
+	std::vector<NormalizedEvent> changed;
+	json snapshot;
+	uint64_t writeSeq = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (NormalizedEvent &ev : events_) {
+			if (ev.message.empty() || !reaches(ev)) {
+				continue;
+			}
+			ev.message.clear();
+			ev.deleted = mark;
+			changed.push_back(ev);
+		}
+		if (changed.empty()) {
+			return changed;
+		}
+		snapshot = NewEpochSnapshotLocked(writeSeq);
+	}
+	Persist(snapshot, writeSeq);
+	return changed;
 }
 
 size_t EventStore::PurgeAccount(const std::string &accountId)
@@ -217,13 +286,14 @@ void EventStore::Flush()
 		dirty_ = false;
 		lastSaveNs_ = os_gettime_ns();
 	}
-	WriteToDisk(snapshot, writeSeq);
+	Persist(snapshot, writeSeq);
 }
 
 void EventStore::Load()
 {
 	// Called from the ctor before `this` is visible to any other thread, so no lock.
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(FilePath().c_str(), "bak");
+	DropStoreHistory(path_);
+	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path_.c_str(), "bak");
 	const char *js = root ? obs_data_get_json(root) : nullptr;
 	if (!js) {
 		return;
@@ -255,6 +325,14 @@ void EventStore::Load()
 	}
 }
 
+json EventStore::NewEpochSnapshotLocked(uint64_t &writeSeq)
+{
+	writeSeq = ++seq_;
+	dirty_ = false;
+	lastSaveNs_ = os_gettime_ns();
+	return BuildJsonLocked();
+}
+
 json EventStore::BuildJsonLocked() const
 {
 	json arr = json::array();
@@ -264,13 +342,24 @@ json EventStore::BuildJsonLocked() const
 	return json{{"events", std::move(arr)}};
 }
 
-void EventStore::WriteToDisk(const json &root, uint64_t seq) const
+void EventStore::Persist(const json &root, uint64_t seq)
+{
+	if (WriteToDisk(root, seq)) {
+		return;
+	}
+	// Not on disk: the shutdown Flush, or the next write, tries again. Until then the file
+	// can still hold what this write removed.
+	std::lock_guard<std::mutex> lock(mutex_);
+	dirty_ = true;
+}
+
+bool EventStore::WriteToDisk(const json &root, uint64_t seq) const
 {
 	// Serialize concurrent writers (Add vs. Flush vs. Clear) so two passes can't
 	// interleave on the shared tmp path; mutex_ is NOT held here, so the deque stays
 	// writable during the (slow) file I/O.
 	if (!persist_) {
-		return;
+		return true;
 	}
 	std::lock_guard<std::mutex> wlock(writeMutex_);
 	// Drop a snapshot a later epoch already superseded: a stale in-flight Add that built
@@ -278,12 +367,13 @@ void EventStore::WriteToDisk(const json &root, uint64_t seq) const
 	// wiped feed. Equal seq is allowed (same epoch -- e.g. a post-Clear Add persisting
 	// genuinely new events, or the initial epoch 0).
 	if (seq < lastWrittenSeq_) {
-		return;
+		return true;
 	}
 	lastWrittenSeq_ = seq;
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-	const std::string path = FilePath();
-	ReportSaveResult(SaveJsonAtomic(data, path), path);
+	// Every write, not only the removals: a removal's own write would otherwise rotate the
+	// file it replaces, removed content included, into the backup Load falls back to.
+	return ReportSaveResult(SaveJsonAtomicDroppingHistory(data, path_), path_);
 }
 
 } // namespace Events

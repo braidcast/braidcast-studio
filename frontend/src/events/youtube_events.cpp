@@ -140,6 +140,8 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 							: YouTubeMoneyEventId(type, supporterChannelId, micros,
 									      createdMs / 1000);
 					ev.actorName = Str(Obj(snippet, "supporterDetails"), "displayName");
+					// What a ban names. No message id: this surface's ids are not chat's.
+					ev.authorId = supporterChannelId;
 					// amountMicros is micros of the currency; micros / 10000 = hundredths of the
 					// major unit, whatever the currency (see NormalizedEvent::amount).
 					ev.amount = micros / 10000;

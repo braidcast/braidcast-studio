@@ -76,6 +76,21 @@ let cursor = 0;
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onEvent((e) => enqueue(e));
+// A moderator removed the words of events the belt holds: they leave the buffer, so the loop
+// never draws them again, and the ticks already on the belt. A drawn tick's words are
+// emptied at the width they took, so the ticks behind it do not jump left.
+OBSOverlay.onEventRedaction((ids, redacts) => {
+  for (const item of buffer) {
+    if (redacts(item)) item.body = "";
+  }
+  for (const tick of track.querySelectorAll(".tick")) {
+    const body = redacts({ id: tick.dataset.id }) ? tick.querySelector(".body") : null;
+    if (!body) continue;
+    body.style.width = body.offsetWidth + "px";
+    body.style.flexShrink = "0";
+    body.textContent = "";
+  }
+});
 
 function applyFields(f) {
   const set = (k, v) => document.documentElement.style.setProperty(k, v);
@@ -106,6 +121,7 @@ function enqueue(e) {
   const plat = PLATFORM[e.platform] || { label: String(e.platform || ""), color: "#888" };
   const sumFn = SUMMARY[e.type];
   buffer.push({
+    id: e.id,
     platformLabel: plat.label,
     platformColor: plat.color,
     emoji: TYPE_EMOJI[e.type] || "",
@@ -125,6 +141,7 @@ function enqueue(e) {
 function makeTick(item) {
   const tick = document.createElement("span");
   tick.className = "tick";
+  tick.dataset.id = item.id || "";
 
   const inner = document.createElement("span");
   inner.className = "tick-inner";

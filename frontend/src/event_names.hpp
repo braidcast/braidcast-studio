@@ -35,6 +35,7 @@ inline constexpr const char *kTransportsHealthChanged = "transports.healthChange
 inline constexpr const char *kEventsNew = "events.new";
 inline constexpr const char *kEventsBackfill = "events.backfill";
 inline constexpr const char *kEventsCleared = "events.cleared";
+inline constexpr const char *kEventsRedacted = "events.redacted";
 inline constexpr const char *kVirtualCamChanged = "virtualCam.changed";
 inline constexpr const char *kUndoChanged = "undo.changed";
 inline constexpr const char *kStreamMetaChanged = "streamMeta.changed";

@@ -36,6 +36,7 @@
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
   import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
   import { compareEvents } from "$lib/docks/events/eventOrder";
+  import { removedLabel } from "$lib/docks/multichat/chatModeration";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -356,11 +357,21 @@
     // Only the events a backfill newly stored; each joins at its place in time.
     const offBackfill = obs.on(EV.eventsBackfill, (batch) => feed.merge(batch.filter(matches)));
     const offCleared = obs.on(EV.eventsCleared, ({ epoch }) => feed.reset(epoch));
+    // A moderator's removal took the viewer's words off these events: each row, and a page
+    // read before it, takes the host's copy, which no longer carries them.
+    const offRedacted = obs.on(EV.eventsRedacted, (batch) => {
+      const byId = new Map(batch.map((e) => [e.id, e]));
+      feed.patch(
+        (e) => byId.has(e.id),
+        (e) => byId.get(e.id) ?? e,
+      );
+    });
     untrack(() => feed.load());
     return () => {
       offNew();
       offBackfill();
       offCleared();
+      offRedacted();
       feed.dispose();
       clearReplayTimers();
       disposed = true;
@@ -469,7 +480,11 @@
                 <span class="actor" style:color={actorColor}>{e.actorName}</span>
                 <span class="sum">{summary(e)}</span>
               </div>
-              {#if e.message}<span class="msg">{e.message}</span>{/if}
+              {#if e.deleted}
+                <span class="msg removed">{removedLabel(e)}</span>
+              {:else if e.message}
+                <span class="msg">{e.message}</span>
+              {/if}
               {#if multiOrigin}
                 {@const o = attribute(e, destByAccount)}
                 <!-- "none" means nothing is known about the origin at all: ABSENT_LABEL is
@@ -645,6 +660,12 @@
     padding-left: 31px;
     color: var(--color-text);
     overflow-wrap: anywhere;
+  }
+  /* The viewer's words, removed by a moderator: the Chat dock's removal label, dim and
+     italic (--color-dim clears 4.5:1 in every preset; no opacity). */
+  .msg.removed {
+    color: var(--color-dim);
+    font-style: italic;
   }
   /* Which destination this event belongs to: avatar carries the channel (two YouTube
      channels share one red mark, so color cannot), the canvas carries the cut. */

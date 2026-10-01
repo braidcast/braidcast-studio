@@ -16,6 +16,7 @@
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
 #include "../oauth/account_store.hpp"
+#include "../events/event_hub.hpp" // Events::Hub().ApplyModeration
 #include "../events/transport_health.hpp"
 #include "../obs_bootstrap.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat, BroadcastChatModeration
@@ -307,6 +308,16 @@ void ChatHub::Start()
 				} catch (...) {
 					// malformed payload -> skip the overlay fan-out
 				}
+				// The same removal reaches the viewer's words in stored events (a Super
+				// Chat's comment, a resub message).
+				try {
+					Events::Hub().ApplyModeration(dest, op);
+				} catch (...) {
+					// The action and platform only: an exception's text can quote the
+					// payload, which is viewer text.
+					HostLog(std::string("[events] a '") + DeletedMark(op.action) + "' removal on " +
+						providerId + " failed to reach stored events");
+				}
 				AsyncTask::PostToUi(
 					[body = std::move(body)] { RouteEmit(EventNames::kChatModeration, body); });
 			};
@@ -476,10 +487,29 @@ void ChatHub::DispatchSend(const Active &target, const std::string &text)
 			return;
 		}
 		OAuth::OAuthAccount acct = *stored;
+		// A platform whose read transport never reflects the sender's own message (Twitch
+		// IRC) would leave the streamer's send invisible in their own pane, so it is echoed
+		// locally through the account's regular emit path -- the identical pipeline a real
+		// incoming message takes (overlay fan-out, alive-guarded UI post). No "id": a
+		// transport that learns the sent message's id (sendEchoed) stamps it before the
+		// echo is admitted, and otherwise the emit path's fallback-id synthesis mints one.
+		json echo;
+		if (!transport->reflectsOwnSend() && emit) {
+			const std::string name = acct.displayName.empty() ? acct.login : acct.displayName;
+			echo = json{
+				{"event", EventNames::kChatMessage},
+				{"platform", providerId},
+				{"channelId", transport->channelId()},
+				{"ts", TimeUtil::NowMs()},
+				{"author", Chat::BuildChatAuthor(name, acct.userId, "", json::array())},
+				{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
+			};
+		}
 		std::string err;
 		bool ok = false;
 		try {
-			ok = transport->send(acct, msg, err);
+			ok = echo.is_null() ? transport->send(acct, msg, err)
+					    : transport->sendEchoed(acct, msg, echo, err);
 		} catch (const std::exception &e) {
 			err = std::string("send failed: ") + e.what();
 		} catch (...) {
@@ -502,23 +532,8 @@ void ChatHub::DispatchSend(const Active &target, const std::string &text)
 			});
 			return;
 		}
-		if (!transport->reflectsOwnSend() && emit) {
-			// A platform whose read transport never reflects the sender's own
-			// message (Twitch IRC) would leave the streamer's send invisible in
-			// their own pane, so echo it locally through the account's regular
-			// emit path -- the identical pipeline a real incoming message takes
-			// (overlay fan-out, alive-guarded UI post). No "id" on purpose: the
-			// emit path's fallback-id synthesis mints a unique one from idSeq_,
-			// and a non-reflecting platform has no real id to dedupe against.
-			const std::string name = acct.displayName.empty() ? acct.login : acct.displayName;
-			emit(json{
-				{"event", EventNames::kChatMessage},
-				{"platform", providerId},
-				{"channelId", transport->channelId()},
-				{"ts", TimeUtil::NowMs()},
-				{"author", Chat::BuildChatAuthor(name, acct.userId, "", json::array())},
-				{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
-			});
+		if (echo.is_object()) {
+			emit(echo); // the transport left it to the hub
 		}
 	});
 }

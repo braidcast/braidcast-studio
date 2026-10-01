@@ -132,6 +132,7 @@ bool Normalize(const json &msg, NormalizedEvent &ev)
 		ev.tier = TierLabel(Str(event, "tier"));
 		ev.months = static_cast<int>(NumLoose(event, "cumulative_months"));
 		ev.message = Str(Obj(event, "message"), "text");
+		ev.authorId = Str(event, "user_id"); // what a ban names (CLEARCHAT target-user-id)
 	} else if (subType == "channel.subscription.gift") {
 		ev.type = "subgift";
 		ev.actorName = Bool(event, "is_anonymous") ? "Anonymous" : Str(event, "user_name");
@@ -142,6 +143,7 @@ bool Normalize(const json &msg, NormalizedEvent &ev)
 		ev.actorName = Bool(event, "is_anonymous") ? "Anonymous" : Str(event, "user_name");
 		ev.amount = NumLoose(event, "bits");
 		ev.message = Str(event, "message");
+		ev.authorId = Str(event, "user_id"); // null for an anonymous cheer
 	} else if (subType == "channel.raid") {
 		ev.type = "raid";
 		ev.actorName = Str(event, "from_broadcaster_user_name");
