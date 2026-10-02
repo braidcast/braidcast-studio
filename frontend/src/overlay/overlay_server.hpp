@@ -189,8 +189,9 @@ private:
 
 	// The current or most recent broadcast's event totals and its latched window. Its open
 	// window also bounds the `backfill` frame. In memory until Start opens its file, so a
-	// self-test server never touches the user's. Its own mutex is a leaf, taken under none of
-	// the server's.
+	// self-test server never touches the user's. Its own mutex is a leaf: the only server lock
+	// it is taken under is a connecting socket's send mutex (RunSse), and nothing waits on
+	// another lock while holding it.
 	BroadcastTally tally_;
 
 	std::function<void(const std::string &)> registeredObserver_; // guarded by sseMutex_; self-tests only

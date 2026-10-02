@@ -83,8 +83,9 @@ export interface CountWindow {
  * host's figure, "window" a broadcast starting or ending. */
 export type TallyCause = "seed" | "event" | "window";
 
-/** Live events held beyond this are evicted oldest-first. A tally frame covers everything held
- * before it, so this only bounds a page left open with no broadcast ever recorded. */
+/** Live events held beyond this are evicted oldest-first. A tally frame drops only what earlier
+ * connections delivered, so this bounds a page that stays connected for a long time -- across
+ * several broadcasts, or with no broadcast ever recorded. */
 const kMaxHeldEvents = 10000;
 
 function isFiniteNumber(v: unknown): v is number {
