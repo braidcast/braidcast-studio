@@ -6,7 +6,7 @@
   import Button from "$lib/ui/Button.svelte";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
   import { followVerb, eventTypeLabel } from "$lib/docks/events/eventWording";
-  import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
+  import { PLATFORM_COLORS, EVENT_TYPE_COLORS } from "$lib/theme/platformColors";
   import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -45,10 +45,6 @@
   // Platform dot/tag color (matches the Multichat dock).
   const PLATFORM_COLOR = PLATFORM_COLORS;
 
-  // Human labels per event type -- the summary carries the phrasing; this is the
-  // fallback the summary/aria fall back to for an unknown type.
-  const TYPE_LABEL = EVENT_TYPE_LABELS;
-
   // Accent color per type. follow=blue; sub/resub=purple; subgift/member/kicks=gold;
   // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
   const TYPE_COLOR = EVENT_TYPE_COLORS;
@@ -75,7 +71,7 @@
 
   function summary(e: NormalizedEvent): string {
     const fn = SUMMARY[e.type];
-    return fn ? fn(e) : (TYPE_LABEL[e.type] ?? e.type);
+    return fn ? fn(e) : eventTypeLabel(e.type, e.platform);
   }
 
   // --- destination attribution ----------------------------------------------

@@ -25,7 +25,8 @@ const TYPE_EMOJI = {
 };
 
 // One-line action phrasing per type, ported from EventsDock.svelte's SUMMARY map so
-// the ticker matches the app. Unknown types fall back to the raw type string.
+// the ticker matches the app; the per-platform follow verb mirrors FOLLOW_VERB in
+// src/lib/docks/events/eventWording.ts. Unknown types fall back to the raw type string.
 const SUMMARY = {
   follow: (e) => (e.platform === "youtube" ? "subscribed" : "followed"),
   sub: (e) => "subscribed" + (e.tier ? " · " + e.tier : ""),
