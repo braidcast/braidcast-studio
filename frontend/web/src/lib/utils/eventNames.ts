@@ -39,6 +39,7 @@ export const EV = {
   pollsChanged: "polls.changed",
   pollsResults: "polls.results",
   pollTemplatesChanged: "pollTemplates.changed",
+  goalsChanged: "goals.changed",
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",

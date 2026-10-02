@@ -71,7 +71,8 @@
     | "chart"
     // chat tools
     | "poll"
-    | "trophy";
+    | "trophy"
+    | "target";
 </script>
 
 <script lang="ts">
@@ -202,4 +203,6 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="4" width="17" height="4.5" /><rect x="3.5" y="10" width="17" height="4.5" /><rect x="3.5" y="16" width="17" height="4.5" /><path d="M3.5 6.25h11M3.5 12.25h6M3.5 18.25h3" stroke-width="4.5" /></svg>
 {:else if name === "trophy"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10v5a5 5 0 0 1-10 0z" /><path d="M7 5.5H4.5a3 3 0 0 0 3 4.7" /><path d="M17 5.5h2.5a3 3 0 0 1-3 4.7" /><path d="M12 14v3.2" /><path d="M9.3 20.5h5.4l-.6-3.3H9.9z" /></svg>
+{:else if name === "target"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="1" fill="currentColor" /></svg>
 {/if}

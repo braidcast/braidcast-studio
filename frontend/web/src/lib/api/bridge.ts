@@ -793,6 +793,31 @@ export interface LivePoll {
   finishing?: true;
 }
 
+/** One creator goal a destination's chat is showing (goals.*): the Super Chat or gift goal a
+ * creator starts in YouTube Studio. Read-only -- Braidcast never starts or ends one. Keyed by
+ * destination + the platform's goal `key` in `id`, so two broadcasts' goals never merge.
+ * `state` is the platform's own state name; `phase` is what it means here, "unknown" for a
+ * state not seen yet. `target` is the platform's target text ("50 gifts"), `headline` its
+ * status line ("Goal in progress"). A count the platform has not stated is null -- `total`
+ * stays null for a goal this read joined part-way. Timestamps are host epoch ms; `endedAtMs`
+ * is when the goal was achieved or ended, null while it runs. */
+export interface LiveGoal {
+  id: string;
+  platform: string;
+  accountId: string;
+  profileUuid: string;
+  key: string;
+  state: string;
+  phase: "active" | "achieved" | "ended" | "unknown";
+  description: string;
+  target: string;
+  headline: string;
+  current: number | null;
+  total: number | null;
+  updatedAtMs: number;
+  endedAtMs: number | null;
+}
+
 /** One saved poll template (pollTemplates.*). Identity is the question plus options, so
  * running the same poll again bumps this row; `name` may be "" (the UI then labels it by
  * its question). Ordered by `lastUsedAtMs`, most recent first. */
@@ -2488,6 +2513,9 @@ export interface ObsMethods {
   "polls.end": { poll: LivePoll };
   "polls.list": { polls: LivePoll[] };
   "polls.dismiss": { ok: true };
+  // Creator goals the destinations' chats are showing, in the order first seen. Read-only;
+  // every change also emits goals.changed with the whole list.
+  "goals.list": { goals: LiveGoal[] };
   // Saved poll templates (no provider/network). remember ({question, options}) reports
   // whether it created a row; touch/remove/rename ({id} / {id, name}) mirror
   // streamInfoPresets.*. Every mutation emits pollTemplates.changed.
@@ -2758,6 +2786,9 @@ export interface ObsEvents {
   "polls.results": { polls: LivePoll[] };
   // A poll template was remembered/touched/renamed/removed; re-run pollTemplates.list.
   "pollTemplates.changed": Record<string, never>;
+  // The full creator-goal list after any change (a goal started, progressed, finished, or its
+  // chat read stopped).
+  "goals.changed": { goals: LiveGoal[] };
   // Aggregate viewer count (perAccount + total), pushed by the host's viewer
   // poller while live; the Multichat dock / Monitor card / Studio chip render off it.
   "viewers.changed": ViewerCounts;

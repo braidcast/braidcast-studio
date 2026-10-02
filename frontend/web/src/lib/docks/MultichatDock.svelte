@@ -26,15 +26,18 @@
     selectionLabel,
     type Attribution,
     type DestinationSelection,
+    type DestinationSource,
     type Fidelity,
   } from "$lib/ui/destinationSelection";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
   import { pollStore } from "$lib/stores/pollStore.svelte";
+  import { goalStore } from "$lib/stores/goalStore.svelte";
   import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
   import type { LivePoll } from "$lib/api/bridge";
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
+  import GoalStrip from "$lib/docks/multichat/GoalStrip.svelte";
   import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
   import { moderationMatcher, redactChat, removedLabel } from "$lib/docks/multichat/chatModeration";
 
@@ -88,6 +91,7 @@
   $effect(() => {
     destinationIdentityStore.start();
     pollStore.start();
+    goalStore.start();
     return transportHealthStore.subscribe();
   });
 
@@ -550,10 +554,14 @@
     document.getElementById(pollButtonId)?.focus();
   }
 
-  function pollOrigin(p: LivePoll): { origin: Attribution; title: string } {
-    const source = { platform: POLL_PLATFORM, accountId: p.accountId, profileUuid: p.profileUuid };
+  // A pinned row (a poll, a goal) names its destination exactly as a chat line from that chat.
+  function destinationOrigin(source: DestinationSource): { origin: Attribution; title: string } {
     const origin = attribute(source, destByAccount);
-    return { origin, title: originTitle(POLL_PLATFORM, origin) };
+    return { origin, title: originTitle(source.platform, origin) };
+  }
+
+  function pollOrigin(p: LivePoll): { origin: Attribution; title: string } {
+    return destinationOrigin({ platform: POLL_PLATFORM, accountId: p.accountId, profileUuid: p.profileUuid });
   }
 
   let draft = $state("");
@@ -708,6 +716,7 @@
       <FeedJumpChip unseen={feed.unseen} onclick={feed.jumpToLatest} />
     {/if}
   </div>
+  <GoalStrip goals={goalStore.shown} originOf={destinationOrigin} showOrigin={multiOrigin} />
 
   <!-- Gone entirely rather than rendered empty when nothing is armed: `.dests` carries a
        top border, so an empty strip would leave a rule with nothing under it. The
