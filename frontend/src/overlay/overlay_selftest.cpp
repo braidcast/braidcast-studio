@@ -345,10 +345,10 @@ bool BroadcastTallyRules()
 	return ok;
 }
 
-// The broadcast-state projection feeding the tally, from the engine's side: an output that is
-// still connecting carries no start and opens no window; the go-live snapshot, taken within a
-// millisecond of the output's start so its uptime reads 0, carries that start and opens the
-// window at it; and the broadcast's start is its first output's.
+// The broadcast-state projection feeding the tally, over snapshots shaped like the engine's: an
+// output that is still connecting carries no start and opens no window; one that has started but
+// whose uptime still reads 0 (typical of the first snapshot after its start) carries that start
+// and opens the window at it; and the broadcast's start is its first output's.
 bool StreamStartOpensWindow()
 {
 	const int64_t now = 1'800'000'000'000;
@@ -368,10 +368,10 @@ bool StreamStartOpensWindow()
 
 	Overlay::BroadcastTally tally;
 	const Overlay::json connecting =
-		StreamStateJson({output("a", MultistreamEngine::State::Connecting, false, 0)}, false, now - 900);
-	const bool connectingOk = connecting["startedAt"].is_null() &&
-				  connecting["destinations"][0]["startedAt"].is_null() &&
-				  !tally.OnStreamState(true, startOf(connecting), now - 900);
+		StreamStateJson({output("a", MultistreamEngine::State::Connecting, false, 0)}, true, now - 900);
+	const bool connectingOk =
+		connecting["startedAt"].is_null() && connecting["destinations"][0]["startedAt"].is_null() &&
+		!tally.OnStreamState(connecting["active"].get<bool>(), startOf(connecting), now - 900);
 
 	const Overlay::json wentLive =
 		StreamStateJson({output("a", MultistreamEngine::State::Live, true, 0)}, true, now);
