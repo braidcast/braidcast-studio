@@ -25,6 +25,7 @@
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
+#include "../multistream/StreamState.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -344,6 +345,53 @@ bool BroadcastTallyRules()
 	return ok;
 }
 
+// The broadcast-state projection feeding the tally, from the engine's side: an output that is
+// still connecting carries no start and opens no window; the go-live snapshot, taken within a
+// millisecond of the output's start so its uptime reads 0, carries that start and opens the
+// window at it; and the broadcast's start is its first output's.
+bool StreamStartOpensWindow()
+{
+	const int64_t now = 1'800'000'000'000;
+	const auto output = [](const char *uuid, MultistreamEngine::State state, bool started, uint64_t uptimeMs) {
+		MultistreamEngine::OutputStats s;
+		s.bindingUuid = uuid;
+		s.platformKey = "youtube";
+		s.state = state;
+		s.started = started;
+		s.uptimeMs = uptimeMs;
+		return s;
+	};
+	const auto startOf = [](const Overlay::json &state) {
+		const auto it = state.find("startedAt");
+		return it != state.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
+	};
+
+	Overlay::BroadcastTally tally;
+	const Overlay::json connecting =
+		StreamStateJson({output("a", MultistreamEngine::State::Connecting, false, 0)}, false, now - 900);
+	const bool connectingOk = connecting["startedAt"].is_null() &&
+				  connecting["destinations"][0]["startedAt"].is_null() &&
+				  !tally.OnStreamState(true, startOf(connecting), now - 900);
+
+	const Overlay::json wentLive =
+		StreamStateJson({output("a", MultistreamEngine::State::Live, true, 0)}, true, now);
+	const std::optional<Overlay::json> opened = tally.OnStreamState(true, startOf(wentLive), now);
+	const bool liveOk = startOf(wentLive) == now && wentLive["destinations"][0]["startedAt"] == now && opened &&
+			    (*opened)["since"] == now && (*opened)["until"].is_null();
+
+	const Overlay::json both = StreamStateJson({output("a", MultistreamEngine::State::Live, true, 5000),
+						    output("b", MultistreamEngine::State::Live, true, 0)},
+						   true, now + 5000);
+	const bool firstOk = startOf(both) == now && !tally.OnStreamState(true, startOf(both), now + 5000) &&
+			     tally.OpenSince() == now;
+
+	const bool ok = connectingOk && liveOk && firstOk;
+	HostLog(std::string("[selftest] overlay stream start -> ") + (ok ? "OK" : "MISMATCH") +
+		" (connecting=" + (connectingOk ? "ok" : "bad") + " live=" + (liveOk ? "ok" : "bad") +
+		" first=" + (firstOk ? "ok" : "bad") + ")");
+	return ok;
+}
+
 // FileUtil::WriteBinaryFileAtomic, the write behind AddAsset, against a target another
 // handle holds open without FILE_SHARE_DELETE -- what an antivirus filter driver does to a
 // just-saved file for a few milliseconds. A hold shorter than os_safe_replace's retry
@@ -647,11 +695,14 @@ void ObsBootstrap::RunOverlaySelfTest()
 			 }},
 			{"stream", std::to_string(liveSinceMs),
 			 [&] {
-				 Overlay::json state = Overlay::json::object();
-				 state["active"] = true;
-				 state["startedAt"] = liveSinceMs;
-				 state["destinations"] = Overlay::json::array();
-				 server.BroadcastStreamState(state);
+				 // The go-live frame as the engine's first snapshot of a started output
+				 // projects it: its uptime still 0.
+				 MultistreamEngine::OutputStats out;
+				 out.bindingUuid = "selftest-binding";
+				 out.platformKey = "twitch";
+				 out.state = MultistreamEngine::State::Live;
+				 out.started = true;
+				 server.BroadcastStreamState(StreamStateJson({out}, true, liveSinceMs));
 			 }},
 		};
 		channelsOk = true;
@@ -715,6 +766,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// window and no other widget is; a reload then gets the closed window and no backfill.
 	// A wrong token gets 403 and no frame at all.
 	const bool tallyRulesOk = BroadcastTallyRules();
+	const bool streamStartOk = StreamStartOpensWindow();
 	bool tallyLiveOk = false;
 	bool tallyTestOk = false;
 	bool tallyRaceOk = false;
@@ -852,11 +904,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 			});
 			const size_t seeded = counterAcc.size();
 
-			Overlay::json ended = Overlay::json::object();
-			ended["active"] = false;
-			ended["startedAt"] = nullptr;
-			ended["destinations"] = Overlay::json::array();
-			server.BroadcastStreamState(ended);
+			server.BroadcastStreamState(StreamStateJson({}, false, TimeUtil::NowMs()));
 			server.Broadcast(counted("selftest-tally-fence"));
 			const auto fenced = [](const std::string &a) {
 				return a.find("selftest-tally-fence-actor") != std::string::npos;
@@ -891,8 +939,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 		}
 		Overlay::Store().RemoveForTest("selftest-counter");
 	}
-	const bool tallyOk = tallyRulesOk && tallyLiveOk && tallyTestOk && tallyRaceOk && tallyForcedOk &&
-			     tallyEndPushOk && tallyEndedOk && tallyAuthOk;
+	const bool tallyOk = tallyRulesOk && streamStartOk && tallyLiveOk && tallyTestOk && tallyRaceOk &&
+			     tallyForcedOk && tallyEndPushOk && tallyEndedOk && tallyAuthOk;
 	HostLog(std::string("[selftest] overlay tally over SSE -> ") + (tallyOk ? "OK" : "MISMATCH") +
 		" (live=" + (tallyLiveOk ? "ok" : "bad") + " test=" + (tallyTestOk ? "ok" : "bad") +
 		" race=" + (tallyRaceOk ? "ok" : "bad") + " [" + std::to_string(raceInTally) + " in tally, " +

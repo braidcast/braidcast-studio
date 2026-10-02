@@ -103,6 +103,7 @@
 #include "multistream/PollTemplateStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
+#include "multistream/StreamState.hpp"
 #include "multistream/VideoGate.hpp"
 #include "diag/capture_rate_sampler.hpp"
 #include "multistream/VirtualCamManager.hpp"
@@ -229,60 +230,11 @@ json BuildStatusArray()
 	return arr;
 }
 
-// Build the broadcast-state projection: whether anything is going out, when it started,
-// and where to. ONE object, fanned to both consumers by EmitStreamingChanged -- the
-// `streaming.changed` bridge event and the overlay server's named `stream` SSE channel --
-// so an uptime rendered on stream can never disagree with the app's.
-//
-// `startedAt` is WALL-CLOCK epoch milliseconds, derived HERE from the engine's uptime.
-// The engine measures uptime off os_gettime_ns, which is monotonic-since-boot: it names
-// no instant outside this process, and the consumer is an uptime widget in a separate CEF
-// process that can only compute now - startedAt. Sending the monotonic reading would be
-// the same trap channel_stats_poller documents for audienceUpdatedNs. This is the one site
-// holding both clocks at once, so it is the only place the conversion is safe; converting
-// here leaves nothing on the wire that could be diffed against the wrong clock.
-//
-// It is null -- never 0, never "now" -- until an output actually signals start. uptimeMs
-// is 0 for a Connecting output, and a zero epoch renders as an uptime of decades.
+// The broadcast-state projection (StreamStateJson) of the engine as it stands now.
 json BuildStreamState()
 {
 	MultistreamEngine &engine = ObsBootstrap::Multistream();
-	const int64_t nowMs = TimeUtil::NowMs();
-	json destinations = json::array();
-	std::optional<int64_t> startedAt;
-	for (const MultistreamEngine::OutputStats &s : engine.StatsSnapshot()) {
-		if (!MultistreamEngine::IsActiveState(s.state)) {
-			continue; // idle or dead: not somewhere this broadcast is going out
-		}
-		std::optional<int64_t> destStartedAt;
-		if (s.uptimeMs > 0) {
-			destStartedAt = nowMs - static_cast<int64_t>(s.uptimeMs);
-			if (!startedAt || *destStartedAt < *startedAt) {
-				startedAt = destStartedAt; // the broadcast began when its FIRST output did
-			}
-		}
-		destinations.push_back(json{
-			{"bindingUuid", s.bindingUuid},
-			{"platform", s.platformKey},
-			// The raw label, not DisplayName(): a widget draws its own platform mark
-			// and would otherwise print the platform twice. Null when the profile
-			// carries no label, so a widget prints the platform alone rather than a
-			// blank line.
-			{"name", s.profileName.empty() ? json(nullptr) : json(s.profileName)},
-			{"canvasName", s.canvasName},
-			{"state", MultistreamEngine::StateName(s.state)},
-			{"startedAt", destStartedAt ? json(*destStartedAt) : json(nullptr)},
-		});
-	}
-	// AnyLive() rather than a non-empty `destinations`, so the two stay independent
-	// answers: an output live under a binding that was disabled mid-broadcast counts as
-	// live but enumerates nowhere, and "live to nothing we can name" must not read as
-	// "not live".
-	return json{
-		{"active", engine.AnyLive()},
-		{"startedAt", startedAt ? json(*startedAt) : json(nullptr)},
-		{"destinations", std::move(destinations)},
-	};
+	return StreamStateJson(engine.StatsSnapshot(), engine.AnyLive(), TimeUtil::NowMs());
 }
 
 // Sends on TID_UI, unlike the poller and event fan-outs, because the projection has to read
@@ -14870,7 +14822,7 @@ static json BuildTestChannels(const json &overrides, uint64_t /*seq*/)
 static json BuildTestStream(const json &overrides, uint64_t /*seq*/)
 {
 	const bool active = JsonUtil::Bool(overrides, "active", true);
-	// Null, never 0, when nothing is live -- BuildStreamState's rule: a zero epoch renders
+	// Null, never 0, when nothing is live -- StreamStateJson's rule: a zero epoch renders
 	// as an uptime of decades.
 	json startedAt = active ? json(TimeUtil::NowMs()) : json(nullptr);
 	if (overrides.contains("startedAt") && overrides["startedAt"].is_number()) {

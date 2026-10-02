@@ -882,6 +882,7 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 				st.droppedFrames = obs_output_get_frames_dropped(o);
 				st.totalFrames = obs_output_get_total_frames(o);
 				st.congestion = obs_output_get_congestion(o);
+				st.started = lo->liveStartNs != 0;
 				st.uptimeMs = lo->liveStartNs ? (os_gettime_ns() - lo->liveStartNs) / 1000000ULL : 0;
 			}
 		}

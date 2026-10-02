@@ -66,6 +66,10 @@ public:
 		int droppedFrames = 0;
 		int totalFrames = 0;
 		double congestion = 0.0; // 0..1
+		/* Whether the output has signalled start, apart from uptimeMs: that is whole
+		 * milliseconds, so it reads 0 for the first millisecond after the start -- which
+		 * is when the go-live snapshot is taken. */
+		bool started = false;
 		uint64_t uptimeMs = 0;
 	};
 

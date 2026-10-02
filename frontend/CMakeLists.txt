@@ -415,6 +415,9 @@ target_sources(
     src/multistream/SceneLinkStore.hpp
     src/multistream/MultistreamEngine.cpp
     src/multistream/MultistreamEngine.hpp
+    # The broadcast-state projection the bridge and the overlay's stream channel share.
+    src/multistream/StreamState.cpp
+    src/multistream/StreamState.hpp
     src/multistream/CanvasRuntime.cpp
     src/multistream/CanvasRuntime.hpp
     src/multistream/CanvasService.cpp
@@ -674,11 +677,13 @@ set_source_files_properties(
   src/overlay/overlay_store.cpp
   src/overlay/overlay_sources.cpp
   src/overlay/overlay_viewport.cpp
+  src/overlay/overlay_selftest.cpp
   src/multistream/CanvasStore.cpp
   src/multistream/StreamProfileStore.cpp
   src/multistream/OutputBindingStore.cpp
   src/multistream/SceneLinkStore.cpp
   src/multistream/MultistreamEngine.cpp
+  src/multistream/StreamState.cpp
   src/multistream/CanvasRuntime.cpp
   src/multistream/CanvasService.cpp
   src/multistream/GlobalAudioChannels.cpp
