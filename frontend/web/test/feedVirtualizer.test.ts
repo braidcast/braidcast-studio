@@ -61,6 +61,37 @@ describe("FeedVirtualizer anchoring", () => {
     h.stop();
   });
 
+  test("pinned to the bottom, the box shrinking keeps the newest row in view", async () => {
+    // A ResizeObserver that hands its callback back, so the box can be resized by hand.
+    const resized: (() => void)[] = [];
+    (globalThis as Record<string, unknown>).ResizeObserver = class {
+      constructor(cb: () => void) {
+        resized.push(cb);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    };
+    const h = await loaded(range(1, 15));
+    expect(h.v.autoStick).toBe(true);
+    // A strip mounting under the feed (a pinned poll or goal) takes 30px from it.
+    h.el.clientHeight = 70;
+    for (const cb of resized) {
+      cb();
+    }
+    flush();
+    expect(h.el.scrollTop).toBe(h.el.scrollHeight - h.el.clientHeight);
+    // Unpinned, a resize leaves the reader where they are.
+    h.el.userScroll(40);
+    expect(h.v.autoStick).toBe(false);
+    h.el.clientHeight = 100;
+    for (const cb of resized) {
+      cb();
+    }
+    flush();
+    expect(h.el.scrollTop).toBe(40);
+    h.stop();
+  });
+
   test("a reload keeps a surviving row's measured height and the reader's place", async () => {
     const h = await loaded(range(1, 15));
     measure(h, 12, 55);

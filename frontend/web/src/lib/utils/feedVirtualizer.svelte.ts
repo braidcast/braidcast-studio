@@ -1002,8 +1002,15 @@ export class FeedVirtualizer<T> {
       this.maybeFetchOlder();
     };
     node.addEventListener("scroll", onScroll);
+    // The box resizing scrolls nothing, so a stuck view would leave its newest rows below the
+    // fold when a strip mounts beside it (a pinned poll or goal) until the next row arrived.
+    // Nothing else re-pins on a size alone: the pin effect does not depend on viewH.
     const ro = new ResizeObserver(() => {
       this.viewH = node.clientHeight;
+      if (this.autoStick) {
+        node.scrollTop = node.scrollHeight;
+        this.viewTop = node.scrollTop;
+      }
       this.maybeFetchOlder();
     });
     ro.observe(node);
