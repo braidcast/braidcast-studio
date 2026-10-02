@@ -400,7 +400,9 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 }
 
 // What a count reads off one event, and nothing else: the tally goes to a page that only
-// counts, so a viewer's name or message has no reason to be on that socket.
+// counts, so the name and message fields stay off it. The id goes verbatim, since the page
+// dedupes it against the live frame for the same event, and some platforms' ids embed the
+// actor: Kick's carry the username, YouTube money events the supporter's channel id.
 json TallyEventJson(const Events::NormalizedEvent &ev)
 {
 	json j = json{{"id", ev.id}, {"platform", ev.platform}, {"type", ev.type}, {"ts", ev.ts}};

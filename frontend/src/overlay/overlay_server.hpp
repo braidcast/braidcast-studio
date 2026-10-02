@@ -24,8 +24,9 @@ namespace Overlay {
 // The body of the `tally` frame a widget that counts events (Overlay::CountsEvents) is sent on
 // connect: every event `store` holds with `sinceMs <= ts <= untilMs` (0 leaving `untilMs` open),
 // oldest first, cut down to the fields a count reads -- id, platform, type, ts, and amount and
-// count where non-zero -- so no viewer's name or message rides along. `sinceMs` 0 means no
-// broadcast has started this run: there is no window, so `since` is null and `events` empty.
+// count where non-zero -- so no name or message field rides along (an id can still embed the
+// actor, as Kick's do; see TallyEventJson). `sinceMs` 0 means no broadcast has started this
+// run: there is no window, so `since` is null and `events` empty.
 // The store's own cap bounds the list. Exposed so the self-test can run it against an
 // in-memory store rather than the user's history.
 nlohmann::json TallyBody(const Events::EventStore &store, int64_t sinceMs, int64_t untilMs, bool live);
