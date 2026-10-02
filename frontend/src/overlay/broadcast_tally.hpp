@@ -37,11 +37,16 @@
 // crash or by quitting mid-broadcast is closed at the last save on load. A platform's figures
 // go once its storage limit (Events::EventStore::MaxAgeMs) has passed since the window closed.
 //
+// Saved at most once per kSaveDebounceMs on the event path, so the last events of a burst are
+// left unsaved by that path; SaveIfDue, on the app's 1 Hz tick, writes them. Every counted
+// event is therefore on disk within kSaveDebounceMs plus one tick of being counted, and a
+// failed write leaves the tally owed a save, retried at the same pace.
+//
 // Thread map: Add on the hub's admitting thread (OverlayServer::Broadcast, under the hub's
-// admitMutex_); OnStreamState on TID_UI (BroadcastStreamState); Snapshot and OpenSince on SSE
-// connection threads and TID_UI; Open and Flush on TID_UI (server Start and Stop). All of it
-// under mutex_, which is a leaf: nothing is called while it is held. Disk writes happen after
-// it is released, ordered by writer_.
+// admitMutex_); OnStreamState on TID_UI (BroadcastStreamState); SaveIfDue on TID_UI (the bridge's
+// stats tick); Snapshot and OpenSince on SSE connection threads and TID_UI; Open and Flush on
+// TID_UI (server Start and Stop). All of it under mutex_, which is a leaf: nothing is called
+// while it is held. Disk writes happen after it is released, ordered by writer_.
 namespace Overlay {
 
 class BroadcastTally {
@@ -78,11 +83,16 @@ public:
 	// Write a pending save now. For shutdown.
 	void Flush();
 
+	// Write a pending save once kSaveDebounceMs has passed since the last one: the save the
+	// event path held back, or one that failed. Called on a timer.
+	void SaveIfDue(int64_t nowMs);
+
 	// How many recent broadcast events are remembered for a window that opens after them, and
 	// how many counted ids a snapshot names.
 	static constexpr size_t kRecentEvents = 64;
 	static constexpr size_t kRecentIds = 64;
-	// The least time between two saves on the event path. A transition and Flush always save.
+	// The least time between two saves on the event path and SaveIfDue. A transition and Flush
+	// always save.
 	static constexpr int64_t kSaveDebounceMs = 3000;
 
 private:
@@ -104,8 +114,12 @@ private:
 	void CountLocked(const Recent &r);
 	nlohmann::json SnapshotLocked() const;
 	// The persisted record, stamped for writer_, and the file it goes to. Caller holds mutex_
-	// and hands both to writer_ once it is released.
+	// and hands both to Persist once it is released.
 	nlohmann::json RecordLocked(int64_t nowMs, std::string &path, uint64_t &stamp);
+	// Whether a save is owed and kSaveDebounceMs has passed since the last attempt.
+	bool SaveDueLocked(int64_t nowMs) const;
+	// Write a record taken by RecordLocked. Caller does not hold mutex_.
+	void Persist(const nlohmann::json &record, const std::string &path, uint64_t stamp);
 
 	mutable std::mutex mutex_;
 	std::string path_; // empty: in memory only

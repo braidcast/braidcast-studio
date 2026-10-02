@@ -171,8 +171,9 @@ std::string ConnectSse(int port, const std::string &path, const std::function<bo
 // nothing, a null start opens nothing, an end closes the window for good), the refold of what
 // was broadcast just before the start, the raw sums per (platform, type, kind) with a YouTube
 // milestone kept apart from a new member, the recentIds bound, no names or messages in a
-// snapshot, and the record a restart reads -- an open window closed at the last save, no ids,
-// and a platform's rows dropped past its storage limit.
+// snapshot, the record a restart reads -- an open window closed at the last save, no ids,
+// and a platform's rows dropped past its storage limit -- and the save still owed after a
+// failed write or a held-back event, written once the debounce has passed and not before.
 bool BroadcastTallyRules()
 {
 	const auto event = [](const std::string &id, const char *platform, const char *type, int64_t ts) {
@@ -304,12 +305,42 @@ bool BroadcastTallyRules()
 		clear();
 	}
 
-	const bool ok = emptyOk && refoldOk && latchOk && sumsOk && endOk && boundOk && reloadOk && agedOk;
+	// A save that fails stays owed. The opening save cannot be written (the file's folder is
+	// a file), the event after it is held back by the debounce, and once the folder can be
+	// made the tally is not written again before kSaveDebounceMs -- a failing disk is not
+	// retried in a loop -- and then is, with the held-back event in it.
+	bool retryOk = false;
+	const std::string blocker = SelfTest::ConfigPath("overlay-tally-selftest-blocker");
+	if (!blocker.empty()) {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const fs::path blockerPath = fs::u8path(blocker);
+		const std::string owedPath = blocker + "/overlay_tally.json";
+		fs::remove_all(blockerPath, ec);
+		std::ofstream(blockerPath) << "blocks a folder of this name";
+		const int64_t now = TimeUtil::NowMs();
+		{
+			Overlay::BroadcastTally owed;
+			owed.Open(owedPath);
+			owed.OnStreamState(true, now - 1000, now);
+			owed.Add(event("tally-owed-1", "twitch", "follow", now));
+			fs::remove(blockerPath, ec);
+			owed.SaveIfDue(now + 1);
+			const bool waited = !fs::exists(fs::u8path(owedPath), ec);
+			owed.SaveIfDue(now + Overlay::BroadcastTally::kSaveDebounceMs);
+			Overlay::BroadcastTally back;
+			back.Open(owedPath);
+			retryOk = waited && sums(back.Snapshot(), "twitch", "follow", "", 1, 1, 0);
+		}
+		fs::remove_all(blockerPath, ec);
+	}
+
+	const bool ok = emptyOk && refoldOk && latchOk && sumsOk && endOk && boundOk && reloadOk && agedOk && retryOk;
 	HostLog(std::string("[selftest] overlay broadcast tally -> ") + (ok ? "OK" : "MISMATCH") +
-		" (empty=" + (emptyOk ? "ok" : "bad") + " refold=" + (refoldOk ? "ok" : "bad") +
-		" latch=" + (latchOk ? "ok" : "bad") + " sums=" + (sumsOk ? "ok" : "bad") +
-		" end=" + (endOk ? "ok" : "bad") + " bound=" + (boundOk ? "ok" : "bad") +
-		" reload=" + (reloadOk ? "ok" : "bad") + " aged=" + (agedOk ? "ok" : "bad") + ")");
+		" (empty=" + (emptyOk ? "ok" : "bad") + " refold=" + (refoldOk ? "ok" : "bad") + " latch=" +
+		(latchOk ? "ok" : "bad") + " sums=" + (sumsOk ? "ok" : "bad") + " end=" + (endOk ? "ok" : "bad") +
+		" bound=" + (boundOk ? "ok" : "bad") + " reload=" + (reloadOk ? "ok" : "bad") +
+		" aged=" + (agedOk ? "ok" : "bad") + " retry=" + (retryOk ? "ok" : "bad") + ")");
 	return ok;
 }
 

@@ -101,6 +101,9 @@ public:
 	// connect. Mirrors BroadcastTo's "never the store" rule for the default channel, marks an
 	// object body `"test": true` the same way, and reports the same delivery count.
 	size_t SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body);
+	// Save the broadcast tally if it holds counts its event path has not saved yet
+	// (BroadcastTally::SaveIfDue). The bridge's 1 Hz stats tick calls it, on TID_UI.
+	void SaveTallyIfDue();
 
 	// Self-tests only: called on a connecting SSE socket's thread right after it registers,
 	// while it still holds the socket's send mutex and has read nothing it replays -- the

@@ -668,6 +668,11 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 	}
 }
 
+void OverlayServer::SaveTallyIfDue()
+{
+	tally_.SaveIfDue(TimeUtil::NowMs());
+}
+
 size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
 	return BroadcastFrame(DataFrame(AsTest(ev.ToJson())), &widgetId);

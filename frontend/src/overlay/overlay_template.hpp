@@ -66,12 +66,12 @@ bool AcceptsReplay(const std::string &type);
 // dropping it loses its sound from the stream.
 bool PlaysAudio(const std::string &type);
 
-// Whether `type` counts events over a broadcast, and so is sent the `tally` frame on connect:
-// the events of the current broadcast -- or, off air, of the most recent one -- that its count
-// is rebuilt from when its source reloads mid-broadcast. Read off the per-type `tally` column in
-// the same table; only the counter counts. A type with no row is sent none, which costs a
-// widget nothing it was going to read, while sending every type the frame would hand each
-// connecting page up to the event store's whole window.
+// Whether `type` counts events over a broadcast, and so is sent the `tally` frame: the
+// running totals of the current broadcast -- or, off air, of the most recent one -- with its
+// start, its end and the ids of the last events counted (Overlay::BroadcastTally). Sent on
+// connect, so a source that reloads mid-broadcast picks its count up where it was, and again
+// whenever a broadcast starts or ends. Read off the per-type `tally` column in the same table;
+// only the counter counts. A type with no row is sent none: it reads nothing in the frame.
 bool CountsEvents(const std::string &type);
 
 // What reading a type's shipped template yielded. The three failures are kept apart

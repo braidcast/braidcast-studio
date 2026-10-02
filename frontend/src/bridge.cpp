@@ -8838,6 +8838,9 @@ void SampleStatsTick()
 	// looking at -- while restoring is instant, because every consumer change reconciles
 	// on its own path.
 	VideoGate::ReconcileWith(roots);
+	// The tally's trailing save rides the same tick: the event path saves at most once per
+	// few seconds, and this writes what the end of a burst left unsaved.
+	Overlay::Server().SaveTallyIfDue();
 	// After the JS push, deliberately: the Stats dock's update must not wait on a
 	// database write.
 	if (g_statsTickObserver) {

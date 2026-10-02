@@ -126,12 +126,12 @@ void BroadcastTally::Add(const Events::NormalizedEvent &ev)
 			recent_.pop_front();
 		}
 		const int64_t now = TimeUtil::NowMs();
-		if (!dirty_ || path_.empty() || now - lastSaveMs_ < kSaveDebounceMs) {
+		if (!SaveDueLocked(now)) {
 			return;
 		}
 		record = RecordLocked(now, path, stamp);
 	}
-	writer_.Write(record, path, stamp);
+	Persist(record, path, stamp);
 }
 
 std::optional<json> BroadcastTally::OnStreamState(bool active, int64_t startedAtMs, int64_t nowMs)
@@ -167,7 +167,7 @@ std::optional<json> BroadcastTally::OnStreamState(bool active, int64_t startedAt
 		}
 	}
 	if (persist) {
-		writer_.Write(record, path, stamp);
+		Persist(record, path, stamp);
 	}
 	return snapshot;
 }
@@ -196,7 +196,39 @@ void BroadcastTally::Flush()
 		}
 		record = RecordLocked(TimeUtil::NowMs(), path, stamp);
 	}
-	writer_.Write(record, path, stamp);
+	Persist(record, path, stamp);
+}
+
+void BroadcastTally::SaveIfDue(int64_t nowMs)
+{
+	json record;
+	std::string path;
+	uint64_t stamp = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!SaveDueLocked(nowMs)) {
+			return;
+		}
+		record = RecordLocked(nowMs, path, stamp);
+	}
+	Persist(record, path, stamp);
+}
+
+bool BroadcastTally::SaveDueLocked(int64_t nowMs) const
+{
+	return dirty_ && !path_.empty() && nowMs - lastSaveMs_ >= kSaveDebounceMs;
+}
+
+void BroadcastTally::Persist(const json &record, const std::string &path, uint64_t stamp)
+{
+	if (writer_.Write(record, path, stamp)) {
+		return;
+	}
+	// Still owed a save. The next due save retries it -- kSaveDebounceMs after this attempt,
+	// which RecordLocked dated -- so a disk that keeps failing is tried at that pace, not in a
+	// loop.
+	std::lock_guard<std::mutex> lock(mutex_);
+	dirty_ = true;
 }
 
 json BroadcastTally::SnapshotLocked() const
