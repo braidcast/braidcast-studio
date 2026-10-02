@@ -800,7 +800,9 @@ export interface LivePoll {
  * state not seen yet. `target` is the platform's target text ("50 gifts"), `headline` its
  * status line ("Goal in progress"). A count the platform has not stated is null -- `total`
  * stays null for a goal this read joined part-way. Timestamps are host epoch ms; `endedAtMs`
- * is when the goal was achieved or ended, null while it runs. */
+ * is when the goal was achieved or ended, null while it runs. `heldUntilMs` is set while the chat
+ * read that reported it has ended and none has taken it over yet (a chat restart); the goal goes
+ * then unless one does. */
 export interface LiveGoal {
   id: string;
   platform: string;
@@ -814,8 +816,8 @@ export interface LiveGoal {
   headline: string;
   current: number | null;
   total: number | null;
-  updatedAtMs: number;
   endedAtMs: number | null;
+  heldUntilMs: number | null;
 }
 
 /** One saved poll template (pollTemplates.*). Identity is the question plus options, so

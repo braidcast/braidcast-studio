@@ -1,7 +1,7 @@
 import type { LiveGoal } from "$lib/api/bridge";
 
 // How the Chat dock reads a creator goal (goals.*): the progress it shows, and how long a
-// finished goal stays up. Pure, so the store and its tests share one reading.
+// finished or held goal stays up. Pure, so the store and its tests share one reading.
 
 /** How long an achieved or ended goal stays in the dock, the way YouTube leaves the result up
  * for a while before its goal chip goes. */
@@ -64,23 +64,30 @@ export function goalOver(g: LiveGoal): boolean {
   return g.phase === "achieved" || g.phase === "ended";
 }
 
-function lingersUntil(g: LiveGoal, lingerMs: number): number | null {
-  return g.endedAtMs === null ? null : g.endedAtMs + lingerMs;
+// When the goal leaves the dock: a finished one after its linger, a held one when its hold runs
+// out, whichever comes first. Null while it runs.
+function leavesAt(g: LiveGoal, lingerMs: number): number | null {
+  const lingered = g.endedAtMs === null ? null : g.endedAtMs + lingerMs;
+  if (g.heldUntilMs === null) {
+    return lingered;
+  }
+  return lingered === null ? g.heldUntilMs : Math.min(lingered, g.heldUntilMs);
 }
 
-/** The goals to draw at `nowMs`: every running goal, and a finished one for `lingerMs`. */
+/** The goals to draw at `nowMs`: every running goal, a finished one for `lingerMs`, and a held one
+ * until its hold runs out. */
 export function shownGoals(goals: LiveGoal[], nowMs: number, lingerMs = GOAL_LINGER_MS): LiveGoal[] {
   return goals.filter((g) => {
-    const until = lingersUntil(g, lingerMs);
+    const until = leavesAt(g, lingerMs);
     return until === null || nowMs < until;
   });
 }
 
-/** Milliseconds from `nowMs` until the next shown goal stops lingering, or null when none will. */
+/** Milliseconds from `nowMs` until the next shown goal leaves, or null when none will. */
 export function nextExpiryMs(goals: LiveGoal[], nowMs: number, lingerMs = GOAL_LINGER_MS): number | null {
   let soonest: number | null = null;
   for (const g of goals) {
-    const until = lingersUntil(g, lingerMs);
+    const until = leavesAt(g, lingerMs);
     if (until !== null && until > nowMs && (soonest === null || until < soonest)) {
       soonest = until;
     }

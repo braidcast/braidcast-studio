@@ -26,8 +26,8 @@ function goal(over: Partial<LiveGoal> = {}): LiveGoal {
     headline: "Goal in progress",
     current: 12,
     total: 50,
-    updatedAtMs: 1000,
     endedAtMs: null,
+    heldUntilMs: null,
     ...over,
   };
 }
@@ -101,6 +101,14 @@ describe("finished goals linger, then go", () => {
     expect(nextExpiryMs([running, done, later], 15_000)).toBe(10_000 + GOAL_LINGER_MS - 15_000);
     expect(nextExpiryMs([running, done, later], 10_000 + GOAL_LINGER_MS)).toBe(10_000);
     expect(nextExpiryMs([running], 0)).toBeNull();
+  });
+
+  test("a held goal goes when its hold runs out, or its linger if that is sooner", () => {
+    const held = goal({ id: "h", heldUntilMs: 30_000 });
+    const heldDone = goal({ id: "d", phase: "achieved", endedAtMs: 0, heldUntilMs: 90_000 });
+    expect(shownGoals([held, heldDone], 29_999).map((g) => g.id)).toEqual(["h", "d"]);
+    expect(shownGoals([held, heldDone], 30_000).map((g) => g.id)).toEqual(["d"]);
+    expect(nextExpiryMs([held, heldDone], 30_000)).toBe(GOAL_LINGER_MS - 30_000);
   });
 });
 
