@@ -162,7 +162,7 @@ function ticker() {
     { addEventListener() {} },
     () => ({ getPropertyValue: () => "", fontSize: "16" }),
     () => 0,
-  ) as { buffer: () => { id: string; body: string }[]; makeTick: (item: unknown) => El };
+  ) as { buffer: () => { id: string; body: string; summary: string }[]; makeTick: (item: unknown) => El };
   return {
     belt,
     track: () => ids["track"],
@@ -257,5 +257,15 @@ describe("event redaction in the default ticker", () => {
     expect(body?.style.width).toBe("0px");
     // The loop draws from the buffer again, still without them.
     expect(t.belt.makeTick(t.belt.buffer()[0]).text()).not.toContain("removed words");
+  });
+});
+
+describe("follow wording in the default ticker", () => {
+  test("a YouTube follow reads subscribed; other platforms read followed", () => {
+    const t = ticker();
+    for (const platform of ["youtube", "twitch", "kick"]) {
+      t.fire({ id: platform, type: "follow", platform, actorName: "Ann" });
+    }
+    expect(t.belt.buffer().map((i) => i.summary)).toEqual(["subscribed", "followed", "followed"]);
   });
 });
