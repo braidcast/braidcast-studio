@@ -336,6 +336,16 @@ bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath, SaveH
 	return ReportSaveResult(saved, absPath);
 }
 
+bool OrderedStoreSave::Write(const nlohmann::json &root, const std::string &absPath, uint64_t stamp)
+{
+	std::lock_guard<std::mutex> lock(writeMutex_);
+	if (stamp < written_) {
+		return true; // a newer snapshot is already on disk
+	}
+	written_ = stamp;
+	return SaveStoreJson(root, absPath, history_);
+}
+
 nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr)
 {
 	OBSDataAutoRelease root = obs_data_create();

@@ -4,6 +4,8 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -111,6 +113,29 @@ enum class SaveHistory { Keep, Drop };
 // and ReportSaveResult: the whole save envelope a store's Save() is, minus the
 // model-to-JSON step.
 bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath, SaveHistory history = SaveHistory::Keep);
+
+// SaveStoreJson for a store that snapshots under its own mutex and writes without it, so a
+// slow disk never holds up the store's readers and writers. Each snapshot is stamped while
+// that mutex is held, and a write whose stamp is older than one already written is dropped:
+// two threads racing for the disk can then never leave the older state in the file last.
+class OrderedStoreSave {
+public:
+	explicit OrderedStoreSave(SaveHistory history = SaveHistory::Keep) : history_(history) {}
+
+	// The stamp for a snapshot being taken now. The caller holds its store's own mutex,
+	// which is what orders stamps the same way as the states they describe.
+	uint64_t Stamp() { return ++stamped_; }
+
+	// SaveStoreJson(root, absPath), unless a later stamp has already been written. True
+	// when the file holds this snapshot or a newer one.
+	bool Write(const nlohmann::json &root, const std::string &absPath, uint64_t stamp);
+
+private:
+	const SaveHistory history_;
+	uint64_t stamped_ = 0; // guarded by the CALLER's store mutex
+	std::mutex writeMutex_;
+	uint64_t written_ = 0; // guarded by writeMutex_
+};
 
 // A store file the app found but could not use, kept beside the original so that a
 // later save of the fallback cannot destroy it.

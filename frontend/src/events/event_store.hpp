@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -106,6 +107,17 @@ public:
 		int64_t ms;
 	};
 	static constexpr MaxAge kMaxAge[] = {{"youtube", 30 * TimeUtil::kDayMs}};
+	// `platform`'s limit from kMaxAge, or 0 when it has none. For anything else kept from a
+	// platform's API data, so every store applies the one limit.
+	static constexpr int64_t MaxAgeMs(std::string_view platform)
+	{
+		for (const MaxAge &limit : kMaxAge) {
+			if (platform == limit.platform) {
+				return limit.ms;
+			}
+		}
+		return 0;
+	}
 
 	// Persist any coalesced pending write immediately. Called on clean shutdown so a
 	// debounced trailing event isn't lost. No-op when nothing is dirty.

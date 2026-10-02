@@ -59,6 +59,7 @@
 #include "events/event_store.hpp"
 #include "events/kick_events.hpp"
 #include "events/transport_health.hpp"
+#include "events/youtube_subscribers_seen.hpp"
 #include "history/Db.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/ScheduleRunner.hpp"
@@ -10740,6 +10741,68 @@ void ObsBootstrap::RunEventSelfTest()
 			(removalFirstOk && admissionFirstOk ? "OK" : "FAIL") + " (removal first " +
 			(removalFirstOk ? "1" : "0") + ", admission first " + (admissionFirstOk ? "1" : "0") +
 			"; waited " + (admitWaited ? "1" : "0") + (removalWaited ? "1" : "0") + ")");
+	}
+
+	// YouTube subscribers are reported once each. A first read seeds the account silently;
+	// a subscriber already seen never comes back, however long they stay among the newest;
+	// an account bounds what it keeps by count and by age; what is kept survives a reload
+	// and goes with the account. A private store, then a file of the test's own.
+	{
+		using Events::SeenSubscribers;
+		const int64_t t0 = 10 * SeenSubscribers::kMaxAge;
+		SeenSubscribers seen;
+		const bool unseededFirst = !seen.Seeded("youtube:1", t0);
+		const std::vector<std::string> first = seen.Observe("youtube:1", {"UCa", "UCb"}, t0);
+		const bool seededAfter = seen.Seeded("youtube:1", t0 + 1);
+		const std::vector<std::string> again = seen.Observe("youtube:1", {"UCc", "UCa", "UCb"}, t0 + 1000);
+		const bool perAccount = seen.Observe("youtube:2", {"UCa"}, t0 + 1000).size() == 1;
+		const bool onceOk = unseededFirst && first.size() == 2 && seededAfter && again.size() == 1 &&
+				    again.front() == "UCc" && perAccount;
+
+		// Still returned a month on, so refreshed and still known; not returned past kMaxAge,
+		// so gone, and the account counts as unread again.
+		const int64_t later = t0 + SeenSubscribers::kMaxAge - 1;
+		const bool refreshed = seen.Observe("youtube:1", {"UCa"}, later).empty();
+		const std::vector<std::string> aged =
+			seen.Observe("youtube:1", {"UCa", "UCb"}, later + SeenSubscribers::kMaxAge - 1);
+		const bool ageOk = refreshed && aged.size() == 1 && aged.front() == "UCb" &&
+				   !seen.Seeded("youtube:2", later + SeenSubscribers::kMaxAge + 1001);
+
+		std::vector<std::string> many;
+		for (size_t i = 0; i < SeenSubscribers::kMaxPerAccount + 5; ++i) {
+			many.push_back("UCmany" + std::to_string(i));
+		}
+		seen.Observe("youtube:3", {"UColdest"}, t0);
+		seen.Observe("youtube:3", many, t0 + 1);
+		const bool capOk = seen.Observe("youtube:3", {"UColdest"}, t0 + 2).size() == 1;
+
+		const std::string seenPath = MultistreamBasicPath("youtube_subscribers_seen-selftest.json");
+		const auto clearSeen = [&] {
+			restore(seenPath, std::nullopt);
+			restore(seenPath + ".bak", std::nullopt);
+			restore(seenPath + ".tmp", std::nullopt);
+		};
+		clearSeen();
+		const int64_t now = TimeUtil::NowMs();
+		{
+			SeenSubscribers saved{seenPath};
+			saved.Observe("youtube:1", {"UCa", "UCb"}, now);
+			saved.Observe("youtube:2", {"UCz"}, now);
+		}
+		SeenSubscribers loaded{seenPath};
+		const bool roundTrip = loaded.Seeded("youtube:1", now) &&
+				       loaded.Observe("youtube:1", {"UCa", "UCb"}, now).empty();
+		const bool purged = loaded.PurgeAccount("youtube:2");
+		SeenSubscribers afterPurge{seenPath};
+		const bool purgeOk = purged && !afterPurge.Seeded("youtube:2", now) &&
+				     afterPurge.Seeded("youtube:1", now) && !afterPurge.PurgeAccount("youtube:9");
+		clearSeen();
+
+		const bool ok = onceOk && ageOk && capOk && roundTrip && purgeOk;
+		HostLog(std::string("[selftest] events youtube subscribers seen -> ") + (ok ? "OK" : "FAIL") +
+			" (once " + (onceOk ? "1" : "0") + ", age " + (ageOk ? "1" : "0") + ", cap " +
+			(capOk ? "1" : "0") + ", reload " + (roundTrip ? "1" : "0") + ", purge " +
+			(purgeOk ? "1" : "0") + ")");
 	}
 
 	// Restore: wipe the synthetic history from memory, then put the user's original

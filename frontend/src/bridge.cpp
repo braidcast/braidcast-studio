@@ -48,6 +48,7 @@
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
 #include "events/transport_health.hpp"
+#include "events/youtube_subscribers_seen.hpp"
 #include "devtools_port.hpp"
 #include "fonts.hpp"
 #include "ingest_writeback.hpp"
@@ -13263,8 +13264,9 @@ void TeardownAccount(const std::string &accountId)
 	}
 	Events::Hub().StopAccount(accountId);
 	// A removed account's stored data goes with it (YouTube's policy requires deleting it
-	// within 7 days of a revocation). Both only drop rows; chat's is queued to its writer.
+	// within 7 days of a revocation). These only drop rows; chat's is queued to its writer.
 	Events::Store().PurgeAccount(accountId);
+	Events::YouTubeSubscribersSeen().PurgeAccount(accountId);
 	Chat::Archive().PurgeAccount(accountId);
 	// Chat is live-only, so re-resolve it only while streaming: a mid-stream disconnect
 	// drops the removed account's transport (Start() enumerates only still-connected

@@ -1,7 +1,9 @@
 #include "youtube_events.hpp"
 
 #include <cstdint>
+#include <set>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +14,7 @@
 #include "../oauth/youtube_provider.hpp"
 #include "../obs_bootstrap.hpp"
 #include "util/time_util.hpp"
+#include "youtube_subscribers_seen.hpp"
 
 namespace Events {
 
@@ -173,25 +176,54 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 		const std::string url =
 			std::string(kSubscriptionsUrl) +
 			"?part=subscriberSnippet&myRecentSubscribers=true&maxResults=" + std::to_string(kMaxResults);
-		if (fetch("subscriptions", url, j)) {
-			const json &items = Obj(j, "items");
-			if (items.is_array()) {
-				for (const json &item : items) {
-					if (canceled()) {
-						return;
-					}
-					const std::string itemId = Str(item, "id");
-					if (itemId.empty()) {
+		const bool fetched = fetch("subscriptions", url, j);
+		const json &items = Obj(j, "items");
+		if (fetched && items.is_array() && !canceled()) {
+			// This read returns whoever is newest, not who is new, and stamps nothing, so
+			// a subscriber is reported once: the first read that returns them. The event
+			// store's dedupe cannot be that memory -- it forgets past its cap and its age
+			// limit, and a subscriber still among the newest few would then come back as a
+			// follow stamped now. Keyed by the subscriber's channel, falling back to the
+			// subscription's own id.
+			struct Subscriber {
+				std::string key;
+				std::string itemId;
+				std::string title;
+			};
+			std::vector<Subscriber> subscribers;
+			std::vector<std::string> keys;
+			for (const json &item : items) {
+				const std::string itemId = Str(item, "id");
+				if (itemId.empty()) {
+					continue;
+				}
+				const json &subSnippet = Obj(item, "subscriberSnippet");
+				const std::string channelId = Str(subSnippet, "channelId");
+				subscribers.push_back(
+					{channelId.empty() ? itemId : channelId, itemId, Str(subSnippet, "title")});
+				keys.push_back(subscribers.back().key);
+			}
+			SeenSubscribers &seen = YouTubeSubscribersSeen();
+			const std::string accountId = OAuth::AccountId(acct);
+			const int64_t now = NowMs();
+			// An account's first read finds its existing audience, not news. The connect
+			// seed still files them as the dock's history; a poll -- which goes live to
+			// the overlays -- reports none of them, so they never alert or count.
+			const bool report = seeding || seen.Seeded(accountId, now);
+			const std::vector<std::string> fresh = seen.Observe(accountId, keys, now);
+			if (report) {
+				const std::set<std::string> isFresh(fresh.begin(), fresh.end());
+				for (const Subscriber &s : subscribers) {
+					if (!isFresh.count(s.key)) {
 						continue;
 					}
-					const json &subSnippet = Obj(item, "subscriberSnippet");
 					NormalizedEvent ev;
 					ev.platform = "youtube";
 					ev.type = "follow";
-					ev.id = "youtube:sub:" + itemId;
-					ev.actorName = Str(subSnippet, "title");
+					ev.id = "youtube:sub:" + s.itemId;
+					ev.actorName = s.title;
 					// subscriptions carries no timestamp we can trust for ordering -> receipt time.
-					ev.ts = NowMs();
+					ev.ts = now;
 					sink(std::move(ev));
 				}
 			}

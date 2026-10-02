@@ -305,6 +305,10 @@ target_sources(
     # live-chat sink (youtube_chat forwards them to Events::Hub().Ingest). HTTP only.
     src/events/youtube_events.cpp
     src/events/youtube_events.hpp
+    # Which YouTube subscribers have been reported, per account, kept apart from the
+    # capped, age-limited event store so a subscriber is never re-reported as a follow.
+    src/events/youtube_subscribers_seen.cpp
+    src/events/youtube_subscribers_seen.hpp
     # Phase 9.2d: Kick Pusher event transport (best-effort reverse-engineered
     # sub/gift/host(raid)/Kicks gifts/follow), owned by KickProvider. Rides Kick's public Pusher
     # (shared config in src/chat/kick_pusher); HTTP + WS only, no obs.h.
