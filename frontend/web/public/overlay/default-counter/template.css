@@ -55,6 +55,19 @@ body {
   display: none;
 }
 
+/* The live region: read out, never drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* inline-block so a pop's scale has a box to transform; tabular figures so a count-up does
    not jitter the text around it as digits change width. */
 .num {

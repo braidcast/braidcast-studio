@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -14,22 +15,9 @@
 #include <nlohmann/json.hpp>
 
 #include "../events/event_model.hpp" // Events::NormalizedEvent
-
-namespace Events {
-class EventStore;
-}
+#include "broadcast_tally.hpp"
 
 namespace Overlay {
-
-// The body of the `tally` frame a widget that counts events (Overlay::CountsEvents) is sent on
-// connect: every event `store` holds with `sinceMs <= ts <= untilMs` (0 leaving `untilMs` open),
-// oldest first, cut down to the fields a count reads -- id, platform, type, ts, and amount and
-// count where non-zero -- so no name or message field rides along (an id can still embed the
-// actor, as Kick's do; see TallyEventJson). `sinceMs` 0 means no broadcast has started this
-// run: there is no window, so `since` is null and `events` empty.
-// The store's own cap bounds the list. Exposed so the self-test can run it against an
-// in-memory store rather than the user's history.
-nlohmann::json TallyBody(const Events::EventStore &store, int64_t sinceMs, int64_t untilMs, bool live);
 
 // Loopback-only HTTP/1.1 server for overlay widgets. GET routing + static file
 // serving + long-lived SSE. 127.0.0.1 only; per-widget token on every route.
@@ -61,13 +49,15 @@ public:
 	std::string LastError() const { return lastError_; }
 
 	// Push a NormalizedEvent to open widget sockets: EVERY one for a live event (the
-	// EventHub::Ingest sink), and for events.replay (`replay=true`) only those belonging to
+	// EventHub::Ingest sink), which the broadcast tally also counts, and for events.replay
+	// (`replay=true`, never counted) only those belonging to
 	// a widget whose TYPE accepts a replay (Overlay::AcceptsReplay). Returns how many
 	// WIDGETS took it -- not sockets, so one widget open in both the editor preview and a
 	// Browser Source counts once -- so a replay can report "nothing received it" instead of
 	// claiming a delivery it cannot see.
 	size_t Broadcast(const Events::NormalizedEvent &ev, bool replay = false);
-	// Push to ONE widget's sockets (overlays.test -- never goes through the store).
+	// Push to ONE widget's sockets (overlays.test -- never goes through the store or the
+	// tally), marked `"test": true` so a page can keep it out of anything it keeps.
 	// Returns how many widgets took it (0 or 1), so a test can report that nothing was
 	// listening rather than claim a delivery it cannot see.
 	size_t BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev);
@@ -97,19 +87,25 @@ public:
 	void BroadcastChannelStats(const nlohmann::json &stats);
 	// Push broadcast state -- whether anything is live, the wall-clock epoch ms it went
 	// live, and the destinations it is going out to -- to EVERY open widget socket as a
-	// named `stream` SSE event. Also where the backfill and tally windows are set: a start
-	// opens both, and an end closes the tally's at that moment so a counter that connects
-	// off air rebuilds the broadcast that just finished. Replayed on connect (see replayFrames_), so a browser
+	// named `stream` SSE event. Also what moves the broadcast tally's latched window
+	// (BroadcastTally::OnStreamState), which the backfill reads too; when it moves, every
+	// widget that counts events is sent the new `tally` right after this frame. Replayed on
+	// connect (see replayFrames_), so a browser
 	// source added mid-broadcast learns the state at once instead of at the next
 	// transition. It is also the only closing signal an overlay gets: the viewer poller
 	// stops with the stream without pushing a final zero, so a viewer widget clears off
 	// `active` going false rather than inventing a 0 of its own.
 	void BroadcastStreamState(const nlohmann::json &state);
-	// Send a named-channel frame to ONE widget, bypassing the replay cache and the backfill
+	// Send a named-channel frame to ONE widget, bypassing the replay cache and the tally
 	// window: a preview test must never become the state a real browser source replays on
-	// connect. Mirrors BroadcastTo's "never the store" rule for the default channel, and
-	// reports the same delivery count.
+	// connect. Mirrors BroadcastTo's "never the store" rule for the default channel, marks an
+	// object body `"test": true` the same way, and reports the same delivery count.
 	size_t SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body);
+
+	// Self-tests only: called on a connecting SSE socket's thread right after it registers,
+	// while it still holds the socket's send mutex and has read nothing it replays -- the
+	// moment a broadcast racing the connect is decided. Null clears it.
+	void SetRegisteredObserverForTest(std::function<void(const std::string &widgetId)> observer);
 
 private:
 	void AcceptLoop();
@@ -138,7 +134,9 @@ private:
 	void BroadcastStateFrame(const char *eventName, const nlohmann::json &body);
 	// Owns the socket for its lifetime. `tally`: the widget counts events, so it is sent the
 	// `tally` frame on connect (Overlay::CountsEvents, decided by the caller, which already
-	// holds the widget).
+	// holds the widget). Registers the socket BEFORE reading anything it replays, holding the
+	// socket's send mutex until the replay is out: whatever is broadcast after the read is
+	// then delivered, after the replay, and whatever both carry the page dedupes.
 	void RunSse(uintptr_t sock, const std::string &widgetId, bool tally);
 	// Live SSE sockets across every widget: the capacity ceiling's live half, and the
 	// audience a broadcast reaches. Caller must hold sseMutex_.
@@ -156,8 +154,17 @@ private:
 	bool portChanged_ = false;
 	std::string lastError_;
 
-	std::mutex sseMutex_;                                // guards sockets_ + the fields below
-	std::map<std::string, std::set<uintptr_t>> sockets_; // widgetId -> SSE sockets
+	// One writer at a time per SSE socket. Every byte sent on a registered socket -- a
+	// broadcast frame, the replay on connect, the keepalive -- is sent holding that socket's
+	// send mutex, so two threads' frames can never interleave on the wire. Before
+	// registration only the owning RunSse thread can reach the socket. Lock order: a send
+	// mutex is taken with no other server lock held, except by RunSse, which holds its own
+	// across sseMutex_, the event store and the tally while it builds the replay -- none of
+	// which is ever held while waiting for a send mutex.
+	using SendMutex = std::shared_ptr<std::mutex>;
+
+	std::mutex sseMutex_;                                           // guards sockets_ + the fields below
+	std::map<std::string, std::map<uintptr_t, SendMutex>> sockets_; // widgetId -> SSE socket -> its send mutex
 
 	// SSE connections mid-handshake: RunSse reserves a capacity slot under sseMutex_,
 	// then sends the HTTP header WITHOUT holding the lock (a blocking send must never
@@ -180,18 +187,13 @@ private:
 	// be hours away). Chat and viewers are deliberately absent -- see RunSse.
 	std::map<std::string, std::string> replayFrames_;
 
-	// When the current broadcast went live, in wall-clock epoch ms, or 0 when nothing is
-	// live or no output has reported a start yet. Taken from the `stream` state frame,
-	// which is the only place that time is known. It bounds the `backfill` frame RunSse
-	// builds on connect: without it there is no window, so no backfill is sent.
-	int64_t streamStartedAtMs_ = 0;
+	// The current or most recent broadcast's event totals and its latched window. Its open
+	// window also bounds the `backfill` frame. In memory until Start opens its file, so a
+	// self-test server never touches the user's. Its own mutex is a leaf, taken under none of
+	// the server's.
+	BroadcastTally tally_;
 
-	// The most recent broadcast this run, for the `tally` frame: when it went live and, once
-	// it has, when it ended (0 while it is still live or before any has). Guarded by
-	// sseMutex_ like the field above. Unlike the backfill window this outlives the broadcast,
-	// because a counter that reloads off air must still show the count it finished on.
-	int64_t lastStartedAtMs_ = 0;
-	int64_t lastEndedAtMs_ = 0;
+	std::function<void(const std::string &)> registeredObserver_; // guarded by sseMutex_; self-tests only
 
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The

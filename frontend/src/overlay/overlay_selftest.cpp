@@ -20,7 +20,8 @@
 #include "../obs_bootstrap.hpp"
 #include "util/file_util.hpp"
 #include "util/selftest_paths.hpp"
-#include "../events/event_store.hpp"
+#include "../events/event_model.hpp"
+#include "util/time_util.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
@@ -166,46 +167,149 @@ std::string ConnectSse(int port, const std::string &path, const std::function<bo
 	return acc;
 }
 
-// TallyBody against an in-memory store, so the window rule and the slimming are checked
-// on events this test chose rather than on whatever the user's history holds.
-bool TallyBodySelectsTheWindow()
+// The broadcast tally's rules, on tallies this test owns: the latch (a drifting start moves
+// nothing, a null start opens nothing, an end closes the window for good), the refold of what
+// was broadcast just before the start, the raw sums per (platform, type, kind) with a YouTube
+// milestone kept apart from a new member, the recentIds bound, no names or messages in a
+// snapshot, and the record a restart reads -- an open window closed at the last save, no ids,
+// and a platform's rows dropped past its storage limit.
+bool BroadcastTallyRules()
 {
-	Events::EventStore store{Events::EventStore::InMemory{}};
-	const auto add = [&store](const char *id, int64_t ts, int count) {
+	const auto event = [](const std::string &id, const char *platform, const char *type, int64_t ts) {
 		Events::NormalizedEvent e;
 		e.id = id;
-		e.platform = "twitch";
-		e.type = "subgift";
+		e.platform = platform;
+		e.type = type;
 		e.ts = ts;
-		e.count = count;
 		e.actorName = "selftest-tally-name";
 		e.message = "selftest-tally-message";
-		store.Add(e);
+		return e;
 	};
-	add("tally-before", 999, 1);
-	add("tally-start", 1000, 5);
-	add("tally-end", 2000, 0);
-	add("tally-after", 2001, 1);
+	const auto row = [](const Overlay::json &snap, const char *platform, const char *type, const char *kind) {
+		for (const Overlay::json &r : snap["totals"]) {
+			if (r["platform"] == platform && r["type"] == type && r["kind"] == kind) {
+				return r;
+			}
+		}
+		return Overlay::json();
+	};
+	const auto sums = [&row](const Overlay::json &snap, const char *platform, const char *type, const char *kind,
+				 int64_t events, int64_t units, int64_t amount) {
+		const Overlay::json r = row(snap, platform, type, kind);
+		return r.is_object() && r["events"] == events && r["units"] == units && r["amount"] == amount;
+	};
 
-	const Overlay::json closed = Overlay::TallyBody(store, 1000, 2000, false);
-	const std::string dump = closed.dump();
-	const Overlay::json &events = closed["events"];
-	const bool closedOk = events.is_array() && events.size() == 2 && events[0]["id"] == "tally-start" &&
-			      events[0]["count"] == 5 && events[1]["id"] == "tally-end" &&
-			      !events[1].contains("count") && closed["since"] == 1000 && closed["until"] == 2000 &&
-			      closed["live"] == false && dump.find("selftest-tally-name") == std::string::npos &&
-			      dump.find("selftest-tally-message") == std::string::npos;
+	Overlay::BroadcastTally t;
+	const Overlay::json empty = t.Snapshot();
+	const bool emptyOk = empty["since"].is_null() && empty["until"].is_null() && empty["totals"].empty() &&
+			     empty["recentIds"].empty() && t.OpenSince() == 0;
 
-	const Overlay::json open = Overlay::TallyBody(store, 1000, 0, true);
-	const bool openOk = open["events"].size() == 3 && open["until"].is_null() && open["live"] == true;
+	// Broadcast before any window: remembered, not counted. Then the start, a moment earlier
+	// than the frame that reports it: the event after it is folded in, the one before is not.
+	Events::NormalizedEvent gift = event("tally-gift-early", "twitch", "subgift", 900);
+	gift.count = 5;
+	t.Add(gift);
+	gift.id = "tally-gift-late";
+	gift.ts = 1100;
+	t.Add(gift);
+	const std::optional<Overlay::json> opened = t.OnStreamState(true, 1000, 1200);
+	const bool refoldOk = opened && (*opened)["since"] == 1000 && (*opened)["until"].is_null() &&
+			      sums(*opened, "twitch", "subgift", "", 1, 5, 0) &&
+			      (*opened)["recentIds"] == Overlay::json::array({"tally-gift-late"});
 
-	const Overlay::json none = Overlay::TallyBody(store, 0, 0, false);
-	const bool noneOk = none["since"].is_null() && none["until"].is_null() && none["events"].empty();
+	// Latched: a drifting start and a live frame with no start move nothing.
+	const bool latchOk = !t.OnStreamState(true, 1050, 1300) && !t.OnStreamState(true, 0, 1300) &&
+			     t.OpenSince() == 1000;
 
-	const bool ok = closedOk && openOk && noneOk;
-	HostLog(std::string("[selftest] overlay tally window -> ") + (ok ? "OK" : "MISMATCH") +
-		" (closed=" + (closedOk ? "ok" : "bad") + " open=" + (openOk ? "ok" : "bad") +
-		" none=" + (noneOk ? "ok" : "bad") + ")");
+	Events::NormalizedEvent member = event("tally-member-new", "youtube", "member", 1300);
+	t.Add(member);
+	member.id = "tally-member-milestone";
+	member.months = 3;
+	t.Add(member);
+	Events::NormalizedEvent cheer = event("tally-cheer", "twitch", "cheer", 1400);
+	cheer.amount = 250;
+	t.Add(cheer);
+	const Overlay::json live = t.Snapshot();
+	const std::string liveDump = live.dump();
+	const bool sumsOk = sums(live, "youtube", "member", "new", 1, 1, 0) &&
+			    sums(live, "youtube", "member", "milestone", 1, 1, 0) &&
+			    sums(live, "twitch", "cheer", "", 1, 1, 250) && live["recentIds"].size() == 4 &&
+			    liveDump.find("selftest-tally-name") == std::string::npos &&
+			    liveDump.find("selftest-tally-message") == std::string::npos;
+
+	// The end closes the window at that moment, for good: a late event with an early time
+	// is not counted, and a second end frame moves nothing.
+	const std::optional<Overlay::json> closed = t.OnStreamState(false, 0, 2000);
+	t.Add(event("tally-after-end", "twitch", "cheer", 1500));
+	const bool endOk = closed && (*closed)["until"] == 2000 && !t.OnStreamState(false, 0, 2100) &&
+			   t.OpenSince() == 0 && sums(t.Snapshot(), "twitch", "cheer", "", 1, 1, 250);
+
+	// A busy broadcast names only its most recent counted ids.
+	Overlay::BroadcastTally busy;
+	busy.OnStreamState(true, 1000, 1000);
+	const size_t kBusy = Overlay::BroadcastTally::kRecentIds + 6;
+	for (size_t i = 0; i < kBusy; ++i) {
+		busy.Add(event("tally-busy-" + std::to_string(i), "kick", "follow", 1000 + (int64_t)i));
+	}
+	const Overlay::json busySnap = busy.Snapshot();
+	const bool boundOk = busySnap["recentIds"].size() == Overlay::BroadcastTally::kRecentIds &&
+			     busySnap["recentIds"].back() == "tally-busy-" + std::to_string(kBusy - 1) &&
+			     sums(busySnap, "kick", "follow", "", (int64_t)kBusy, (int64_t)kBusy, 0);
+
+	// The record a restart reads. One broadcast left open (a crash, or quitting mid-stream),
+	// closed on load at its last save; one ended long ago, whose YouTube rows are past that
+	// platform's storage limit while its Twitch rows stand.
+	bool reloadOk = false;
+	bool agedOk = false;
+	const std::string path = SelfTest::ConfigPath("overlay-tally-selftest.json");
+	const auto clear = [&path] {
+		std::error_code ec;
+		for (const char *suffix : {"", ".bak", ".tmp"}) {
+			std::filesystem::remove(std::filesystem::u8path(path + suffix), ec);
+		}
+	};
+	if (!path.empty()) {
+		const int64_t now = TimeUtil::NowMs();
+		clear();
+		{
+			Overlay::BroadcastTally saved;
+			saved.Open(path);
+			saved.OnStreamState(true, now - 60000, now - 60000);
+			saved.Add(event("tally-saved-1", "twitch", "follow", now - 1000));
+			saved.Flush();
+		}
+		const std::string onDisk = FileUtil::ReadUtf8File(path).value_or(std::string());
+		Overlay::BroadcastTally loaded;
+		loaded.Open(path);
+		const Overlay::json back = loaded.Snapshot();
+		reloadOk = back["since"] == now - 60000 && back["until"].is_number_integer() &&
+			   back["until"].get<int64_t>() >= now - 60000 && sums(back, "twitch", "follow", "", 1, 1, 0) &&
+			   back["recentIds"].empty() && loaded.OpenSince() == 0 && !onDisk.empty() &&
+			   onDisk.find("tally-saved-1") == std::string::npos;
+
+		clear();
+		{
+			Overlay::BroadcastTally saved;
+			saved.Open(path);
+			saved.OnStreamState(true, 1000, 1000);
+			saved.Add(event("tally-aged-yt", "youtube", "superchat", 1100));
+			saved.Add(event("tally-aged-tw", "twitch", "raid", 1200));
+			saved.OnStreamState(false, 0, 2000);
+		}
+		Overlay::BroadcastTally aged;
+		aged.Open(path);
+		const Overlay::json old = aged.Snapshot();
+		agedOk = old["since"] == 1000 && old["until"] == 2000 && sums(old, "twitch", "raid", "", 1, 1, 0) &&
+			 !row(old, "youtube", "superchat", "").is_object();
+		clear();
+	}
+
+	const bool ok = emptyOk && refoldOk && latchOk && sumsOk && endOk && boundOk && reloadOk && agedOk;
+	HostLog(std::string("[selftest] overlay broadcast tally -> ") + (ok ? "OK" : "MISMATCH") +
+		" (empty=" + (emptyOk ? "ok" : "bad") + " refold=" + (refoldOk ? "ok" : "bad") +
+		" latch=" + (latchOk ? "ok" : "bad") + " sums=" + (sumsOk ? "ok" : "bad") +
+		" end=" + (endOk ? "ok" : "bad") + " bound=" + (boundOk ? "ok" : "bad") +
+		" reload=" + (reloadOk ? "ok" : "bad") + " aged=" + (agedOk ? "ok" : "bad") + ")");
 	return ok;
 }
 
@@ -451,11 +555,13 @@ void ObsBootstrap::RunOverlaySelfTest()
 		ev.ts = 1000;
 		ev.actorName = "selftest-ovl";
 
+		// A test is marked as one, so a page can keep it out of anything it keeps.
 		deliveryOk = PumpUntil(
 			sse, acc, [&] { server.BroadcastTo("selftest-widget", ev); },
 			[](const std::string &a) {
 				return a.find("data:") != std::string::npos &&
-				       a.find("selftest-ovl-1") != std::string::npos;
+				       a.find("selftest-ovl-1") != std::string::npos &&
+				       a.find("\"test\":true") != std::string::npos;
 			});
 
 		// One row per named channel, so adding a channel is a row here rather than
@@ -570,14 +676,23 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog(std::string("[selftest] overlay replay on connect -> ") + (replayOk ? "OK" : "MISMATCH"));
 	HostLog(std::string("[selftest] overlay replay scope -> ") + (noWindowOk && replayScopeOk ? "OK" : "MISMATCH"));
 
-	// 5b) The counter's tally on connect, over the SAME token gate as every /w/ route: a
-	// counting widget gets the live broadcast's window, then -- once the broadcast ends --
-	// the finished one's, closed, so a reload off air keeps the count; a wrong token gets
-	// 403 and no frame at all.
-	const bool tallyBodyOk = TallyBodySelectsTheWindow();
+	// 5b) The counter's tally, over the SAME token gate as every /w/ route. On connect a
+	// counting widget gets the open window's totals, which a live event counts and a test
+	// frame never does. A connect racing a broadcast gets every event exactly where the
+	// registration-before-read order puts it: in the tally, or live after it, never in
+	// neither and never ahead of it. At the end every connected counter is sent the closed
+	// window and no other widget is; a reload then gets the closed window and no backfill.
+	// A wrong token gets 403 and no frame at all.
+	const bool tallyRulesOk = BroadcastTallyRules();
 	bool tallyLiveOk = false;
+	bool tallyTestOk = false;
+	bool tallyRaceOk = false;
+	bool tallyForcedOk = false;
+	bool tallyEndPushOk = false;
 	bool tallyEndedOk = false;
 	bool tallyAuthOk = false;
+	int raceInTally = 0;
+	int raceLive = 0;
 	{
 		Overlay::Widget counter;
 		counter.id = "selftest-counter";
@@ -588,24 +703,152 @@ void ObsBootstrap::RunOverlaySelfTest()
 
 		const std::string kPath = "/w/selftest-counter/events?t=selftesttoken3";
 		const std::string since = "\"since\":" + std::to_string(liveSinceMs);
-		const std::string live = ConnectSse(port, kPath, [&](const std::string &a) {
+		const auto tallyArrived = [&since](const std::string &a) {
 			return NamedFrameArrived(a, "tally", since);
-		});
-		tallyLiveOk = NamedFrameArrived(live, "tally", since) &&
-			      NamedFrameArrived(live, "tally", "\"live\":true") &&
-			      NamedFrameArrived(live, "tally", "\"until\":null");
+		};
+		const auto counted = [&](const std::string &id) {
+			Events::NormalizedEvent e;
+			e.id = id;
+			e.platform = "twitch";
+			e.type = "follow";
+			e.ts = liveSinceMs + 1;
+			e.actorName = id + "-actor";
+			return e;
+		};
 
-		Overlay::json ended = Overlay::json::object();
-		ended["active"] = false;
-		ended["startedAt"] = nullptr;
-		ended["destinations"] = Overlay::json::array();
-		server.BroadcastStreamState(ended);
-		const std::string after = ConnectSse(port, kPath, [&](const std::string &a) {
-			return NamedFrameArrived(a, "tally", since);
-		});
+		server.Broadcast(counted("selftest-tally-live"));
+		const std::string live = ConnectSse(port, kPath, tallyArrived);
+		tallyLiveOk = NamedFrameArrived(live, "tally", since) &&
+			      NamedFrameArrived(live, "tally", "\"until\":null") &&
+			      NamedFrameArrived(live, "tally", "\"selftest-tally-live\"") &&
+			      NamedFrameArrived(live, "tally", "\"type\":\"follow\"") &&
+			      live.find("selftest-tally-live-actor") == std::string::npos;
+
+		// A test event and a test stream start, then a reload: neither counted nor moved.
+		server.BroadcastTo("selftest-counter", counted("selftest-tally-test"));
+		Overlay::json testStart = Overlay::json::object();
+		testStart["active"] = true;
+		testStart["startedAt"] = liveSinceMs + 5000;
+		server.SendTestFrame("selftest-counter", "stream", testStart);
+		const std::string afterTest = ConnectSse(port, kPath, tallyArrived);
+		tallyTestOk = NamedFrameArrived(afterTest, "tally", since) &&
+			      !NamedFrameArrived(afterTest, "tally", "selftest-tally-test") &&
+			      !NamedFrameArrived(afterTest, "stream", std::to_string(liveSinceMs + 5000));
+
+		// Connects racing a broadcast. The event's actor name rides only its live frame, so
+		// where it sits says which way the race went.
+		constexpr int kRaces = 12;
+		tallyRaceOk = true;
+		for (int i = 0; i < kRaces && tallyRaceOk; ++i) {
+			const std::string id = "selftest-race-" + std::to_string(i);
+			const std::string actor = id + "-actor";
+			SOCKET raceSse = DialLoopback(port);
+			if (raceSse == INVALID_SOCKET) {
+				tallyRaceOk = false;
+				break;
+			}
+			WriteAll(raceSse, "GET " + kPath + " HTTP/1.1\r\nHost: x\r\n\r\n");
+			server.Broadcast(counted(id));
+			std::string acc = RecvHeaders(raceSse);
+			const DWORD rtoMs = 100;
+			setsockopt(raceSse, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+			PumpUntil(raceSse, acc, nullptr, [&](const std::string &a) {
+				return tallyArrived(a) && (NamedFrameArrived(a, "tally", "\"" + id + "\"") ||
+							   a.find(actor) != std::string::npos);
+			});
+			closesocket(raceSse);
+			const size_t tallyAt = acc.find("event: tally");
+			const size_t liveAt = acc.find(actor);
+			const bool inTally = NamedFrameArrived(acc, "tally", "\"" + id + "\"");
+			const bool early = liveAt != std::string::npos &&
+					   (tallyAt == std::string::npos || liveAt < tallyAt);
+			raceInTally += inTally ? 1 : 0;
+			raceLive += liveAt != std::string::npos ? 1 : 0;
+			tallyRaceOk = tallyAt != std::string::npos && (inTally || liveAt != std::string::npos) &&
+				      !early;
+		}
+
+		// The race forced: a broadcast that starts once the socket is registered but before
+		// anything is read. Whether the read then counts it or not, it must reach the page,
+		// and after the tally -- the send mutex holds it until the replay is out.
+		{
+			std::mutex forcedMutex;
+			std::thread forced;
+			server.SetRegisteredObserverForTest([&](const std::string &widgetId) {
+				if (widgetId != "selftest-counter") {
+					return;
+				}
+				std::lock_guard<std::mutex> lock(forcedMutex);
+				if (!forced.joinable()) {
+					forced =
+						std::thread([&] { server.Broadcast(counted("selftest-race-forced")); });
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				}
+			});
+			const std::string acc = ConnectSse(port, kPath, [](const std::string &a) {
+				return a.find("selftest-race-forced-actor") != std::string::npos;
+			});
+			server.SetRegisteredObserverForTest(nullptr);
+			{
+				std::lock_guard<std::mutex> lock(forcedMutex);
+				if (forced.joinable()) {
+					forced.join();
+				}
+			}
+			const size_t tallyAt = acc.find("event: tally");
+			const size_t liveAt = acc.find("selftest-race-forced-actor");
+			tallyForcedOk = tallyAt != std::string::npos && liveAt != std::string::npos && liveAt > tallyAt;
+		}
+
+		// The end, with a counter and an alert box connected. The fence is a live event
+		// sent after the end on the same thread, so a socket that has seen it has been sent
+		// everything the end sent.
+		SOCKET counterSse = DialLoopback(port);
+		SOCKET alertSse = DialLoopback(port);
+		if (counterSse != INVALID_SOCKET && alertSse != INVALID_SOCKET) {
+			WriteAll(counterSse, "GET " + kPath + " HTTP/1.1\r\nHost: x\r\n\r\n");
+			WriteAll(alertSse, "GET /w/selftest-widget/events?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			std::string counterAcc = RecvHeaders(counterSse);
+			std::string alertAcc = RecvHeaders(alertSse);
+			const DWORD rtoMs = 100;
+			setsockopt(counterSse, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+			setsockopt(alertSse, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+			// What each is sent on connect comes after its registration, so once that is in
+			// both are targets of the end.
+			PumpUntil(counterSse, counterAcc, nullptr, tallyArrived);
+			PumpUntil(alertSse, alertAcc, nullptr, [](const std::string &a) {
+				return NamedFrameArrived(a, "channels", "selftest:channels");
+			});
+			const size_t seeded = counterAcc.size();
+
+			Overlay::json ended = Overlay::json::object();
+			ended["active"] = false;
+			ended["startedAt"] = nullptr;
+			ended["destinations"] = Overlay::json::array();
+			server.BroadcastStreamState(ended);
+			server.Broadcast(counted("selftest-tally-fence"));
+			const auto fenced = [](const std::string &a) {
+				return a.find("selftest-tally-fence-actor") != std::string::npos;
+			};
+			const bool counterFenced = PumpUntil(counterSse, counterAcc, nullptr, fenced);
+			const bool alertFenced = PumpUntil(alertSse, alertAcc, nullptr, fenced);
+			const std::string pushed = counterAcc.substr(seeded);
+			tallyEndPushOk = counterFenced && alertFenced && NamedFrameArrived(pushed, "tally", since) &&
+					 !NamedFrameArrived(pushed, "tally", "\"until\":null") &&
+					 !NamedFrameArrived(pushed, "tally", "selftest-tally-fence") &&
+					 alertAcc.find("event: tally") == std::string::npos;
+		}
+		if (counterSse != INVALID_SOCKET) {
+			closesocket(counterSse);
+		}
+		if (alertSse != INVALID_SOCKET) {
+			closesocket(alertSse);
+		}
+
+		const std::string after = ConnectSse(port, kPath, tallyArrived);
 		tallyEndedOk = NamedFrameArrived(after, "tally", since) &&
-			       NamedFrameArrived(after, "tally", "\"live\":false") &&
 			       !NamedFrameArrived(after, "tally", "\"until\":null") &&
+			       NamedFrameArrived(after, "tally", "\"selftest-tally-live\"") &&
 			       after.find("event: backfill") == std::string::npos;
 
 		SOCKET bad = DialLoopback(port);
@@ -617,9 +860,13 @@ void ObsBootstrap::RunOverlaySelfTest()
 		}
 		Overlay::Store().RemoveForTest("selftest-counter");
 	}
-	const bool tallyOk = tallyBodyOk && tallyLiveOk && tallyEndedOk && tallyAuthOk;
-	HostLog(std::string("[selftest] overlay tally on connect -> ") + (tallyOk ? "OK" : "MISMATCH") +
-		" (live=" + (tallyLiveOk ? "ok" : "bad") + " ended=" + (tallyEndedOk ? "ok" : "bad") +
+	const bool tallyOk = tallyRulesOk && tallyLiveOk && tallyTestOk && tallyRaceOk && tallyForcedOk &&
+			     tallyEndPushOk && tallyEndedOk && tallyAuthOk;
+	HostLog(std::string("[selftest] overlay tally over SSE -> ") + (tallyOk ? "OK" : "MISMATCH") +
+		" (live=" + (tallyLiveOk ? "ok" : "bad") + " test=" + (tallyTestOk ? "ok" : "bad") +
+		" race=" + (tallyRaceOk ? "ok" : "bad") + " [" + std::to_string(raceInTally) + " in tally, " +
+		std::to_string(raceLive) + " live] forced=" + (tallyForcedOk ? "ok" : "bad") +
+		" endpush=" + (tallyEndPushOk ? "ok" : "bad") + " ended=" + (tallyEndedOk ? "ok" : "bad") +
 		" auth=" + (tallyAuthOk ? "ok" : "bad") + ")");
 
 	// 6) Wrong token -> 403.

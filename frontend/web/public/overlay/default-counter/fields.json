@@ -16,7 +16,7 @@
       { "value": "followers", "label": "Follower / subscriber total" },
       { "value": "viewers", "label": "Current viewers" }
     ],
-    "help": "A \"this stream\" count starts at 0 when a broadcast goes live and survives the source reloading mid-broadcast: it is rebuilt from the app's event history (its most recent 500 events). After the broadcast ends it keeps showing that broadcast's count until the next one starts. Before any broadcast this run it counts from when the source loaded."
+    "help": "A \"this stream\" count starts at 0 when a broadcast goes live. The app keeps the running totals of the current or most recent broadcast (totals only, never who sent what), so the count survives the source reloading, and after the broadcast ends it keeps showing that broadcast's count, across app restarts, until the next broadcast starts. YouTube's share of a finished broadcast's count is dropped 30 days after it ended, as YouTube's data rules require. Before any broadcast has been recorded it counts from when the source loaded. New members are first-time YouTube members, not milestones. The editor's Test button bumps the count in the preview only."
   },
   { "key": "showTwitch", "type": "checkbox", "label": "Twitch", "group": "Platforms", "default": true },
   { "key": "showYouTube", "type": "checkbox", "label": "YouTube", "group": "Platforms", "default": true },
@@ -34,14 +34,14 @@
     "type": "text",
     "label": "Format",
     "default": "{n}",
-    "help": "{n} is the number, e.g. \"YouTube subs today: {n}\"."
+    "help": "{n} is the number, e.g. \"YouTube subs today: {n}\". Left blank, or without {n}, it shows the number alone."
   },
   {
     "key": "offset",
     "type": "number",
     "label": "Start Offset",
     "default": 0,
-    "help": "Added to the count before it is shown, e.g. to carry on from an earlier stream."
+    "help": "Added to a \"this stream\" count before it is shown, e.g. to carry on from an earlier stream. A total or viewer count is shown as reported."
   },
   {
     "key": "idleText",

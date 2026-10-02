@@ -104,6 +104,8 @@ type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
 // the platform key, so there is no per-account split for a widget to re-derive.
 type StreamHandler = (s: StreamState) => void;
 type SessionTallyHandler = (t: SessionTally, cause: TallyCause) => void;
+/** A frame the editor's Test button sent (the host's BroadcastTo / SendTestFrame mark it). */
+type MaybeTest<T> = T & { test?: boolean };
 
 const boot: OverlayBootstrap = (window as unknown as { __OVERLAY__: OverlayBootstrap }).__OVERLAY__ ?? {
   id: "",
@@ -125,6 +127,9 @@ const sessionTallyHandlers: SessionTallyHandler[] = [];
 // Created by the host's `tally` frame -- which only a counting type is sent -- or by the
 // first onSessionTally, so every other widget carries none and holds no events.
 let sessionTally: SessionTally | null = null;
+// Whether this page is the app's editor preview, which frames it; a browser source on stream
+// is a top-level page. Decides whether a test frame may reach anything a widget keeps.
+const isPreview = window.self !== window.top;
 
 // One <style> for every slot rule, created on first use: a widget whose slots are all
 // untouched compiles to nothing and never gets an element. Appended to <head> after the
@@ -628,12 +633,14 @@ const OBSOverlay = {
   onStream(fn: StreamHandler) {
     streamHandlers.push(fn);
   },
-  /** The session tally: every event of the current broadcast -- or, off air, the most recent
-   * one -- rebuilt from the host's event history on connect, so a count survives the source
-   * reloading mid-broadcast, then kept current by live events and broadcast starts and ends.
-   * Before any broadcast this run it counts from page load. Fired with the tally and why it
-   * changed; `t.ready` is false until the host's history has arrived. Registered after that
-   * history landed, the handler is called at once with "seed". */
+  /** The session tally: the current broadcast's count -- or, off air, the most recent
+   * one's, kept by the host across an app restart -- from the host's own totals on connect,
+   * so a count survives the source reloading, then kept current by live events and by the
+   * host's new totals at each broadcast start and end. Before any broadcast was recorded it
+   * counts from page load. In the editor's preview a test event counts on top until the next
+   * real stream or tally frame; on stream a test never counts. Fired with the tally and why
+   * it changed; `t.ready` is false until the host's totals have arrived. Registered after
+   * they landed, the handler is called at once with "seed". */
   onSessionTally(fn: SessionTallyHandler) {
     sessionTally ??= new SessionTally();
     sessionTallyHandlers.push(fn);
@@ -642,6 +649,9 @@ const OBSOverlay = {
       queueMicrotask(() => callSessionTally(fn, t, "seed"));
     }
   },
+  /** True in the app's editor preview, false in a browser source. A test frame carries
+   * `test: true`; a widget that keeps state from a channel should keep a test's only here. */
+  preview: isPreview,
   /** The Counter's rules, shared so a fork counts exactly as the stock widget does: the
    * session sources (`sources`), absent-is-not-zero totals over a set of platforms
    * (`viewerTotal`, `audienceTotal`, null when no selected platform reported), the start
@@ -703,14 +713,17 @@ function fireSessionTally(cause: TallyCause) {
 
 function fireTally(frame: TallyFrame) {
   sessionTally ??= new SessionTally();
-  sessionTally.seed(frame);
-  fireSessionTally("seed");
+  fireSessionTally(sessionTally.seed(frame));
 }
 
-function fireEvent(e: NormalizedEvent) {
-  // A replay is a second showing of an event already counted, never a new occurrence.
-  if (sessionTally && !e.replay && sessionTally.add(e)) {
-    fireSessionTally("event");
+function fireEvent(e: MaybeTest<NormalizedEvent>) {
+  // A replay is a second showing of an event already counted, never a new occurrence, and a
+  // test counts only in the preview, where nothing it adds outlives the next real frame.
+  if (sessionTally && !e.replay) {
+    const changed = e.test ? isPreview && sessionTally.addTest(e) : sessionTally.add(e);
+    if (changed) {
+      fireSessionTally("event");
+    }
   }
   for (const fn of eventHandlers) {
     try {
@@ -818,9 +831,11 @@ function fireChannelStats(stats: ChannelStats) {
   window.dispatchEvent(new CustomEvent("obs:channelstats", { detail: s }));
 }
 
-function fireStream(state: StreamState) {
-  if (sessionTally && sessionTally.onStream(state, Date.now())) {
-    fireSessionTally("window");
+function fireStream(state: MaybeTest<StreamState>) {
+  // The window itself moves only with the host's tally frame; a real stream frame just ends
+  // the preview's test bumps.
+  if (sessionTally && !state.test && sessionTally.clearTests()) {
+    fireSessionTally("seed");
   }
   for (const fn of streamHandlers) {
     try {
@@ -834,6 +849,9 @@ function fireStream(state: StreamState) {
 
 // EventSource auto-reconnects on drop; the host keepalive keeps it warm.
 const src = new EventSource("/w/" + boot.id + "/events?t=" + boot.token);
+// Each connection opens with the host's tally, which covers every event an earlier one
+// delivered.
+src.addEventListener("open", () => sessionTally?.connected());
 src.onmessage = (msg) => {
   try {
     fireEvent(JSON.parse(msg.data) as NormalizedEvent);
@@ -901,10 +919,9 @@ src.addEventListener("stream", (msg) => {
   }
 });
 
-// The session tally's seed: the current broadcast's events (or, off air, the most recent
-// one's) from the host's event store, sent on connect only to a type that counts them, and
-// before any live frame, so nothing counted live can precede it. Sent again on every
-// reconnect, which re-adds only what is already held.
+// The session tally: the host's totals for the current broadcast (or, off air, the most
+// recent one), sent only to a type that counts events -- on connect, before any live frame
+// on that connection, and again whenever a broadcast starts or ends.
 src.addEventListener("tally", (msg) => {
   try {
     fireTally(JSON.parse((msg as MessageEvent).data) as TallyFrame);

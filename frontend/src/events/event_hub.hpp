@@ -132,14 +132,16 @@ private:
 	// same order; the overlay sends complete before the lock is released.
 	//
 	// Lock order: admitMutex_, then RecentRemovals::mutex_, EventStore::mutex_ or
-	// EventStore::writeMutex_ (one at a time; each is released before the next is taken),
-	// then OverlayServer::sseMutex_ and, for Replay's widget filter, the overlay widget
-	// store's mutex, then the log. Nothing reached under it calls back into EventHub: the
-	// event store, StorePaths, the overlay server and widget store take no Events::Hub(),
-	// and the bridge emit only queues script for the renderer. Every caller outside the
-	// self-tests is a worker thread, so the UI thread never waits on it. It is held across
-	// the store's disk write and the overlay's blocking sends (each bounded by
-	// SO_SNDTIMEO), so a slow disk or a stuck widget delays the next admission.
+	// EventStore::writeMutex_ (one at a time; each is released before the next is taken), then
+	// the overlay's BroadcastTally mutex and its save, then OverlayServer::sseMutex_ and, for
+	// Replay's widget filter, the overlay widget store's mutex, then each SSE socket's send
+	// mutex in turn, then the log. Nothing reached under it calls back into EventHub: the event
+	// store, StorePaths, the overlay server and widget store take no Events::Hub(), and the
+	// bridge emit only queues script for the renderer. Every caller outside the self-tests is a
+	// worker thread, so the UI thread never waits on it. It is held across the store's disk
+	// write and the overlay's blocking sends (each bounded by SO_SNDTIMEO) -- including the wait
+	// for a connecting page's replay to finish on its socket -- so a slow disk or a stuck widget
+	// delays the next admission.
 	std::mutex admitMutex_;
 	RecentRemovals removals_; // written and read under admitMutex_ by the hub
 	std::function<void(const char *, const json &)> fanoutObserver_; // guarded by admitMutex_

@@ -327,6 +327,10 @@ target_sources(
     # assembled widget document + the OBSOverlay runtime + user assets off the web bundle.
     src/overlay/overlay_server.cpp
     src/overlay/overlay_server.hpp
+    # The server's per-broadcast event totals for the widgets that count events, with the
+    # latched broadcast window, persisted so a finished broadcast's figure survives a restart.
+    src/overlay/broadcast_tally.cpp
+    src/overlay/broadcast_tally.hpp
     src/overlay/overlay_store.cpp
     src/overlay/overlay_store.hpp
     # The shipped per-type templates (default-<type>/template.* + fields.json), read off

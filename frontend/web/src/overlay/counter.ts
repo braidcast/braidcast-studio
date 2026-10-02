@@ -3,45 +3,72 @@
 // template's renderer makes. Kept out of runtime.ts, which carries page side effects and
 // cannot be imported outside an overlay document, so the tests run this exact code.
 
-import type { EventType, NormalizedEvent, StreamState } from "$lib/api/bridge";
+import type { EventType, NormalizedEvent } from "$lib/api/bridge";
 import { fillTemplate } from "./fillTemplate";
 
-/** What one event contributes to a session count. */
-type Measure = "events" | "amount" | "gifts";
+/** What one event contributes to a session count: one per event, the units it names (the
+ * subs a gift gave, or 1), or the amount it carries (bits cheered, Kicks sent). The host
+ * keeps all three per (platform, type, kind), so a count picks one without a host change. */
+type Measure = "events" | "units" | "amount";
+
+/** How the host tells events of one type apart for counting: a YouTube membership is "new"
+ * or a "milestone" (months held); every other event is "". */
+export type TallyKind = "" | "new" | "milestone";
 
 interface EventSource {
   types: readonly EventType[];
   measure: Measure;
+  /** The kinds counted; every kind when absent. */
+  kinds?: readonly TallyKind[];
 }
 
 /** The session sources, keyed by the Counter's `source` field value. One row per source, so
- * adding one is a row here and an option in fields.json. `amount` sums what the host carries
- * there (bits cheered, Kicks sent); `gifts` counts the subs a gift event gave rather than the
- * gift events themselves. */
+ * adding one is a row here and an option in fields.json. */
 export const COUNTER_EVENT_SOURCES: Readonly<Record<string, EventSource>> = {
   follow: { types: ["follow"], measure: "events" },
   sub: { types: ["sub", "resub"], measure: "events" },
-  subgift: { types: ["subgift"], measure: "gifts" },
+  subgift: { types: ["subgift"], measure: "units" },
   cheer: { types: ["cheer"], measure: "amount" },
   raid: { types: ["raid"], measure: "events" },
   superchat: { types: ["superchat"], measure: "events" },
-  member: { types: ["member"], measure: "events" },
+  member: { types: ["member"], measure: "events", kinds: ["new"] },
   kicks: { types: ["kicks"], measure: "amount" },
 };
 
-/** The fields of an event a count reads: what the host's `tally` frame carries per event,
- * and all a live event is reduced to before it is held. */
-export type TallyEvent = Pick<NormalizedEvent, "id" | "platform" | "type" | "ts" | "amount" | "count">;
+/** `e`'s kind. Mirrors TallyKind in frontend/src/overlay/broadcast_tally.cpp, which files the
+ * host's totals under the same rule. */
+export function eventKind(e: Pick<NormalizedEvent, "type" | "months">): TallyKind {
+  if (e.type === "member") {
+    return isFiniteNumber(e.months) && e.months > 0 ? "milestone" : "new";
+  }
+  return "";
+}
 
-/** The `tally` frame the overlay server sends a Counter on connect (RunSse in
- * overlay_server.cpp): the events of the current broadcast, or of the most recent one while
- * nothing is live, from the app's event store. `since` is null when no broadcast has started
- * this run, which leaves nothing to rebuild from. */
+/** The fields of a live event a count reads, and all one is reduced to before it is held. */
+export type TallyEvent = Pick<NormalizedEvent, "id" | "platform" | "type" | "ts" | "amount" | "count" | "months">;
+
+/** One row of the host's totals: every event of `type` and `kind` from `platform` the
+ * broadcast counted, how many units they named, and what they carried. */
+export interface TallyTotal {
+  platform: string;
+  type: string;
+  kind: string;
+  events: number;
+  units: number;
+  amount: number;
+}
+
+/** The `tally` frame the overlay server sends a Counter (BroadcastTally::Snapshot in
+ * overlay/broadcast_tally.cpp): on connect, and again whenever a broadcast starts or ends. The
+ * totals of the current broadcast, or of the most recent one while nothing is live -- kept
+ * across an app restart. `since` is null before any broadcast was recorded; `until` is null
+ * while it is live. `recentIds` are the last events counted, so one that also reaches the page
+ * live counts once. */
 export interface TallyFrame {
   since: number | null;
   until: number | null;
-  live: boolean;
-  events: TallyEvent[];
+  totals: TallyTotal[];
+  recentIds: string[];
 }
 
 /** The span of event time a session count covers. A null bound is open: `since` null counts
@@ -51,21 +78,29 @@ export interface CountWindow {
   until: number | null;
 }
 
-/** Why a session tally changed, which is what decides whether the number animates: only a
- * real event arriving is a change worth showing as motion. A seed is the page catching up
- * to a count it already had, and a window change is a new broadcast starting over. */
+/** Why a session tally changed, which is what decides whether the number animates: only an
+ * event arriving is a change worth showing as motion. "seed" is the page catching up to the
+ * host's figure, "window" a broadcast starting or ending. */
 export type TallyCause = "seed" | "event" | "window";
 
-/** Held events beyond this are evicted oldest-first. The store a reload rebuilds from keeps
- * 500, so this only bounds a page left open across an extraordinarily busy broadcast. */
+/** Live events held beyond this are evicted oldest-first. A tally frame covers everything held
+ * before it, so this only bounds a page left open with no broadcast ever recorded. */
 const kMaxHeldEvents = 10000;
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-function slim(e: TallyEvent): TallyEvent {
-  return { id: e.id, platform: e.platform, type: e.type, ts: e.ts, amount: e.amount, count: e.count };
+function sourceSpec(source: string): EventSource | null {
+  return Object.prototype.hasOwnProperty.call(COUNTER_EVENT_SOURCES, source) ? COUNTER_EVENT_SOURCES[source] : null;
+}
+
+function counts(spec: EventSource, platform: string, type: string, kind: string, platforms: ReadonlySet<string>) {
+  return (
+    (spec.types as readonly string[]).includes(type) &&
+    platforms.has(platform) &&
+    (!spec.kinds || (spec.kinds as readonly string[]).includes(kind))
+  );
 }
 
 function contribution(e: TallyEvent, measure: Measure): number {
@@ -73,7 +108,7 @@ function contribution(e: TallyEvent, measure: Measure): number {
     // The host omits a zero amount from the wire.
     return isFiniteNumber(e.amount) ? e.amount : 0;
   }
-  if (measure === "gifts") {
+  if (measure === "units") {
     // A gift event names how many subs it gave; one whose count the platform did not report
     // still gave at least one.
     return isFiniteNumber(e.count) && e.count > 0 ? e.count : 1;
@@ -86,41 +121,94 @@ export function inWindow(ts: number, w: CountWindow): boolean {
   return (w.since === null || ts >= w.since) && (w.until === null || ts <= w.until);
 }
 
-/** `source`'s count over `events`: those inside `w`, of the source's types, from a platform
- * in `platforms`. 0 for a source this build does not know. */
+/** `source`'s count over live `events`: those inside `w`, of the source's types and kinds,
+ * from a platform in `platforms`. 0 for a source this build does not know. */
 export function countEvents(
   events: Iterable<TallyEvent>,
   source: string,
   platforms: ReadonlySet<string>,
   w: CountWindow,
 ): number {
-  const spec = Object.prototype.hasOwnProperty.call(COUNTER_EVENT_SOURCES, source)
-    ? COUNTER_EVENT_SOURCES[source]
-    : null;
+  const spec = sourceSpec(source);
   if (!spec) {
     return 0;
   }
   let n = 0;
   for (const e of events) {
-    if (spec.types.includes(e.type) && platforms.has(e.platform) && inWindow(e.ts, w)) {
+    if (counts(spec, e.platform, e.type, eventKind(e), platforms) && inWindow(e.ts, w)) {
       n += contribution(e, spec.measure);
     }
   }
   return n;
 }
 
-/** Every event of the current broadcast this page knows of, keyed by id. Both halves of the
- * picture land here -- the host's tally on connect and each live event after -- so an event
- * delivered by both (one stored just as the socket registered) counts once, and a window
- * change is a refold over what is held rather than a counter that has to be reset by hand.
+/** `source`'s count over the host's totals, from a platform in `platforms`. */
+export function countTotals(totals: Iterable<TallyTotal>, source: string, platforms: ReadonlySet<string>): number {
+  const spec = sourceSpec(source);
+  if (!spec) {
+    return 0;
+  }
+  let n = 0;
+  for (const t of totals) {
+    if (counts(spec, t.platform, t.type, t.kind, platforms)) {
+      n += t[spec.measure];
+    }
+  }
+  return n;
+}
+
+function isTotal(v: unknown): v is TallyTotal {
+  const t = v as TallyTotal;
+  return (
+    !!t &&
+    typeof t.platform === "string" &&
+    typeof t.type === "string" &&
+    typeof t.kind === "string" &&
+    isFiniteNumber(t.events) &&
+    isFiniteNumber(t.units) &&
+    isFiniteNumber(t.amount)
+  );
+}
+
+function slim(e: TallyEvent): TallyEvent {
+  return {
+    id: e.id,
+    platform: e.platform,
+    type: e.type,
+    ts: e.ts,
+    amount: e.amount,
+    count: e.count,
+    months: e.months,
+  };
+}
+
+function isCountable(e: TallyEvent): boolean {
+  return !!e && typeof e.id === "string" && e.id !== "" && isFiniteNumber(e.ts);
+}
+
+/** A broadcast's count as this page knows it: the host's totals for its window, plus the live
+ * events that reached the page after them.
  *
- * The window follows the broadcast: a start opens a new one, an end closes the current one
- * at that moment so the count holds the finished broadcast's figure instead of resetting or
- * counting on, and the host's tally frame, being the server's own record, overrides both. */
+ * The window moves only when the host says so -- a tally frame on connect, at a broadcast's
+ * start and at its end -- so the page counts exactly what the host does. Live events are held
+ * with the connection they arrived on. A frame with a window covers every event broadcast
+ * before it, so it drops what earlier connections delivered; what this connection delivered
+ * stays, and one the frame already counted is skipped by its id (`recentIds`). Nothing held is
+ * dropped because the window moved: the count filters by the window instead. A closed window
+ * is final, so it counts the host's totals alone. With no broadcast recorded there are no
+ * totals and every held event counts, from page load.
+ *
+ * Test events are held apart and count on top of the rest until the next tally frame or real
+ * stream frame. The runtime hands them over only in the editor's preview, so a source on
+ * stream is never moved by one. */
 export class SessionTally {
-  private readonly events = new Map<string, TallyEvent>();
+  private base: TallyTotal[] = [];
+  private covered = new Set<string>();
   private win: CountWindow = { since: null, until: null };
   private seeded = false;
+  private connection = 0;
+  private readonly live = new Map<string, { e: TallyEvent; connection: number }>();
+  private readonly tests = new Map<string, TallyEvent>();
 
   /** Whether the host's tally frame has arrived. Until it has, a count would be the
    * since-load figure standing in for a broadcast's real one -- typically a 0 flashed on a
@@ -134,79 +222,80 @@ export class SessionTally {
   }
 
   count(source: string, platforms: ReadonlySet<string>): number {
-    return countEvents(this.events.values(), source, platforms, this.win);
+    let n = countTotals(this.base, source, platforms);
+    if (this.win.until === null) {
+      const fresh: TallyEvent[] = [];
+      for (const { e } of this.live.values()) {
+        if (!this.covered.has(e.id)) {
+          fresh.push(e);
+        }
+      }
+      n += countEvents(fresh, source, platforms, this.win);
+    }
+    return n + countEvents(this.tests.values(), source, platforms, { since: null, until: null });
   }
 
-  /** Adopt the host's tally. Repeats on every reconnect, which only re-adds what is held. */
-  seed(frame: TallyFrame): void {
-    this.setWindow({
+  /** The page's event stream (re)connected. Everything held from before is covered by the
+   * tally frame this connection opens with. */
+  connected(): void {
+    this.connection += 1;
+  }
+
+  /** Adopt a tally frame. Returns "window" when it moved the window, else "seed". */
+  seed(frame: TallyFrame): TallyCause {
+    const w: CountWindow = {
       since: isFiniteNumber(frame.since) ? frame.since : null,
       until: isFiniteNumber(frame.until) ? frame.until : null,
-    });
-    for (const e of Array.isArray(frame.events) ? frame.events : []) {
-      this.hold(e);
-    }
-    this.seeded = true;
-  }
-
-  /** Hold a live event. False when it was already held (or carries no id), so the caller
-   * knows nothing changed. */
-  add(e: TallyEvent): boolean {
-    if (!e || typeof e.id !== "string" || e.id === "" || this.events.has(e.id)) {
-      return false;
-    }
-    this.hold(e);
-    return true;
-  }
-
-  /** Follow a broadcast-state frame. True when the window moved. `nowMs` closes an ended
-   * broadcast's window. */
-  onStream(state: Pick<StreamState, "active" | "startedAt">, nowMs: number): boolean {
-    if (state.active === true) {
-      // A live frame with no start yet is a broadcast still connecting; the window opens
-      // when an output reports the start, not before.
-      if (!isFiniteNumber(state.startedAt) || state.startedAt <= 0) {
-        return false;
-      }
-      if (this.win.since === state.startedAt && this.win.until === null) {
-        return false;
-      }
-      this.setWindow({ since: state.startedAt, until: null });
-      return true;
-    }
-    // Nothing has started this run: keep counting since load rather than closing a window
-    // that was never a broadcast's.
-    if (this.win.since === null || this.win.until !== null) {
-      return false;
-    }
-    this.win = { since: this.win.since, until: nowMs };
-    return true;
-  }
-
-  private setWindow(w: CountWindow): void {
-    this.win = w;
-    // Windows only move forward, so an event before the start can never count again.
+    };
+    const moved = this.seeded && (w.since !== this.win.since || w.until !== this.win.until);
     if (w.since !== null) {
-      for (const [id, e] of this.events) {
-        if (e.ts < w.since) {
-          this.events.delete(id);
+      for (const [id, held] of this.live) {
+        if (held.connection < this.connection) {
+          this.live.delete(id);
         }
       }
     }
+    this.base = Array.isArray(frame.totals) ? frame.totals.filter(isTotal) : [];
+    this.covered = new Set(
+      Array.isArray(frame.recentIds) ? frame.recentIds.filter((id): id is string => typeof id === "string") : [],
+    );
+    this.win = w;
+    this.tests.clear();
+    this.seeded = true;
+    return moved ? "window" : "seed";
   }
 
-  private hold(e: TallyEvent): void {
-    if (!e || typeof e.id !== "string" || e.id === "" || !isFiniteNumber(e.ts)) {
-      return;
+  /** Hold a live event. False when it was already held (or cannot be counted), so the caller
+   * knows nothing changed. */
+  add(e: TallyEvent): boolean {
+    if (!isCountable(e) || this.live.has(e.id)) {
+      return false;
     }
-    this.events.set(e.id, slim(e));
+    this.live.set(e.id, { e: slim(e), connection: this.connection });
     // Oldest-first; a Map iterates in insertion order and deleting the visited key is defined.
-    for (const id of this.events.keys()) {
-      if (this.events.size <= kMaxHeldEvents) {
+    for (const id of this.live.keys()) {
+      if (this.live.size <= kMaxHeldEvents) {
         break;
       }
-      this.events.delete(id);
+      this.live.delete(id);
     }
+    return true;
+  }
+
+  /** Hold a test event on top of the count. False when nothing changed. */
+  addTest(e: TallyEvent): boolean {
+    if (!isCountable(e) || this.tests.has(e.id)) {
+      return false;
+    }
+    this.tests.set(e.id, slim(e));
+    return true;
+  }
+
+  /** Drop every test event. True when there were any. */
+  clearTests(): boolean {
+    const had = this.tests.size > 0;
+    this.tests.clear();
+    return had;
   }
 }
 
@@ -250,7 +339,8 @@ export function audienceTotal(
 }
 
 /** The figure shown: `n` plus the user's start offset, or null when there is no figure. An
- * offset that is not a finite number adds nothing. */
+ * offset that is not a finite number adds nothing. The Counter applies it to session counts
+ * only: a live total is already the whole figure. */
 export function withOffset(n: number | null, offset: unknown): number | null {
   if (n === null) {
     return null;
@@ -284,11 +374,13 @@ export function tweenValue(from: number, to: number, t: number): number {
 }
 
 // A private-use character, so a user's own text cannot be mistaken for the number's place.
-const kNumberSlot = "";
+const kNumberSlot = "\uE000";
 
 /** The user's format split around its `{n}` tokens, filled by the shared template filler
  * first so it reads exactly as every other widget's format does. The number goes between
- * consecutive parts, so a format without `{n}` is one part and shows no number. */
+ * consecutive parts. A format with no `{n}` -- a blank one included -- shows the number alone,
+ * since a counter that never shows its number is not a counter. */
 export function templateParts(format: string): string[] {
-  return fillTemplate(format, { n: kNumberSlot }).split(kNumberSlot);
+  const parts = fillTemplate(format, { n: kNumberSlot }).split(kNumberSlot);
+  return parts.length > 1 ? parts : ["", ""];
 }

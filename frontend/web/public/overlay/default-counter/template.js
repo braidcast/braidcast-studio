@@ -1,5 +1,6 @@
 const counterEl = document.getElementById("counter");
 const textEl = document.getElementById("counter-text");
+const announceEl = document.getElementById("counter-announce");
 // The counting rules live in the runtime, so this page only decides what to draw.
 const C = OBSOverlay.counter;
 
@@ -34,10 +35,16 @@ let layoutKey = null;
 // The running count-up, or null.
 let tween = null;
 
+// A test frame from the editor's Test button reaches a source on stream too. Only the preview
+// keeps what one says; on stream the next real reading could be a broadcast away.
+function foreignTest(frame) {
+  return !!(frame && frame.test === true && !OBSOverlay.preview);
+}
+
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
-// Only a real event arriving animates. A seed is the page catching up to the count it already
-// had (a reload mid-broadcast must not roll up from 0), and a window change is a new
-// broadcast starting over.
+// Only an event arriving animates. A seed is the page catching up to the count it already had
+// (a reload mid-broadcast must not roll up from 0), and a window change is a broadcast
+// starting or ending, which lands at once.
 OBSOverlay.onSessionTally((t, cause) => {
   tally = t;
   if (isSessionSource()) {
@@ -45,12 +52,18 @@ OBSOverlay.onSessionTally((t, cause) => {
   }
 });
 OBSOverlay.onViewers((v) => {
+  if (foreignTest(v)) {
+    return;
+  }
   viewers = v;
   if (source() === "viewers") {
     update(true);
   }
 });
 OBSOverlay.onChannelStats((s) => {
+  if (foreignTest(s)) {
+    return;
+  }
   channels = s;
   if (source() === "followers") {
     update(true);
@@ -60,6 +73,9 @@ OBSOverlay.onChannelStats((s) => {
 // clears the reading back to "nothing reported" -- the idle text, as the viewer count widget
 // does -- rather than leaving the last audience up.
 OBSOverlay.onStream((s) => {
+  if (foreignTest(s)) {
+    return;
+  }
   if (s && s.active !== true && viewers !== null) {
     viewers = null;
     if (source() === "viewers") {
@@ -77,6 +93,8 @@ function applyFields(f) {
   if (f.textColor) set("--ov-text", String(f.textColor));
   if (f.backgroundColor) set("--ov-bg", String(f.backgroundColor));
   set("--ov-align", ALIGN[String(f.align || "left")] || ALIGN.left);
+  // New fields can change what an unchanged figure reads as (the idle text), so redraw.
+  shown = undefined;
   update(false);
 }
 
@@ -94,7 +112,8 @@ function platforms() {
 
 // What to show: a number, null for the idle text, or undefined while a session count is
 // still waiting on the host's tally -- drawing a since-load 0 in that gap is the flash a
-// reload mid-broadcast would otherwise show.
+// reload mid-broadcast would otherwise show. The start offset carries a session count on from
+// an earlier one; a live total is already the whole figure, so it gets none.
 function value() {
   const src = source();
   if (isSessionSource()) {
@@ -104,10 +123,10 @@ function value() {
     return C.withOffset(tally.count(src, platforms()), fields.offset);
   }
   if (src === "viewers") {
-    return C.withOffset(viewers ? C.viewerTotal(viewers.perPlatform, platforms()) : null, fields.offset);
+    return viewers ? C.viewerTotal(viewers.perPlatform, platforms()) : null;
   }
   if (src === "followers") {
-    return C.withOffset(channels ? C.audienceTotal(channels.perPlatform, platforms()) : null, fields.offset);
+    return channels ? C.audienceTotal(channels.perPlatform, platforms()) : null;
   }
   // A source this build does not know (a newer or hand-edited document) has no figure.
   return null;
@@ -128,9 +147,14 @@ function update(animate) {
   ensureLayout(mode);
   counterEl.hidden = false;
   const prev = shown;
+  // Nothing to change: a running count-up is already heading for this figure.
+  if (prev === next) {
+    return;
+  }
   shown = next;
-  if (!animate || mode === "none" || next === null || prev == null || prev === next) {
+  if (!animate || mode === "none" || next === null || prev == null) {
     draw(next, true);
+    announce(next);
     return;
   }
   if (mode === "countup") {
@@ -138,8 +162,20 @@ function update(animate) {
   } else if (mode === "pop") {
     draw(next, true);
     pop();
+    announce(next);
   } else {
     draw(next, false);
+    announce(next);
+  }
+}
+
+// The live region gets the settled text only -- once per change, never a count-up's
+// intermediate figures -- while the drawn text is hidden from assistive tech.
+function announce(n) {
+  const figure = n === null ? OBSOverlay.textField(fields, "idleText", "—") : OBSOverlay.formatCount(n);
+  const text = C.templateParts(OBSOverlay.textField(fields, "format", "{n}")).join(figure);
+  if (announceEl.textContent !== text) {
+    announceEl.textContent = text;
   }
 }
 
@@ -215,6 +251,7 @@ function countUp(prev, next) {
       tween.raf = requestAnimationFrame(step);
     } else {
       tween = null;
+      announce(next);
     }
   };
   tween.raf = requestAnimationFrame(step);

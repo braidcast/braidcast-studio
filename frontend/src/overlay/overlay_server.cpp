@@ -16,15 +16,14 @@
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
-#include "util/file_util.hpp"        // FileUtil::ReadBinaryFile
-#include "util/http_status.hpp"      // Http::ReasonFor
-#include "util/string_util.hpp"      // StringUtil::ToLower
-#include "util/web_bundle.hpp"       // WebBundle::Root, WebBundle::ContentTypeForPath
-#include "../events/event_hub.hpp"   // Events::Store() -- the persisted event history
-#include "../events/event_store.hpp" // Events::EventStore::Select
-#include "util/time_util.hpp"        // TimeUtil::NowMs
-#include "overlay_store.hpp"         // Overlay::Store(), Widget, WidgetUrl
-#include "overlay_template.hpp"      // Overlay::AcceptsReplay, Overlay::CountsEvents
+#include "util/file_util.hpp"      // FileUtil::ReadBinaryFile
+#include "util/http_status.hpp"    // Http::ReasonFor
+#include "util/string_util.hpp"    // StringUtil::ToLower
+#include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
+#include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
+#include "util/time_util.hpp"      // TimeUtil::NowMs
+#include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
+#include "overlay_template.hpp"    // Overlay::AcceptsReplay, Overlay::CountsEvents
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -399,22 +398,6 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 	return NamedFrame("backfill", json{{"events", std::move(arr)}});
 }
 
-// What a count reads off one event, and nothing else: the tally goes to a page that only
-// counts, so the name and message fields stay off it. The id goes verbatim, since the page
-// dedupes it against the live frame for the same event, and some platforms' ids embed the
-// actor: Kick's carry the username, YouTube money events the supporter's channel id.
-json TallyEventJson(const Events::NormalizedEvent &ev)
-{
-	json j = json{{"id", ev.id}, {"platform", ev.platform}, {"type", ev.type}, {"ts", ev.ts}};
-	if (ev.amount != 0) {
-		j["amount"] = ev.amount;
-	}
-	if (ev.count != 0) {
-		j["count"] = ev.count;
-	}
-	return j;
-}
-
 // The BroadcastFrame widgetFilter for events.replay: a widget whose id no longer resolves
 // (deleted mid-broadcast) is excluded the same as one whose type does not accept a replay.
 //
@@ -429,38 +412,38 @@ bool WidgetAcceptsReplay(const std::string &widgetId)
 	return type.has_value() && AcceptsReplay(*type);
 }
 
-} // namespace
-
-json TallyBody(const Events::EventStore &store, int64_t sinceMs, int64_t untilMs, bool live)
+// The BroadcastFrame widgetFilter for a moved tally window: only a widget that counts events
+// is sent one, as only such a widget is sent one on connect. TypeOf for the reason above.
+bool WidgetCountsEvents(const std::string &widgetId)
 {
-	json events = json::array();
-	if (sinceMs > 0) {
-		const auto inWindow = [sinceMs, untilMs](const Events::NormalizedEvent &e) {
-			return e.ts >= sinceMs && (untilMs <= 0 || e.ts <= untilMs);
-		};
-		for (const Events::NormalizedEvent &ev : store.Select(inWindow)) {
-			events.push_back(TallyEventJson(ev));
-		}
-	}
-	return json{
-		{"since", sinceMs > 0 ? json(sinceMs) : json(nullptr)},
-		{"until", sinceMs > 0 && untilMs > 0 ? json(untilMs) : json(nullptr)},
-		{"live", live},
-		{"events", std::move(events)},
-	};
+	const std::optional<std::string> type = Store().TypeOf(widgetId);
+	return type.has_value() && CountsEvents(*type);
 }
+
+// A frame a preview test sends, marked so a page can tell it from the real thing.
+json AsTest(json body)
+{
+	if (body.is_object()) {
+		body["test"] = true;
+	}
+	return body;
+}
+
+} // namespace
 
 // ---- Broadcast --------------------------------------------------------------
 
-// Snapshot the live socket handles under sseMutex_, then send OUTSIDE the lock so a
-// single slow/dead client (bounded by SO_SNDTIMEO) can't hold the mutex and stall
-// delivery to every other client (head-of-line blocking). Dead sockets are pruned on a
-// re-lock. A failed send drops the socket from the registry and shutdown()s it (NOT
+// Snapshot the live socket handles under sseMutex_, then send OUTSIDE the lock so a single
+// slow/dead client (bounded by SO_SNDTIMEO) can't hold the mutex and stall delivery to
+// every other client (head-of-line blocking). Each send holds that socket's send mutex, so
+// a frame never interleaves with another thread's on the wire, and one sent to a socket
+// still being handed its replay waits for the replay to finish. Dead sockets are pruned on
+// a re-lock. A failed send drops the socket from the registry and shutdown()s it (NOT
 // close): the owning RunSse is the sole closer of its fd, so shutdown unblocks that
 // thread's recv without freeing the fd -- the OS can't recycle the fd value onto a NEW
 // connection and have this thread later close the wrong socket (the fd-reuse hazard).
-// broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket()
-// so an in-flight send here can never land on a recycled fd.
+// broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket() so
+// an in-flight send here can never land on a recycled fd.
 //
 // Returns how many WIDGETS took the frame, not how many sockets: one widget open in both
 // the editor preview and a Browser Source is two sockets and one widget, and "delivered to
@@ -479,14 +462,15 @@ size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string
 {
 	// Grouped by widget rather than flattened, so the filter is asked once per widget
 	// instead of once per socket, and a widget's sockets can answer as one delivery.
-	std::vector<std::pair<std::string, std::vector<uintptr_t>>> targets;
+	std::vector<std::pair<std::string, std::vector<std::pair<uintptr_t, SendMutex>>>> targets;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		for (auto &[wid, socks] : sockets_) {
 			if (onlyWidgetId && wid != *onlyWidgetId) {
 				continue;
 			}
-			targets.emplace_back(wid, std::vector<uintptr_t>(socks.begin(), socks.end()));
+			targets.emplace_back(wid,
+					     std::vector<std::pair<uintptr_t, SendMutex>>(socks.begin(), socks.end()));
 		}
 		++broadcastDepth_;
 	}
@@ -534,8 +518,13 @@ size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string
 			continue;
 		}
 		bool took = false;
-		for (uintptr_t s : socks) {
-			if (SendAll((SOCKET)s, frame.data(), frame.size())) {
+		for (const auto &[s, sendMutex] : socks) {
+			bool sent = false;
+			{
+				std::lock_guard<std::mutex> sending(*sendMutex);
+				sent = SendAll((SOCKET)s, frame.data(), frame.size());
+			}
+			if (sent) {
 				took = true;
 			} else {
 				dead.emplace_back(wid, s);
@@ -561,6 +550,12 @@ size_t OverlayServer::LiveSseCount() const
 
 size_t OverlayServer::Broadcast(const Events::NormalizedEvent &ev, bool replay)
 {
+	// Counted before it is sent, so a page that registers in between and reads the tally
+	// finds it either counted there or on its way to the page, never in neither (RunSse).
+	// A replay is a second showing of an event already counted.
+	if (!replay) {
+		tally_.Add(ev);
+	}
 	json body = ev.ToJson();
 	if (replay) {
 		// Set here rather than on NormalizedEvent itself: the flag marks how THIS
@@ -652,9 +647,9 @@ void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
 // on a poll cadence.
 void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 {
-	// This frame is the only place the broadcast's start time is known, so it is also
-	// where the backfill window is set. A null startedAt under an active broadcast leaves
-	// it at 0: no output has reported a start, so there is no window to replay over.
+	// This frame is the only place the broadcast's start time is known, so it is what moves
+	// the tally's window -- latched, so a start that drifts while live moves nothing, and a
+	// null startedAt (no output has reported a start yet) opens nothing.
 	const bool active = state.is_object() && state.value("active", false);
 	int64_t startedAt = 0;
 	if (active) {
@@ -663,31 +658,33 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 			startedAt = it->get<int64_t>();
 		}
 	}
-	const int64_t nowMs = TimeUtil::NowMs();
-	{
-		std::lock_guard<std::mutex> lock(sseMutex_);
-		if (startedAt > 0) {
-			lastStartedAtMs_ = startedAt;
-			lastEndedAtMs_ = 0;
-		} else if (!active && streamStartedAtMs_ > 0) {
-			lastEndedAtMs_ = nowMs;
-		}
-		streamStartedAtMs_ = startedAt;
-	}
+	const std::optional<json> moved = tally_.OnStreamState(active, startedAt, TimeUtil::NowMs());
 	BroadcastStateFrame("stream", state);
+	// A page sees a window move only here, as the server's own figure for it. An event sent
+	// on another thread can land either side of this frame; the page keeps one that lands
+	// before it and dedupes one the frame already counted by its recentIds.
+	if (moved) {
+		BroadcastFrame(NamedFrame("tally", *moved), nullptr, WidgetCountsEvents);
+	}
 }
 
 size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
-	return BroadcastFrame(DataFrame(ev.ToJson()), &widgetId);
+	return BroadcastFrame(DataFrame(AsTest(ev.ToJson())), &widgetId);
 }
 
-// Deliberately NOT BroadcastStateFrame: that keeps the frame for replay and, for `stream`,
-// also moves the backfill window. A preview fired from the editor would then be the state
-// a real browser source picks up when it connects mid-broadcast.
+// Deliberately NOT BroadcastStateFrame: that keeps the frame for replay, and for `stream`
+// BroadcastStreamState would also move the tally's window. A preview fired from the editor
+// would then be the state a real browser source picks up when it connects mid-broadcast.
 size_t OverlayServer::SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body)
 {
-	return BroadcastFrame(NamedFrame(eventName, body), &widgetId);
+	return BroadcastFrame(NamedFrame(eventName, AsTest(body)), &widgetId);
+}
+
+void OverlayServer::SetRegisteredObserverForTest(std::function<void(const std::string &widgetId)> observer)
+{
+	std::lock_guard<std::mutex> lock(sseMutex_);
+	registeredObserver_ = std::move(observer);
 }
 
 // ---- Lifecycle --------------------------------------------------------------
@@ -773,6 +770,7 @@ bool OverlayServer::Start()
 
 	portChanged_ = (port_ != preferred);
 	Store().SetPort(port_);
+	tally_.Open(BroadcastTally::FilePath());
 	running_.store(true);
 	acceptThread_ = std::thread(&OverlayServer::AcceptLoop, this);
 	HostLog("[overlay] server listening on 127.0.0.1:" + std::to_string(port_) +
@@ -815,6 +813,8 @@ bool OverlayServer::StartForTest(int port, int *boundPort)
 
 void OverlayServer::Stop()
 {
+	// The tally's trailing save: events since the last one are otherwise only in memory.
+	tally_.Flush();
 	if (!running_.exchange(false)) {
 		// Not running; still balance a stray WSAStartup / join a late accept thread.
 		if (acceptThread_.joinable()) {
@@ -1150,82 +1150,87 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId, 
 	// The handshake must complete BEFORE the socket is registered: once it is in
 	// sockets_ a concurrent broadcast may write frames, and no frame may precede the
 	// HTTP header on the wire. Until registration the reserved slot keeps the capacity
-	// count honest.
+	// count honest, and this thread is the only one that can reach the socket.
 	const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
 			   "Cache-Control: no-cache\r\nConnection: keep-alive\r\n"
 			   "Access-Control-Allow-Origin: *\r\n\r\n";
-	const bool headOk = send(sock, head, (int)strlen(head), 0) > 0;
-	if (headOk) {
-		// Initial comment so EventSource fires onopen promptly.
-		send(sock, ": connected\n\n", 13, 0);
-		// The state channels' last frames, copied under the lock and sent outside it.
-		// Sent BEFORE registering: a broadcast landing in the gap is merely late,
-		// whereas replaying after registration could deliver a stale frame on top of a
-		// fresher one.
-		//
-		// Only a channel whose frames carry STATE replays, and it replays only its
-		// latest. Audience totals poll on a ~15 minute cadence and stream state changes
-		// only at a transition, so a browser source that loads in between would render
-		// nothing until the next one -- an uptime widget would sit blank for the rest of
-		// a broadcast. A viewer count is the counter-example: it stops being true the
-		// instant a broadcast ends, so replaying one would assert an audience that is no
-		// longer watching.
-		//
-		// Chat and events are moments rather than state, so neither replays as itself.
-		// Events are still summarizable, though -- a running total over the current
-		// broadcast is state even when the individual events are not -- so they reach a
-		// connecting client as the separate, bounded `backfill` frame instead, which no
-		// consumer of the moment-by-moment stream sees.
-		//
-		// A widget that COUNTS events gets one more frame, `tally`, last: the events its count
-		// is rebuilt from, over the current broadcast or -- off air -- the most recent one, so
-		// a reload neither resets the count nor drops the finished broadcast's figure. Unlike
-		// the backfill it is uncapped (the store's own cap bounds it) and slim, since a count
-		// needs every event in the window and none of their text. It always comes, with a null
-		// window before any broadcast this run, so the page can tell "nothing to rebuild" from
-		// "not heard yet". Sent before registration like the rest, so no live event can
-		// precede it; an event stored in the gap between the read and registration reaches
-		// the page twice, which it dedupes by id.
-		std::vector<std::string> replay;
-		int64_t since = 0;
-		int64_t tallySince = 0;
-		int64_t tallyUntil = 0;
+	// Initial comment so EventSource fires onopen promptly.
+	const char *connected = ": connected\n\n";
+	const bool headOk = send(sock, head, (int)strlen(head), 0) > 0 &&
+			    send(sock, connected, (int)strlen(connected), 0) > 0;
+	if (!headOk) {
 		{
 			std::lock_guard<std::mutex> lock(sseMutex_);
-			replay.reserve(replayFrames_.size() + 2);
-			for (const auto &[eventName, frame] : replayFrames_) {
-				replay.push_back(frame);
-			}
-			since = streamStartedAtMs_;
-			tallySince = since > 0 ? since : lastStartedAtMs_;
-			tallyUntil = since > 0 ? 0 : lastEndedAtMs_;
+			--ssePending_;
 		}
-		// Built outside sseMutex_: they read the event store, whose own lock must never be
-		// taken under this one.
-		if (since > 0) {
-			replay.push_back(BuildBackfillFrame(since));
-		}
-		if (tally) {
-			replay.push_back(
-				NamedFrame("tally", TallyBody(Events::Store(), tallySince, tallyUntil, since > 0)));
-		}
-		for (const std::string &frame : replay) {
-			send(sock, frame.c_str(), (int)frame.size(), 0);
-		}
-	}
-	size_t live = 0;
-	{
-		std::lock_guard<std::mutex> lock(sseMutex_);
-		--ssePending_;
-		if (headOk) {
-			sockets_[widgetId].insert(clientSocket);
-			live = LiveSseCount();
-		}
-	}
-	if (!headOk) {
 		CloseClient(clientSocket); // never registered in sockets_; just close+deregister
 		return;
 	}
+
+	// Then the state this page starts from: the state channels' last frames, the backfill
+	// and, for a widget that counts events, the tally.
+	//
+	// Only a channel whose frames carry STATE replays, and it replays only its latest.
+	// Audience totals poll on a ~15 minute cadence and stream state changes only at a
+	// transition, so a browser source that loads in between would render nothing until the
+	// next one -- an uptime widget would sit blank for the rest of a broadcast. A viewer count
+	// is the counter-example: it stops being true the instant a broadcast ends, so replaying
+	// one would assert an audience that is no longer watching.
+	//
+	// Chat and events are moments rather than state, so neither replays as itself. Events
+	// are still summarizable, though -- a running total over the current broadcast is state
+	// even when the individual events are not -- so they reach a connecting client as the
+	// separate, bounded `backfill` frame instead, which no consumer of the moment-by-moment
+	// stream sees. A widget that COUNTS events gets `tally` last: the broadcast tally's
+	// totals for the current broadcast or -- off air -- the most recent one, so a reload
+	// neither resets the count nor drops the finished broadcast's figure. It always comes,
+	// with a null window before any broadcast was recorded, so the page can tell "nothing to
+	// rebuild" from "not heard yet".
+	//
+	// The socket is registered FIRST, then everything is read, with this socket's send mutex
+	// held from before registration until the replay is out. So an event or a transition
+	// broadcast after a read is not lost in a gap: it reaches this socket, queued behind the
+	// replay by the send mutex. One broadcast just before a read can be in both: a counting
+	// page dedupes such an event by the tally's recentIds, a backfill reader by the event's
+	// id, and a state frame simply arrives twice. A state frame is never older than the
+	// replay it follows: each state channel is sent from one thread, so a frame's send has
+	// started before the next frame replaces it in replayFrames_.
+	const SendMutex sendMutex = std::make_shared<std::mutex>();
+	std::unique_lock<std::mutex> sending(*sendMutex);
+	std::vector<std::string> replay;
+	size_t live = 0;
+	std::function<void(const std::string &)> registered;
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		--ssePending_;
+		sockets_[widgetId].emplace(clientSocket, sendMutex);
+		live = LiveSseCount();
+		registered = registeredObserver_;
+		replay.reserve(replayFrames_.size() + 2);
+		for (const auto &[eventName, frame] : replayFrames_) {
+			replay.push_back(frame);
+		}
+	}
+	if (registered) {
+		registered(widgetId);
+	}
+	// Read outside sseMutex_: the event store's and the tally's own locks are never taken
+	// under it.
+	const int64_t since = tally_.OpenSince();
+	if (since > 0) {
+		replay.push_back(BuildBackfillFrame(since));
+	}
+	if (tally) {
+		replay.push_back(NamedFrame("tally", tally_.Snapshot()));
+	}
+	bool replayed = true;
+	for (const std::string &frame : replay) {
+		if (!SendAll(sock, frame.data(), frame.size())) {
+			replayed = false;
+			break;
+		}
+	}
+	sending.unlock();
 	// Logged outside sseMutex_: blog() writes to the session log, and the broadcast path
 	// must never wait on that lock behind an I/O call.
 	DBG(LogCat::Overlay, "SSE connected widget=%s (%zu live)", widgetId.c_str(), live);
@@ -1233,7 +1238,7 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId, 
 	// The 15s recv timeout drives the keepalive; recv also detects a client close.
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&kSseRecvTimeoutMs, sizeof(kSseRecvTimeoutMs));
 	char buf[512];
-	while (running_.load()) {
+	while (replayed && running_.load()) {
 		const int n = recv(sock, buf, sizeof(buf), 0);
 		if (n == 0) {
 			break; // client closed
@@ -1248,10 +1253,16 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId, 
 					}
 				}
 				// Ping OUTSIDE sseMutex_: a stuck reader blocks this send for up to
-				// kSseSendTimeoutMs, which must never stall broadcasts. Safe unlocked --
-				// this thread owns the fd, and Broadcast/Stop only ever shutdown() it
-				// (a concurrent drop just makes this send fail -> break).
-				if (send(sock, ": ping\n\n", 8, 0) <= 0) {
+				// kSseSendTimeoutMs, which must never stall broadcasts to other sockets.
+				// Under this socket's send mutex like every other write to it. This thread
+				// owns the fd, and Broadcast/Stop only ever shutdown() it (a concurrent drop
+				// just makes this send fail -> break).
+				bool pinged = false;
+				{
+					std::lock_guard<std::mutex> pinging(*sendMutex);
+					pinged = send(sock, ": ping\n\n", 8, 0) > 0;
+				}
+				if (!pinged) {
 					break;
 				}
 				continue;
