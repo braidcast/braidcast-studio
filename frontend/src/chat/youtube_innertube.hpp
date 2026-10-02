@@ -13,6 +13,7 @@
 
 #include "../events/event_model.hpp"
 #include "chat_archive.hpp" // ModerationOp
+#include "youtube_goal.hpp"
 
 // YouTube's InnerTube live-chat read (youtubei/v1/live_chat/get_live_chat) -- the endpoint
 // youtube.com's own web client polls. PROTOCOL ONLY: given a videoId it resolves a
@@ -48,6 +49,10 @@ struct Callbacks {
 	std::function<void(Events::NormalizedEvent &ev)> emitEvent;
 	// A running poll's live result, as YouTubePoll::FromInnerTube reads it. Optional.
 	std::function<void(const json &live)> emitPoll;
+	// Creator-goal mutations, as YouTubeGoal::ReadBatch reads them, in arrival order. A goal is
+	// state rather than an event, so these are delivered from a reconnect's history batch too:
+	// replayed in order, they land on the goal as it stands now. Optional.
+	std::function<void(const std::vector<YouTubeGoal::Patch> &patches)> emitGoals;
 	// A moderator's removal (DecodeModerationAction), in its place among the batch's chat
 	// lines. Optional.
 	std::function<void(const ModerationOp &op)> emitModeration;

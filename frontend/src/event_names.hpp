@@ -43,6 +43,7 @@ inline constexpr const char *kStreamInfoPresetsChanged = "streamInfoPresets.chan
 inline constexpr const char *kPollsChanged = "polls.changed";
 inline constexpr const char *kPollsResults = "polls.results";
 inline constexpr const char *kPollTemplatesChanged = "pollTemplates.changed";
+inline constexpr const char *kGoalsChanged = "goals.changed";
 inline constexpr const char *kSceneItemsChanged = "sceneItems.changed";
 inline constexpr const char *kSceneItemSelected = "sceneItem.selected";
 inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";

@@ -50,9 +50,11 @@
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
+#include "chat/goal_registry.hpp"
 #include "chat/poll_registry.hpp"
 #include "chat/twitch_chat.hpp"
 #include "chat/youtube_chat.hpp" // Chat::DecodeYouTubeModerationItem
+#include "chat/youtube_goal.hpp"
 #include "chat/youtube_innertube.hpp"
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
@@ -2418,6 +2420,134 @@ void ObsBootstrap::RunSettingsSelfTest()
 			HostLog("[selftest] youtube-poll body=" + two.dump() + " numeric=" + numeric.dump() +
 				" stringy=" + stringy.dump() + " untallied=" + untallied.dump() +
 				" live=" + live.dump());
+		}
+	}
+
+	// 6b1) YouTube creator goals, offline, on excerpts of three replay captures (2026-10-02; keys
+	// and descriptions replaced, unread fields dropped). The first mutation is a whole REPLACE,
+	// later ones are partial UPDATEs that merge, a second goal in one broadcast REPLACEs the first
+	// under the same key, and the registry keys by destination and hands a goal to a restarted
+	// read without a duplicate row or an early removal.
+	{
+		const json created = json::parse(R"({"mutations":[{"entityKey":"goal-A",
+			"type":"ENTITY_MUTATION_TYPE_REPLACE","payload":{"creatorGoalEntity":{"key":"goal-A",
+			"creatorGoalState":"CREATOR_GOAL_STATE_ACTIVE","currentGoalCount":"0","totalGoalCount":"15",
+			"endTimestampMs":"0","goalDescription":{"content":"Send gifts for a jumpscare"},
+			"goalTargetText":{"content":"15 gifts"},"goalHeadlineText":{"content":"Goal in progress"}}}}]})");
+		const json restarted = json::parse(R"({"mutations":[{"entityKey":"goal-A",
+			"type":"ENTITY_MUTATION_TYPE_REPLACE","payload":{"creatorGoalEntity":{"key":"goal-A",
+			"creatorGoalState":"CREATOR_GOAL_STATE_ACTIVE","currentGoalCount":"0","totalGoalCount":"50",
+			"goalDescription":{"content":"Send gifts"},"goalTargetText":{"content":"50 gifts"},
+			"goalHeadlineText":{"content":"Goal in progress"}}}}]})");
+		// The partial shape every later mutation took: state, count and headline only.
+		const auto update = [](const char *state, const char *count, const char *headline) {
+			return json{
+				{"mutations",
+				 json::array({json{
+					 {"entityKey", "goal-A"},
+					 {"type", "ENTITY_MUTATION_TYPE_UPDATE"},
+					 {"payload", json{{"creatorGoalEntity",
+							   json{{"key", "goal-A"},
+								{"creatorGoalState", state},
+								{"currentGoalCount", count},
+								{"goalHeadlineText", json{{"content", headline}}}}}}},
+					 {"fieldMask", json{{"xfieldMask", json{{"field", {2, 3, 12, 13}}}}}}}})}};
+		};
+		const auto apply = [](YouTubeGoal::Goal &goal, const json &batch) {
+			for (const YouTubeGoal::Patch &patch : YouTubeGoal::ReadBatch(batch)) {
+				YouTubeGoal::Apply(goal, patch);
+			}
+		};
+
+		const std::vector<YouTubeGoal::Patch> first = YouTubeGoal::ReadBatch(created);
+		YouTubeGoal::Goal goal;
+		apply(goal, created);
+		apply(goal, update("CREATOR_GOAL_STATE_ACTIVE", "1", "Goal in progress"));
+		apply(goal, update("CREATOR_GOAL_STATE_ACTIVE", "12", "Goal in progress"));
+		apply(goal, update("CREATOR_GOAL_STATE_COMPLETE", "26", "Goal achieved"));
+		const json achieved = YouTubeGoal::ToJson(goal);
+		apply(goal, restarted);
+		const json second = YouTubeGoal::ToJson(goal);
+		apply(goal, update("CREATOR_GOAL_STATE_NOT_ACHIEVED", "2", "Goal ended"));
+		const json ended = YouTubeGoal::ToJson(goal);
+		apply(goal, update("CREATOR_GOAL_STATE_SOMETHING_NEW", "x2", "Goal paused"));
+		const json unknown = YouTubeGoal::ToJson(goal);
+
+		// Other entities and a payload-less delete in one batch, as a response's frameworkUpdates
+		// carries the reactions.
+		std::vector<std::string> others;
+		const std::vector<YouTubeGoal::Patch> mixed = YouTubeGoal::ReadBatch(
+			json{{"mutations",
+			      json::array({json{{"entityKey", "fountain"},
+						{"type", "ENTITY_MUTATION_TYPE_REPLACE"},
+						{"payload", json{{"emojiFountainDataEntity", json::object()}}}},
+					   json{{"entityKey", "goal-A"}, {"type", "ENTITY_MUTATION_TYPE_DELETE"}},
+					   "not a mutation"})}},
+			&others);
+		// An update for a goal never seen whole: its count shows, nothing is invented.
+		YouTubeGoal::Goal partial;
+		apply(partial, update("CREATOR_GOAL_STATE_ACTIVE", "3", "Goal in progress"));
+		const json partialJson = YouTubeGoal::ToJson(partial);
+
+		const bool okParse =
+			first.size() == 1 && first[0].kind == YouTubeGoal::MutationKind::Replace &&
+			first[0].key == "goal-A" && first[0].current == 0 && first[0].total == 15 &&
+			achieved["phase"] == "achieved" && achieved["current"] == 26 && achieved["total"] == 15 &&
+			achieved["description"] == "Send gifts for a jumpscare" && achieved["target"] == "15 gifts" &&
+			achieved["headline"] == "Goal achieved" && second["phase"] == "active" &&
+			second["current"] == 0 && second["total"] == 50 && second["description"] == "Send gifts" &&
+			ended["phase"] == "ended" && ended["current"] == 2 &&
+			ended["state"] == "CREATOR_GOAL_STATE_NOT_ACHIEVED" && unknown["phase"] == "unknown" &&
+			unknown["current"] == 2 && unknown["headline"] == "Goal paused" && mixed.size() == 1 &&
+			mixed[0].kind == YouTubeGoal::MutationKind::Delete && mixed[0].key == "goal-A" &&
+			others == std::vector<std::string>{"emojiFountainDataEntity"} && partialJson["current"] == 3 &&
+			partialJson["total"].is_null() && partialJson["description"] == "" &&
+			YouTubeGoal::ReadBatch(json::object()).empty() && YouTubeGoal::ReadBatch(json("junk")).empty();
+
+		// The registry, on its own sink so these goals never reach the dock.
+		int emits = 0;
+		json last;
+		Chat::GoalRegistry registry([&emits, &last](const json &list) {
+			++emits;
+			last = list;
+		});
+		const OAuth::DestinationId destA{"youtube:UCa", "profile-a"};
+		const OAuth::DestinationId destB{"youtube:UCa", "profile-b"};
+		const auto count = [&registry] {
+			return registry.List()["goals"].size();
+		};
+		const uint64_t s1 = registry.BeginSession();
+		registry.Apply(destA, s1, YouTubeGoal::ReadBatch(created));
+		registry.Apply(destA, s1, YouTubeGoal::ReadBatch(created)); // repeated unchanged: no emit
+		const int emitsAfterRepeat = emits;
+		registry.Apply(destA, s1,
+			       YouTubeGoal::ReadBatch(update("CREATOR_GOAL_STATE_COMPLETE", "15", "Goal achieved")));
+		const bool endedStamped = !registry.List()["goals"][0]["endedAtMs"].is_null();
+		// A restart whose new read re-reads the goal before the old read finishes unwinding.
+		const uint64_t s2 = registry.BeginSession();
+		registry.Apply(destA, s2, YouTubeGoal::ReadBatch(created));
+		const bool reopened = registry.List()["goals"][0]["endedAtMs"].is_null();
+		registry.EndSession(destA, s1);
+		const size_t afterOldEnd = count();
+		const uint64_t s3 = registry.BeginSession();
+		registry.Apply(destB, s3, YouTubeGoal::ReadBatch(created)); // same key, another broadcast
+		const size_t twoDests = count();
+		registry.EndSession(destA, s2);
+		const size_t afterNewEnd = count();
+		const std::string remaining = JsonUtil::Str(last["goals"][0], "id");
+		registry.Apply(destB, s3, mixed);
+		const size_t afterDelete = count();
+
+		const bool okRegistry = emitsAfterRepeat == 1 && endedStamped && reopened && afterOldEnd == 1 &&
+					twoDests == 2 && afterNewEnd == 1 &&
+					remaining == "youtube:UCa@profile-b|goal-A" && afterDelete == 0 && emits == 6 &&
+					s1 != 0 && s1 != s2 && s2 != s3;
+		HostLog(std::string("[selftest] youtube-goal -> ") + (okParse && okRegistry ? "OK" : "MISMATCH"));
+		if (!okParse || !okRegistry) {
+			HostLog("[selftest] youtube-goal parse=" + std::to_string(okParse) +
+				" registry=" + std::to_string(okRegistry) + " achieved=" + achieved.dump() +
+				" second=" + second.dump() + " ended=" + ended.dump() + " unknown=" + unknown.dump() +
+				" partial=" + partialJson.dump() + " emits=" + std::to_string(emits));
 		}
 	}
 

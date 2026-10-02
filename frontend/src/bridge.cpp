@@ -42,6 +42,7 @@
 #include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp"
 #include "chat/chat_transport.hpp"
+#include "chat/goal_registry.hpp"
 #include "chat/poll_registry.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/viewer_poller.hpp"
@@ -14284,6 +14285,17 @@ bool MethodPollsList(const json & /*params*/, json &result, std::string & /*erro
 	return true;
 }
 
+// ---- creator goals ----------------------------------------------------------
+//
+// The goals a creator started on the platform (YouTube's Super Chat / gift goal), as the
+// destinations' chat reads report them. Read-only: nothing here starts or ends one. The
+// registry pushes goals.changed itself on every change.
+bool MethodGoalsList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Chat::Goals().List();
+	return true;
+}
+
 bool MethodPollsDismiss(const json &params, json &result, std::string &error)
 {
 	std::string id;
@@ -15424,6 +15436,7 @@ void Init()
 		{"streamInfoPresets.rename", MethodStreamInfoPresetsRename},
 		{"polls.list", MethodPollsList},
 		{"polls.dismiss", MethodPollsDismiss},
+		{"goals.list", MethodGoalsList},
 		{"pollTemplates.list", MethodPollTemplatesList},
 		{"pollTemplates.remember", MethodPollTemplatesRemember},
 		{"pollTemplates.touch", MethodPollTemplatesTouch},

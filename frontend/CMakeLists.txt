@@ -239,6 +239,14 @@ target_sources(
     # The session's open live polls (polls.* bridge methods); mutex-guarded, no obs.h.
     src/chat/poll_registry.cpp
     src/chat/poll_registry.hpp
+    # YouTube creator goals: the pure creatorGoalEntity mutation reader/merger the InnerTube read
+    # feeds; no I/O, no obs.h.
+    src/chat/youtube_goal.cpp
+    src/chat/youtube_goal.hpp
+    # The goals the destinations' chats are showing (goals.* bridge methods); mutex-guarded,
+    # no obs.h.
+    src/chat/goal_registry.cpp
+    src/chat/goal_registry.hpp
     # YouTube InnerTube live-chat read (youtubei/v1/live_chat/get_live_chat): the zero-quota
     # PRIMARY read the transport above drives, with the Data API loops as its fallback.
     # Anonymous HTTP only -- no credential ever reaches this endpoint. No obs.h.

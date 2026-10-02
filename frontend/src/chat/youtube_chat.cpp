@@ -18,6 +18,7 @@
 #include "util/op_error.hpp"
 #include "../oauth/youtube_provider.hpp"
 #include "util/time_util.hpp"
+#include "goal_registry.hpp"
 #include "poll_registry.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"         // CancelableSleep / Backoff
@@ -706,6 +707,18 @@ bool RunInnerTube(ChatSession &s, std::string &err)
 	};
 	cb.emitPoll = [&s](const json &live) {
 		Polls().UpdateLive(s.ctx.dest, live);
+	};
+	// The creator goals this read shows belong to this read: only InnerTube carries them, so they
+	// go when it exits for any reason -- the transport stopping, the chat ending, or a handover
+	// to an official read that cannot see goals and would leave the row frozen. Scoped to this
+	// read's own session token, so a restarted chat that has already re-read a goal keeps it.
+	struct GoalSession {
+		const OAuth::DestinationId dest;
+		const uint64_t token = Goals().BeginSession();
+		~GoalSession() { Goals().EndSession(dest, token); }
+	} goalSession{s.ctx.dest};
+	cb.emitGoals = [&s, &goalSession](const std::vector<YouTubeGoal::Patch> &patches) {
+		Goals().Apply(s.ctx.dest, goalSession.token, patches);
 	};
 	cb.emitModeration = s.ctx.emitModeration;
 	// Reusing AnnounceOnce is what keeps this destination's live-chat refcount held for an

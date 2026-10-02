@@ -3,7 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
-#include <exception>
+#include <optional>
 
 #include "util/json_util.hpp"
 
@@ -14,35 +14,11 @@ using json = nlohmann::json;
 namespace {
 
 // A vote count as either a JSON number or a numeric string (the Data API serializes some
-// 64-bit counters as strings). Anything else -- absent, negative, fractional garbage, a
-// string with trailing text -- is null: a tally we cannot read must not render as zero votes.
+// 64-bit counters as strings). A tally we cannot read is null, never zero votes.
 json ReadTally(const json &option)
 {
-	const json &raw = JsonUtil::Obj(option, "tally");
-	if (raw.is_number_integer()) {
-		const int64_t value = raw.get<int64_t>();
-		return value >= 0 ? json(value) : json(nullptr);
-	}
-	if (raw.is_number_float()) {
-		// Bounded before the cast: an out-of-range or non-finite double is undefined
-		// behaviour to convert, and no real tally is anywhere near the limit.
-		const double value = raw.get<double>();
-		constexpr double kMaxTally = 9.0e18;
-		return std::isfinite(value) && value >= 0 && value < kMaxTally ? json(static_cast<int64_t>(value))
-									       : json(nullptr);
-	}
-	if (!raw.is_string()) {
-		return json(nullptr);
-	}
-	const std::string text = raw.get<std::string>();
-	if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
-		return json(nullptr);
-	}
-	try {
-		return json(static_cast<int64_t>(std::stoll(text)));
-	} catch (const std::exception &) {
-		return json(nullptr);
-	}
+	const std::optional<int64_t> tally = JsonUtil::Count(option, "tally");
+	return tally ? json(*tally) : json(nullptr);
 }
 
 // pollDetails sits under the snippet in the documented resource; a bare top-level copy is

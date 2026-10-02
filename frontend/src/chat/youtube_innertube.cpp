@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -15,6 +18,7 @@
 #include "chat_transport.hpp" // BuildChatMessage -- the shared normalized-frame assembler
 #include "seen_ids.hpp"       // the bounded id memory shared with the Facebook read
 #include "third_party_emotes.hpp"
+#include "youtube_goal.hpp"
 #include "youtube_poll.hpp"
 #include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
@@ -572,6 +576,12 @@ struct Loop {
 	int emitted = 0;
 	int dropped = 0;
 	int suppressed = 0;
+	// The creator goals this read has seen, by key: true once one arrived whole (a REPLACE). A
+	// partial update or a ticker chip naming any other key is logged as such, and a DELETE is a
+	// goal's only when it names one of these -- the entity framework deletes other entities too.
+	std::unordered_map<std::string, bool> goals;
+	// Unrecognized entity and goal action names already logged, so each is logged once.
+	std::unordered_set<std::string> loggedNames;
 };
 
 void OnAddChatItem(Loop &lp, const char *, const json &action)
@@ -644,6 +654,133 @@ void OnActionPanel(Loop &lp, const char *, const json &action)
 		 Obj(Obj(Obj(Obj(action, "panelToShow"), "liveChatActionPanelRenderer"), "contents"), "pollRenderer"));
 }
 
+// Defined with the moderation decoding below; declared here for the goal log lines.
+bool IsLogSafeLabel(const std::string &id, size_t maxBytes);
+
+// The longest server-supplied name (a goal state, an entity type) a log line repeats verbatim.
+constexpr size_t kMaxLoggedNameBytes = 64;
+
+// A server-supplied name for a gated log line: verbatim when short and printable, else a
+// placeholder, so a hostile string cannot forge or reorder the line.
+std::string LoggedName(const std::string &name)
+{
+	return IsLogSafeLabel(name, kMaxLoggedNameBytes) ? name : std::string("(unprintable)");
+}
+
+// Log `name` once per read: "<what> '<name>', <verdict>".
+void LogNameOnce(Loop &lp, const char *what, const std::string &name, const char *verdict)
+{
+	if (lp.loggedNames.insert(name).second) {
+		DBG(LogCat::Chat, "youtube innertube: dest=%s %s '%s', %s (logged once)", lp.cfg.destTag.c_str(), what,
+		    LoggedName(name).c_str(), verdict);
+	}
+}
+
+// A goal key for the gated log lines: a short digest rather than the key, which encodes the
+// broadcast's video id -- not something to paste into an issue report for an unlisted stream.
+std::string GoalTag(const std::string &key)
+{
+	char tag[16];
+	std::snprintf(tag, sizeof(tag), "goal#%08x", static_cast<unsigned>(std::hash<std::string>{}(key)));
+	return tag;
+}
+
+const char *MutationName(YouTubeGoal::MutationKind kind)
+{
+	switch (kind) {
+	case YouTubeGoal::MutationKind::Replace:
+		return "replace";
+	case YouTubeGoal::MutationKind::Delete:
+		return "delete";
+	case YouTubeGoal::MutationKind::Update:
+		break;
+	}
+	return "update";
+}
+
+std::string CountText(const std::optional<int64_t> &count)
+{
+	return count ? std::to_string(*count) : std::string("-");
+}
+
+// Creator goals (the Super Chat / gift goal a creator starts in YouTube Studio), from an
+// entityBatchUpdate. Replay captures carry it as an entityUpdateCommand action; the live feed
+// may carry it there or in the response's frameworkUpdates, as it does the reactions, so both
+// are read and `via` says which delivered. Applied during a suppressed history batch as well:
+// a goal is state, and replaying its mutations in order lands on what it says now -- which is
+// how a goal started before this read connected still shows. Every mutation is logged, with
+// its state verbatim, so the first live stream with a goal confirms the shape.
+void EmitGoals(Loop &lp, const json &batch, const char *via)
+{
+	std::vector<std::string> others;
+	std::vector<YouTubeGoal::Patch> patches;
+	for (YouTubeGoal::Patch &patch : YouTubeGoal::ReadBatch(batch, &others)) {
+		const auto held = lp.goals.find(patch.key);
+		const bool seen = held != lp.goals.end() && held->second;
+		if (patch.kind == YouTubeGoal::MutationKind::Delete) {
+			if (held == lp.goals.end()) {
+				continue;
+			}
+			lp.goals.erase(held);
+		} else if (patch.kind == YouTubeGoal::MutationKind::Replace) {
+			lp.goals[patch.key] = true;
+		} else if (patch.kind == YouTubeGoal::MutationKind::Update) {
+			lp.goals.emplace(patch.key, false);
+		}
+		const std::string state = patch.state ? LoggedName(*patch.state) : std::string("-");
+		const bool unknownState = patch.state && std::string(YouTubeGoal::Phase(*patch.state)) == "unknown";
+		DBG(LogCat::Chat, "youtube innertube: dest=%s %s %s via %s state=%s%s current=%s total=%s%s",
+		    lp.cfg.destTag.c_str(), GoalTag(patch.key).c_str(), MutationName(patch.kind), via, state.c_str(),
+		    unknownState ? " (unrecognized state)" : "", CountText(patch.current).c_str(),
+		    CountText(patch.total).c_str(),
+		    patch.kind == YouTubeGoal::MutationKind::Update && !seen ? " (a goal this read never saw whole)"
+									     : "");
+		patches.push_back(std::move(patch));
+	}
+	for (const std::string &name : others) {
+		LogNameOnce(lp, "entity update carried", name, "not a goal");
+	}
+	if (patches.empty()) {
+		return;
+	}
+	if (lp.cb.emitGoals) {
+		lp.cb.emitGoals(patches);
+	}
+}
+
+void OnEntityUpdate(Loop &lp, const char *name, const json &action)
+{
+	EmitGoals(lp, Obj(action, "entityBatchUpdate"), name);
+}
+
+// The ticker chip YouTube shows above the chat for a goal. It carries no progress of its own --
+// the entity does -- so it is only checked against the goals this read has seen.
+void OnGoalTickerChip(Loop &lp, const char *, const json &action)
+{
+	const std::string key = Str(Obj(Obj(action, "creatorGoalTickerChip"), "liveChatTickerCreatorGoalViewModel"),
+				    "creatorGoalEntityKey");
+	DBG(LogCat::Chat, "youtube innertube: dest=%s goal ticker chip for %s (%s)", lp.cfg.destTag.c_str(),
+	    key.empty() ? "no entity key" : GoalTag(key).c_str(),
+	    key.empty()               ? "skipped"
+	    : lp.goals.count(key) > 0 ? "a goal this read holds"
+				      : "a goal entity this read has not seen");
+}
+
+// An action this read has no handler for, checked only for a goal-shaped name so a goal action
+// YouTube adds later shows up in the log instead of vanishing.
+void NoteUnhandledAction(Loop &lp, const json &action)
+{
+	if (!action.is_object()) {
+		return;
+	}
+	for (const auto &item : action.items()) {
+		const std::string &name = item.key();
+		if (name.find("reatorGoal") != std::string::npos) {
+			LogNameOnce(lp, "goal action", name, "no handler");
+		}
+	}
+}
+
 using ActionFn = void (*)(Loop &, const char *name, const json &action);
 
 // actions[] entry name -> handler. Dispatch is a table lookup, not a chain: an entry whose
@@ -662,6 +799,8 @@ const std::pair<const char *, ActionFn> kActions[] = {
 	{"removeBannerForLiveChatCommand", OnNothingToRender},
 	{"updateLiveChatPollAction", OnPollUpdate},
 	{"showLiveChatActionPanelAction", OnActionPanel},
+	{"entityUpdateCommand", OnEntityUpdate},
+	{"showCreatorGoalTickerChipCommand", OnGoalTickerChip},
 };
 
 void ProcessActions(Loop &lp, const json &actions)
@@ -695,12 +834,17 @@ void ProcessActions(Loop &lp, const json &actions)
 			}
 			continue;
 		}
+		bool handled = false;
 		for (const auto &entry : kActions) {
 			const json &payload = Obj(action, entry.first);
 			if (payload.is_object()) {
 				entry.second(lp, entry.first, payload);
+				handled = true;
 				break;
 			}
+		}
+		if (!handled) {
+			NoteUnhandledAction(lp, action);
 		}
 	}
 }
@@ -1267,6 +1411,7 @@ bool Run(const Config &cfg, const Callbacks &cb)
 
 		const NextContinuation next = ReadNextContinuation(liveChat);
 		ProcessActions(lp, Obj(liveChat, "actions"));
+		EmitGoals(lp, Obj(Obj(resp.body, "frameworkUpdates"), "entityBatchUpdate"), "frameworkUpdates");
 		reactions.OnResponse(resp.body);
 		const int items = lp.items;
 		if (lp.suppressed > 0) {

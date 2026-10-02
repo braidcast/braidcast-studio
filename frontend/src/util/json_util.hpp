@@ -1,8 +1,10 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_JSON_UTIL_HPP_
 #define OBS_MULTISTREAM_FRONTEND_JSON_UTIL_HPP_
 
+#include <cmath>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -84,6 +86,46 @@ inline int64_t NumLoose(const json &j, const char *key, int64_t fallback = 0)
 		}
 	}
 	return fallback;
+}
+
+// Read a non-negative count that a platform may serialize as a JSON number or as a
+// digit-only string (YouTube's 64-bit counters). Absent, negative, non-finite, out of
+// range, or a string with anything but digits -> nullopt: a count that cannot be read
+// must not render as zero. The strict sibling of NumLoose, which reads "12abc" as 12.
+inline std::optional<int64_t> Count(const json &j, const char *key)
+{
+	if (!j.is_object()) {
+		return std::nullopt;
+	}
+	auto it = j.find(key);
+	if (it == j.end()) {
+		return std::nullopt;
+	}
+	if (it->is_number_integer()) {
+		const int64_t value = it->get<int64_t>();
+		return value >= 0 ? std::optional<int64_t>(value) : std::nullopt;
+	}
+	if (it->is_number_float()) {
+		// Bounded before the cast: an out-of-range or non-finite double is undefined
+		// behaviour to convert, and no real count is anywhere near the limit.
+		const double value = it->get<double>();
+		constexpr double kMaxCount = 9.0e18;
+		return std::isfinite(value) && value >= 0 && value < kMaxCount
+			       ? std::optional<int64_t>(static_cast<int64_t>(value))
+			       : std::nullopt;
+	}
+	if (!it->is_string()) {
+		return std::nullopt;
+	}
+	const std::string &text = it->get_ref<const std::string &>();
+	if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
+		return std::nullopt;
+	}
+	try {
+		return static_cast<int64_t>(std::stoll(text));
+	} catch (const std::exception &) {
+		return std::nullopt;
+	}
 }
 
 // Read the first element of the array field at `key`: missing key, non-array, or
