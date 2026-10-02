@@ -32,12 +32,20 @@ bool IsOver(const YouTubeGoal::Goal &goal)
 	return std::strcmp(phase, "achieved") == 0 || std::strcmp(phase, "ended") == 0;
 }
 
+// A held goal whose grace ran out without a session adopting it.
+bool Expired(const std::optional<int64_t> &heldUntilMs, int64_t now)
+{
+	return heldUntilMs && *heldUntilMs <= now;
+}
+
 } // namespace
 
-uint64_t GoalRegistry::BeginSession()
+uint64_t GoalRegistry::BeginSession(const OAuth::DestinationId &dest)
 {
 	const std::lock_guard<std::mutex> lock(mutex_);
-	return nextSession_++;
+	const uint64_t token = nextSession_++;
+	sessions_.emplace(token, Session{dest});
+	return token;
 }
 
 json GoalRegistry::ToJson(const Entry &entry)
@@ -47,22 +55,32 @@ json GoalRegistry::ToJson(const Entry &entry)
 	out["platform"] = kPlatform;
 	out["accountId"] = entry.dest.accountId;
 	out["profileUuid"] = entry.dest.profileUuid;
-	out["updatedAtMs"] = entry.updatedAtMs;
 	out["endedAtMs"] = entry.endedAtMs ? json(*entry.endedAtMs) : json(nullptr);
+	out["heldUntilMs"] = entry.heldUntilMs ? json(*entry.heldUntilMs) : json(nullptr);
 	return out;
 }
 
-json GoalRegistry::ListLocked() const
+json GoalRegistry::ListLocked(int64_t now) const
 {
 	json rows = json::array();
 	for (const Entry &entry : goals_) {
-		rows.push_back(ToJson(entry));
+		if (!Expired(entry.heldUntilMs, now)) {
+			rows.push_back(ToJson(entry));
+		}
 	}
 	return json{{"goals", std::move(rows)}};
 }
 
-void GoalRegistry::Apply(const OAuth::DestinationId &dest, uint64_t session,
-			 const std::vector<YouTubeGoal::Patch> &patches)
+bool GoalRegistry::PurgeExpiredLocked(int64_t now)
+{
+	const auto first = std::remove_if(goals_.begin(), goals_.end(),
+					  [now](const Entry &e) { return Expired(e.heldUntilMs, now); });
+	const bool purged = first != goals_.end();
+	goals_.erase(first, goals_.end());
+	return purged;
+}
+
+void GoalRegistry::Apply(uint64_t session, const std::vector<YouTubeGoal::Patch> &patches)
 {
 	if (patches.empty()) {
 		return;
@@ -71,16 +89,37 @@ void GoalRegistry::Apply(const OAuth::DestinationId &dest, uint64_t session,
 	json list;
 	{
 		const std::lock_guard<std::mutex> lock(mutex_);
-		bool changed = false;
-		const int64_t now = TimeUtil::NowMs();
+		const auto live = sessions_.find(session);
+		if (live == sessions_.end() || live->second.retired) {
+			return;
+		}
+		const OAuth::DestinationId dest = live->second.dest;
+		const int64_t now = clock_();
+		bool changed = PurgeExpiredLocked(now);
+		const auto find = [this](const std::string &id) {
+			return std::find_if(goals_.begin(), goals_.end(), [&id](const Entry &e) { return e.id == id; });
+		};
+
+		// Each touched goal as it was before this response, so it is judged on the net change.
+		struct Before {
+			std::string id;
+			bool existed = false;
+			bool wasOver = false;
+			json goal;
+		};
+		std::vector<Before> touched;
 		for (const YouTubeGoal::Patch &patch : patches) {
 			const std::string id = GoalId(dest, patch.key);
-			auto it = std::find_if(goals_.begin(), goals_.end(),
-					       [&id](const Entry &e) { return e.id == id; });
+			auto it = find(id);
+			if (std::none_of(touched.begin(), touched.end(),
+					 [&id](const Before &b) { return b.id == id; })) {
+				const bool existed = it != goals_.end();
+				touched.push_back(Before{id, existed, existed && IsOver(it->goal),
+							 existed ? YouTubeGoal::ToJson(it->goal) : json()});
+			}
 			if (patch.kind == YouTubeGoal::MutationKind::Delete) {
 				if (it != goals_.end()) {
 					goals_.erase(it);
-					changed = true;
 				}
 				continue;
 			}
@@ -91,45 +130,89 @@ void GoalRegistry::Apply(const OAuth::DestinationId &dest, uint64_t session,
 				goals_.push_back(std::move(entry));
 				it = std::prev(goals_.end());
 			}
-			// Taking a goal over is not a visible change; only what the goal says is.
-			it->session = session;
-			const json before = YouTubeGoal::ToJson(it->goal);
-			const bool fresh = it->goal.key.empty();
 			YouTubeGoal::Apply(it->goal, patch);
-			if (!fresh && YouTubeGoal::ToJson(it->goal) == before) {
+		}
+
+		for (const Before &before : touched) {
+			const auto it = find(before.id);
+			if (it == goals_.end()) {
+				changed = changed || before.existed;
 				continue;
 			}
-			changed = true;
-			it->updatedAtMs = now;
-			if (!IsOver(it->goal)) {
+			const bool over = IsOver(it->goal);
+			if (!before.existed && over) {
+				goals_.erase(it); // a late join: when it finished cannot be told, so it is not shown
+				continue;
+			}
+			it->session = session;
+			if (it->heldUntilMs) {
+				it->heldUntilMs.reset(); // adopted from an ended session
+				changed = true;
+			}
+			if (!before.existed || YouTubeGoal::ToJson(it->goal) != before.goal) {
+				changed = true;
+			}
+			if (!over) {
 				it->endedAtMs.reset();
-			} else if (!it->endedAtMs) {
+			} else if (!before.wasOver) {
 				it->endedAtMs = now;
 			}
 		}
 		if (!changed) {
 			return;
 		}
-		list = ListLocked();
+		list = ListLocked(now);
 	}
 	sink_(list);
 }
 
-void GoalRegistry::EndSession(const OAuth::DestinationId &dest, uint64_t session)
+void GoalRegistry::EndSession(uint64_t session)
 {
 	const std::lock_guard<std::mutex> emitLock(emitMutex_);
 	json list;
 	{
 		const std::lock_guard<std::mutex> lock(mutex_);
-		const auto owned = [&dest, session](const Entry &e) {
-			return e.session == session && e.dest == dest;
+		if (sessions_.erase(session) == 0) {
+			return;
+		}
+		const int64_t now = clock_();
+		bool changed = PurgeExpiredLocked(now);
+		for (Entry &entry : goals_) {
+			if (entry.session == session) {
+				entry.session = 0;
+				entry.heldUntilMs = now + kHeldGraceMs;
+				changed = true;
+			}
+		}
+		if (!changed) {
+			return;
+		}
+		list = ListLocked(now);
+	}
+	sink_(list);
+}
+
+void GoalRegistry::Clear(const std::optional<OAuth::DestinationId> &dest)
+{
+	const std::lock_guard<std::mutex> emitLock(emitMutex_);
+	json list;
+	{
+		const std::lock_guard<std::mutex> lock(mutex_);
+		const auto matches = [&dest](const OAuth::DestinationId &d) {
+			return !dest || d == *dest;
 		};
-		const auto first = std::remove_if(goals_.begin(), goals_.end(), owned);
+		for (auto &live : sessions_) {
+			if (matches(live.second.dest)) {
+				live.second.retired = true;
+			}
+		}
+		const auto first = std::remove_if(goals_.begin(), goals_.end(),
+						  [&matches](const Entry &e) { return matches(e.dest); });
 		if (first == goals_.end()) {
 			return;
 		}
 		goals_.erase(first, goals_.end());
-		list = ListLocked();
+		list = ListLocked(clock_());
 	}
 	sink_(list);
 }
@@ -137,7 +220,7 @@ void GoalRegistry::EndSession(const OAuth::DestinationId &dest, uint64_t session
 json GoalRegistry::List() const
 {
 	const std::lock_guard<std::mutex> lock(mutex_);
-	return ListLocked();
+	return ListLocked(clock_());
 }
 
 GoalRegistry &Goals()

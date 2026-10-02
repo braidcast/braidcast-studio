@@ -708,17 +708,17 @@ bool RunInnerTube(ChatSession &s, std::string &err)
 	cb.emitPoll = [&s](const json &live) {
 		Polls().UpdateLive(s.ctx.dest, live);
 	};
-	// The creator goals this read shows belong to this read: only InnerTube carries them, so they
-	// go when it exits for any reason -- the transport stopping, the chat ending, or a handover
-	// to an official read that cannot see goals and would leave the row frozen. Scoped to this
-	// read's own session token, so a restarted chat that has already re-read a goal keeps it.
+	// The creator goals this read shows belong to this read's session: only InnerTube carries
+	// them, so the session ends when this read exits for any reason -- the transport stopping,
+	// the chat ending, or a handover to an official read that cannot see goals. Its goals are
+	// then held for GoalRegistry::kHeldGraceMs for a restarted read of the same destination to
+	// adopt; a stream that stopped has already cleared them (GoalRegistry::Clear).
 	struct GoalSession {
-		const OAuth::DestinationId dest;
-		const uint64_t token = Goals().BeginSession();
-		~GoalSession() { Goals().EndSession(dest, token); }
-	} goalSession{s.ctx.dest};
-	cb.emitGoals = [&s, &goalSession](const std::vector<YouTubeGoal::Patch> &patches) {
-		Goals().Apply(s.ctx.dest, goalSession.token, patches);
+		const uint64_t token;
+		~GoalSession() { Goals().EndSession(token); }
+	} goalSession{Goals().BeginSession(s.ctx.dest)};
+	cb.emitGoals = [&goalSession](const std::vector<YouTubeGoal::Patch> &patches) {
+		Goals().Apply(goalSession.token, patches);
 	};
 	cb.emitModeration = s.ctx.emitModeration;
 	// Reusing AnnounceOnce is what keeps this destination's live-chat refcount held for an

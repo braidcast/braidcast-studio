@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -580,6 +581,8 @@ struct Loop {
 	// partial update or a ticker chip naming any other key is logged as such, and a DELETE is a
 	// goal's only when it names one of these -- the entity framework deletes other entities too.
 	std::unordered_map<std::string, bool> goals;
+	// This response's goal mutations, in arrival order, handed over together by FlushGoals.
+	std::vector<YouTubeGoal::Patch> pendingGoals;
 	// Unrecognized entity and goal action names already logged, so each is logged once.
 	std::unordered_set<std::string> loggedNames;
 };
@@ -704,12 +707,14 @@ std::string CountText(const std::optional<int64_t> &count)
 }
 
 // Creator goals (the Super Chat / gift goal a creator starts in YouTube Studio), from an
-// entityBatchUpdate. Replay captures carry it as an entityUpdateCommand action; the live feed
-// may carry it there or in the response's frameworkUpdates, as it does the reactions, so both
-// are read and `via` says which delivered. Applied during a suppressed history batch as well:
-// a goal is state, and replaying its mutations in order lands on what it says now -- which is
-// how a goal started before this read connected still shows. Every mutation is logged, with
-// its state verbatim, so the first live stream with a goal confirms the shape.
+// entityBatchUpdate. Observed so far only in replay captures (yt-dlp's live_chat.json of three
+// ended streams, 2026-10-02), which carry each mutation as an entityUpdateCommand action at the
+// moment it happened. The live /next and get_live_chat responses have not yet been seen with a
+// goal; their frameworkUpdates are read too because the reactions arrive there, and `via` says
+// which delivered, so the first live stream with a goal settles where it comes from and whether
+// a read that connects mid-goal is sent it. Read during a suppressed history batch as well,
+// since a goal is state rather than a message. Every mutation is logged, with its state
+// verbatim. Queued on `lp.pendingGoals`; FlushGoals hands a response's worth over at once.
 void EmitGoals(Loop &lp, const json &batch, const char *via)
 {
 	std::vector<std::string> others;
@@ -740,12 +745,21 @@ void EmitGoals(Loop &lp, const json &batch, const char *via)
 	for (const std::string &name : others) {
 		LogNameOnce(lp, "entity update carried", name, "not a goal");
 	}
-	if (patches.empty()) {
+	std::move(patches.begin(), patches.end(), std::back_inserter(lp.pendingGoals));
+}
+
+// One response's goal mutations, together, so the registry judges their net effect: a history
+// batch replaying a goal from its creation lands on where it is now instead of stepping through
+// every state it passed.
+void FlushGoals(Loop &lp)
+{
+	if (lp.pendingGoals.empty()) {
 		return;
 	}
 	if (lp.cb.emitGoals) {
-		lp.cb.emitGoals(patches);
+		lp.cb.emitGoals(lp.pendingGoals);
 	}
+	lp.pendingGoals.clear();
 }
 
 void OnEntityUpdate(Loop &lp, const char *name, const json &action)
@@ -878,12 +892,15 @@ std::string LiveChatFilterFrom(const json &node)
 // Taking the watch-next selector here to save that round trip does not work -- its tokens are
 // 32-char filter-choice decoys and get_live_chat rejects every one with HTTP 400, which cost
 // three strikes and silently handed all chat back to the metered official read.
-// "" when the video has no live chat.
+// "" when the video has no live chat. Once a token resolves, the response's own goal entities
+// are read as well (see EmitGoals).
 //
 // `canceled` is an out-param rather than a return value because "" already means "no live
 // chat here", and the caller must not spend its bootstrap attempts on a canceled read.
-std::string Bootstrap(const Config &cfg, const Callbacks &cb, bool &canceled)
+std::string Bootstrap(Loop &lp, bool &canceled)
 {
+	const Config &cfg = lp.cfg;
+	const Callbacks &cb = lp.cb;
 	const InnerTube::Result resp = InnerTube::Post(kNextUrl, json{{"videoId", cfg.videoId}}, cb.canceled);
 	if (resp.canceled) {
 		canceled = true;
@@ -906,6 +923,10 @@ std::string Bootstrap(const Config &cfg, const Callbacks &cb, bool &canceled)
 	const std::string token = Str(Obj(continuations[0], "reloadContinuationData"), "continuation");
 	DBG(LogCat::Chat, "youtube innertube: dest=%s bootstrap resolved a reload continuation (%zu bytes)",
 	    cfg.destTag.c_str(), token.size());
+	if (!token.empty()) {
+		EmitGoals(lp, Obj(Obj(resp.body, "frameworkUpdates"), "entityBatchUpdate"), "next");
+		FlushGoals(lp);
+	}
 	return token;
 }
 
@@ -1332,7 +1353,7 @@ bool Run(const Config &cfg, const Callbacks &cb)
 	std::string token;
 	for (int attempt = 1; attempt <= kBootstrapAttempts; ++attempt) {
 		bool canceled = false;
-		token = Bootstrap(cfg, cb, canceled);
+		token = Bootstrap(lp, canceled);
 		if (canceled) {
 			return false;
 		}
@@ -1412,6 +1433,7 @@ bool Run(const Config &cfg, const Callbacks &cb)
 		const NextContinuation next = ReadNextContinuation(liveChat);
 		ProcessActions(lp, Obj(liveChat, "actions"));
 		EmitGoals(lp, Obj(Obj(resp.body, "frameworkUpdates"), "entityBatchUpdate"), "frameworkUpdates");
+		FlushGoals(lp);
 		reactions.OnResponse(resp.body);
 		const int items = lp.items;
 		if (lp.suppressed > 0) {

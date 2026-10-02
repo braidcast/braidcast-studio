@@ -1796,6 +1796,7 @@ bool ObsBootstrap::Start()
 			// destination that was switched off deliberately. Per-destination rather than
 			// a hub re-Start so the account's sibling orientations keep their transports.
 			Bridge::FinishPolls(dest); // before the transport it ends the poll with stops
+			Chat::Goals().Clear(dest); // gone with the output, not held for a chat restart
 			Chat::Hub().StopDestination(dest);
 
 			// How this destination finished, onto its session row. Idempotent
@@ -2425,9 +2426,11 @@ void ObsBootstrap::RunSettingsSelfTest()
 
 	// 6b1) YouTube creator goals, offline, on excerpts of three replay captures (2026-10-02; keys
 	// and descriptions replaced, unread fields dropped). The first mutation is a whole REPLACE,
-	// later ones are partial UPDATEs that merge, a second goal in one broadcast REPLACEs the first
-	// under the same key, and the registry keys by destination and hands a goal to a restarted
-	// read without a duplicate row or an early removal.
+	// later ones are partial UPDATEs that merge, and a second goal in one broadcast REPLACEs the
+	// first under the same key. The registry keys by destination, judges a response by its net
+	// change, hides a goal first seen already over, holds an ended session's goals for the next
+	// session to adopt -- whichever of the two sessions ends first -- and drops them when the
+	// grace runs out or the stream stops.
 	{
 		const json created = json::parse(R"({"mutations":[{"entityKey":"goal-A",
 			"type":"ENTITY_MUTATION_TYPE_REPLACE","payload":{"creatorGoalEntity":{"key":"goal-A",
@@ -2504,44 +2507,93 @@ void ObsBootstrap::RunSettingsSelfTest()
 			partialJson["total"].is_null() && partialJson["description"] == "" &&
 			YouTubeGoal::ReadBatch(json::object()).empty() && YouTubeGoal::ReadBatch(json("junk")).empty();
 
-		// The registry, on its own sink so these goals never reach the dock.
+		// The registry, on its own sink and clock so these goals never reach the dock and the
+		// grace passes without a sleep.
 		int emits = 0;
 		json last;
-		Chat::GoalRegistry registry([&emits, &last](const json &list) {
-			++emits;
-			last = list;
-		});
+		int64_t clockMs = 1000;
+		Chat::GoalRegistry registry(
+			[&emits, &last](const json &list) {
+				++emits;
+				last = list;
+			},
+			[&clockMs] { return clockMs; });
 		const OAuth::DestinationId destA{"youtube:UCa", "profile-a"};
 		const OAuth::DestinationId destB{"youtube:UCa", "profile-b"};
 		const auto count = [&registry] {
 			return registry.List()["goals"].size();
 		};
-		const uint64_t s1 = registry.BeginSession();
-		registry.Apply(destA, s1, YouTubeGoal::ReadBatch(created));
-		registry.Apply(destA, s1, YouTubeGoal::ReadBatch(created)); // repeated unchanged: no emit
-		const int emitsAfterRepeat = emits;
-		registry.Apply(destA, s1,
-			       YouTubeGoal::ReadBatch(update("CREATOR_GOAL_STATE_COMPLETE", "15", "Goal achieved")));
-		const bool endedStamped = !registry.List()["goals"][0]["endedAtMs"].is_null();
-		// A restart whose new read re-reads the goal before the old read finishes unwinding.
-		const uint64_t s2 = registry.BeginSession();
-		registry.Apply(destA, s2, YouTubeGoal::ReadBatch(created));
-		const bool reopened = registry.List()["goals"][0]["endedAtMs"].is_null();
-		registry.EndSession(destA, s1);
-		const size_t afterOldEnd = count();
-		const uint64_t s3 = registry.BeginSession();
-		registry.Apply(destB, s3, YouTubeGoal::ReadBatch(created)); // same key, another broadcast
-		const size_t twoDests = count();
-		registry.EndSession(destA, s2);
-		const size_t afterNewEnd = count();
-		const std::string remaining = JsonUtil::Str(last["goals"][0], "id");
-		registry.Apply(destB, s3, mixed);
-		const size_t afterDelete = count();
+		const auto firstGoal = [&registry] {
+			const json goals = registry.List()["goals"];
+			return goals.empty() ? json::object() : goals[0];
+		};
+		// One chat response's mutations, as InnerTube hands them over.
+		const auto response = [](std::initializer_list<json> batches) {
+			std::vector<YouTubeGoal::Patch> out;
+			for (const json &batch : batches) {
+				for (YouTubeGoal::Patch &patch : YouTubeGoal::ReadBatch(batch)) {
+					out.push_back(std::move(patch));
+				}
+			}
+			return out;
+		};
+		const json progress3 = update("CREATOR_GOAL_STATE_ACTIVE", "3", "Goal in progress");
+		const json complete = update("CREATOR_GOAL_STATE_COMPLETE", "15", "Goal achieved");
 
-		const bool okRegistry = emitsAfterRepeat == 1 && endedStamped && reopened && afterOldEnd == 1 &&
-					twoDests == 2 && afterNewEnd == 1 &&
-					remaining == "youtube:UCa@profile-b|goal-A" && afterDelete == 0 && emits == 6 &&
-					s1 != 0 && s1 != s2 && s2 != s3;
+		const uint64_t s1 = registry.BeginSession(destA);
+		registry.Apply(s1, response({created}));
+		registry.Apply(s1, response({created})); // repeated unchanged: no emit
+		const int emitsAfterRepeat = emits;
+		// Old read ends first: the goal is held, then the new read's partial UPDATE adopts it and
+		// merges into the held description and total.
+		registry.EndSession(s1);
+		const bool held = firstGoal()["heldUntilMs"] == 1000 + Chat::GoalRegistry::kHeldGraceMs;
+		clockMs = 5000;
+		const uint64_t s2 = registry.BeginSession(destA);
+		registry.Apply(s2, response({progress3}));
+		const json adopted = firstGoal();
+		const bool okAdopted = adopted["heldUntilMs"].is_null() && adopted["current"] == 3 &&
+				       adopted["total"] == 15 &&
+				       adopted["description"] == "Send gifts for a jumpscare" && count() == 1;
+		// New read first: its history replay lands on the state already shown (no emit) and takes
+		// the goal over, so the old read's late end holds nothing.
+		const uint64_t s3 = registry.BeginSession(destA);
+		registry.Apply(s3, response({created, progress3}));
+		registry.EndSession(s2);
+		const bool okNewFirst = emits == 3 && count() == 1 && firstGoal()["heldUntilMs"].is_null();
+		// Finishing stamps endedAtMs once; a replay that ends on it changes nothing.
+		registry.Apply(s3, response({complete}));
+		const bool stamped = firstGoal()["endedAtMs"] == 5000;
+		clockMs = 8000;
+		registry.Apply(s3, response({created, progress3, complete}));
+		const bool okReplay = stamped && emits == 4 && firstGoal()["endedAtMs"] == 5000;
+		// Nothing adopts it: gone once the grace runs out.
+		registry.EndSession(s3);
+		clockMs = 8000 + Chat::GoalRegistry::kHeldGraceMs;
+		const size_t afterGrace = count();
+		// A late join to a goal already over shows nothing (the expired one is purged here too).
+		const uint64_t s4 = registry.BeginSession(destA);
+		registry.Apply(s4, response({created, complete}));
+		const bool okLateJoin = count() == 0 && last["goals"].empty();
+		// Same key on another destination is another goal; the stream stopping on one clears it
+		// at once and ignores what its still-unwinding read reports after.
+		const uint64_t s5 = registry.BeginSession(destB);
+		registry.Apply(s5, response({created}));
+		registry.Apply(s4, response({created}));
+		const size_t twoDests = count();
+		registry.Clear(destA);
+		registry.Apply(s4, response({created}));
+		registry.EndSession(s4);
+		const size_t afterClear = count();
+		const std::string remaining = JsonUtil::Str(firstGoal(), "id");
+		registry.Apply(s5, mixed);
+		const size_t afterDelete = count();
+		registry.Clear(std::nullopt); // nothing left: no emit
+
+		const bool okRegistry = emitsAfterRepeat == 1 && held && okAdopted && okNewFirst && okReplay &&
+					afterGrace == 0 && okLateJoin && twoDests == 2 && afterClear == 1 &&
+					remaining == "youtube:UCa@profile-b|goal-A" && afterDelete == 0 &&
+					emits == 10 && s1 != 0 && s1 != s2 && s2 != s3;
 		HostLog(std::string("[selftest] youtube-goal -> ") + (okParse && okRegistry ? "OK" : "MISMATCH"));
 		if (!okParse || !okRegistry) {
 			HostLog("[selftest] youtube-goal parse=" + std::to_string(okParse) +

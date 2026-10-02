@@ -11982,6 +11982,8 @@ void StopStreamingAll()
 		Chat::Viewers().Stop();
 		// Before the hub stops: this captures each running poll's transport to end it with.
 		FinishPolls(std::nullopt);
+		// Gone with the stream rather than held for a chat restart that is not coming.
+		Chat::Goals().Clear(std::nullopt);
 		Chat::Hub().Stop();
 		for (const auto &entry : OAuth::Accounts().All()) {
 			OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
