@@ -1796,8 +1796,9 @@ bool ObsBootstrap::Start()
 			// destination that was switched off deliberately. Per-destination rather than
 			// a hub re-Start so the account's sibling orientations keep their transports.
 			Bridge::FinishPolls(dest); // before the transport it ends the poll with stops
-			Chat::Goals().Clear(dest); // gone with the output, not held for a chat restart
 			Chat::Hub().StopDestination(dest);
+			// After the stop, so no read that began before it can add a goal back.
+			Chat::Goals().Clear(dest); // gone with the output, not held for a chat restart
 
 			// How this destination finished, onto its session row. Idempotent
 			// by contract: a deliberate stop whose stop signal also fires

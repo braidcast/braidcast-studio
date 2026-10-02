@@ -36,8 +36,9 @@
 // Each Apply is one chat response's mutations, judged by their net effect: a history replay
 // that lands on the state already held emits nothing, `endedAtMs` is stamped only when a goal
 // moves from active to over, and a goal first seen already over (a late join) is not shown at
-// all -- the entity carries no finish time, only its creation (serverTimestampMs, REPLACE only),
-// so how long ago it finished cannot be told.
+// all -- the entity carries no finish or creation time (endTimestampMs is "0", and
+// serverTimestampMs is when YouTube served the response), so how long ago it finished cannot
+// be told.
 //
 // Mutex-guarded because each destination's chat read runs on its own worker thread while
 // goals.list runs on the UI thread. Every change pushes `goals.changed` with the full
