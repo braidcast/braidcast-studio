@@ -66,12 +66,13 @@ function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
     "performance",
     "setTimeout",
     "clearTimeout",
-    SOURCE + "\n;return { queue: () => queue, current: () => current, fillSummary, TYPES };",
+    SOURCE + "\n;return { queue: () => queue, current: () => current, fillSummary, fillCard, TYPES };",
   );
   const box = run(document, overlay, { now: () => now }, () => 0, () => {}) as {
     queue: () => Burst[];
     current: () => Burst | null;
     fillSummary: (el: unknown, b: Burst) => void;
+    fillCard: (el: unknown, e: unknown) => void;
     TYPES: Record<string, { msg?: string; group?: string; alone?: string }>;
   };
   let seq = 0;
@@ -111,6 +112,28 @@ function summaries(fields: Record<string, unknown>) {
   };
   return { overflow: fill(a.box.queue().at(-1)!), burst: fill(burst) };
 }
+
+// The name and message lines fillCard writes for one event.
+function cardLines(e: Record<string, unknown>, fields: Record<string, unknown> = DEFAULT_FIELDS) {
+  const name = { textContent: "" };
+  const msg = { textContent: "" };
+  const el = { dataset: {}, querySelector: (sel: string) => (sel === ".alert-name" ? name : msg) };
+  alertbox(fields).box.fillCard(el, e);
+  return { name: name.textContent, msg: msg.textContent };
+}
+
+describe("alertbox follow wording", () => {
+  test("a YouTube follow says subscribed; Twitch and Kick say followed", () => {
+    expect(cardLines({ type: "follow", platform: "youtube", actorName: "Ann" }).msg).toBe("just subscribed!");
+    expect(cardLines({ type: "follow", platform: "twitch", actorName: "Ann" }).msg).toBe("just followed!");
+    expect(cardLines({ type: "follow", platform: "kick", actorName: "Ann" }).msg).toBe("just followed!");
+  });
+
+  test("a fork without the YouTube field falls back to the follow message", () => {
+    const { msgSubscribeYouTube: _, ...forked } = DEFAULT_FIELDS;
+    expect(cardLines({ type: "follow", platform: "youtube", actorName: "Ann" }, forked).msg).toBe("just followed!");
+  });
+});
 
 describe("alertbox queue", () => {
   test("a follow bot outside the burst window cannot build a backlog", () => {

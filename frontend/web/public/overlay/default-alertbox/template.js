@@ -5,6 +5,7 @@ const cardTpl = document.getElementById("alert-card");
 
 // Event type -> how the deck treats it (registry map, not a switch: a new type is one entry).
 //   msg    the field key holding its message template; an unlisted type gets a generic line.
+//   platformMsg  per-platform override of `msg` (the platform names the act differently).
 //   group  the burst group it stacks with; without one, a type is a group of its own.
 //   alone  plays alone, whole, with its own sound -- it never joins a burst and none joins
 //          it. The value is the field key naming what its overflow card counts: that card
@@ -12,7 +13,7 @@ const cardTpl = document.getElementById("alert-card");
 //          every tip (cheers, Super Chats, Super Stickers, Kicks), so whoever paid sees their
 //          own name and message, and a raid.
 const TYPES = {
-  follow: { msg: "msgFollow" },
+  follow: { msg: "msgFollow", platformMsg: { youtube: "msgSubscribeYouTube" } },
   sub: { msg: "msgSub", group: "subs" },
   resub: { msg: "msgSub", group: "subs" },
   subgift: { msg: "msgSub", group: "subs" },
@@ -328,8 +329,9 @@ function layout(b) {
 }
 
 function fillCard(el, e) {
-  const key = own(TYPES, e.type)?.msg;
-  const tmpl = (key && fields[key]) || "{name}";
+  const t = own(TYPES, e.type);
+  const platformKey = own(t?.platformMsg ?? {}, e.platform);
+  const tmpl = (platformKey && fields[platformKey]) || (t?.msg && fields[t.msg]) || "{name}";
   // The strip has to remove exactly what render() substituted for {name}, fallback
   // included -- otherwise an unnamed actor shows as "Someone Someone just followed!".
   const shownName = actorLabel(e);

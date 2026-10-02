@@ -15,7 +15,7 @@
     "label": "Event Type",
     "default": "follower",
     "options": [
-      { "value": "follower", "label": "Follower" },
+      { "value": "follower", "label": "Follower / YouTube subscriber" },
       { "value": "subscriber", "label": "Subscriber" },
       { "value": "giftedsub", "label": "Gifted Sub" },
       { "value": "cheer", "label": "Cheer" },

@@ -5,6 +5,7 @@
   import { fmtMoney, fmtTally } from "$lib/utils/format";
   import Button from "$lib/ui/Button.svelte";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
+  import { followVerb, eventTypeLabel } from "$lib/docks/events/eventWording";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
@@ -55,17 +56,8 @@
   // One-line action summary per type (excludes `message`, which is bound
   // separately so it renders as escaped text). Registry map, not a switch, so a
   // new type is a single entry. Unknown types fall back to the type label.
-  // A YouTube subscribe normalizes to `follow` (youtube_events.cpp:188) because it is
-  // the free channel follow, not the paid membership -- but the platforms NAME that act
-  // differently, and a YouTube row reading "followed" describes something the viewer
-  // never did. Overrides only: "followed" is the default, so a new platform needs an
-  // entry here only where it disagrees.
-  const FOLLOW_VERB: Partial<Record<NormalizedEvent["platform"], string>> = {
-    youtube: "subscribed",
-  };
-
   const SUMMARY: Record<EventType, (e: NormalizedEvent) => string> = {
-    follow: (e) => FOLLOW_VERB[e.platform] ?? "followed",
+    follow: (e) => followVerb(e.platform),
     sub: (e) => "subscribed" + (e.tier ? ` · ${e.tier}` : ""),
     resub: (e) => "resubscribed" + (e.months ? ` · ${e.months} months` : ""),
     subgift: (e) => {
@@ -474,7 +466,7 @@
             <div class="body">
               <div class="line">
                 <span class="pmark"><PlatformMark platform={e.platform} size={12} /></span>
-                <span class="icon" style:color={accent} title={TYPE_LABEL[e.type] ?? e.type}
+                <span class="icon" style:color={accent} title={eventTypeLabel(e.type, e.platform)}
                   >{@render typeIcon(e.type)}</span
                 >
                 <span class="actor" style:color={actorColor}>{e.actorName}</span>
