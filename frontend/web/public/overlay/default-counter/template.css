@@ -1,0 +1,85 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 24;
+  --ov-text: #ffffff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  --ov-align: left;
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
+  /* The count-up and the rolling digits share one duration and curve, so the two read as the
+     same motion; template.js reads the duration for its count-up. */
+  --ov-roll-ms: 600;
+  --ov-roll-ease: cubic-bezier(0.33, 1, 0.68, 1);
+}
+/* Scale knob. Every length below is rem, so this one value carries the whole widget and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the bar is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   3.375 is the bar's own height: 0.75rem of padding top and bottom around a 1.875rem line
+   (1.5rem of text at line-height 1.25). 25 is its design width, which holds a format like
+   "YouTube subs today: 1,234" at the default size, so the line only shrinks once the
+   rectangle is too narrow to hold it.
+   Both terms give 16 at 400x54 px. Height binds on any bar more than 7.4 times as wide as
+   it is tall (25 / 3.375), so a taller bar draws a bigger number rather than empty band. */
+html { font-size: min(100vw / 25, 100vh / 3.375); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.counter {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 0.75rem 1.125rem;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: calc(var(--ov-size) * var(--ov-px));
+  line-height: 1.25;
+  font-weight: 600;
+  text-align: var(--ov-align);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Nothing to show yet -- the host's count has not arrived -- so the background must not
+   print an empty bar over the scene either. */
+.counter[hidden] {
+  display: none;
+}
+
+/* inline-block so a pop's scale has a box to transform; tabular figures so a count-up does
+   not jitter the text around it as digits change width. */
+.num {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  transform-origin: 50% 60%;
+}
+
+/* Rolling digits: each digit is a column of 0-9 clipped to one line and slid with a
+   transform, so the roll never triggers layout. */
+.odo-col {
+  display: inline-block;
+  height: 1.25em;
+  overflow: hidden;
+  vertical-align: top;
+}
+.odo-strip {
+  display: block;
+  transition: transform calc(var(--ov-roll-ms) * 1ms) var(--ov-roll-ease);
+}
+.odo-strip > span {
+  display: block;
+  height: 1.25em;
+}
+/* A seed or a reset lands at once; the class is lifted again after the jump. */
+.num.instant .odo-strip {
+  transition: none;
+}

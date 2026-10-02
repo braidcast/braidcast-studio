@@ -20,6 +20,7 @@
 #include "../obs_bootstrap.hpp"
 #include "util/file_util.hpp"
 #include "util/selftest_paths.hpp"
+#include "../events/event_store.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
@@ -146,6 +147,66 @@ bool PumpUntil(SOCKET s, std::string &acc, const std::function<void()> &push,
 		}
 	}
 	return arrived(acc);
+}
+
+// Open `path` as an SSE client and read what the server sends on connect until `arrived`
+// accepts it. Returns everything read, headers included; empty when the dial failed.
+std::string ConnectSse(int port, const std::string &path, const std::function<bool(const std::string &)> &arrived)
+{
+	SOCKET s = DialLoopback(port);
+	if (s == INVALID_SOCKET) {
+		return std::string();
+	}
+	WriteAll(s, "GET " + path + " HTTP/1.1\r\nHost: x\r\n\r\n");
+	std::string acc = RecvHeaders(s);
+	const DWORD rtoMs = 100;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+	PumpUntil(s, acc, nullptr, arrived);
+	closesocket(s);
+	return acc;
+}
+
+// TallyBody against an in-memory store, so the window rule and the slimming are checked
+// on events this test chose rather than on whatever the user's history holds.
+bool TallyBodySelectsTheWindow()
+{
+	Events::EventStore store{Events::EventStore::InMemory{}};
+	const auto add = [&store](const char *id, int64_t ts, int count) {
+		Events::NormalizedEvent e;
+		e.id = id;
+		e.platform = "twitch";
+		e.type = "subgift";
+		e.ts = ts;
+		e.count = count;
+		e.actorName = "selftest-tally-name";
+		e.message = "selftest-tally-message";
+		store.Add(e);
+	};
+	add("tally-before", 999, 1);
+	add("tally-start", 1000, 5);
+	add("tally-end", 2000, 0);
+	add("tally-after", 2001, 1);
+
+	const Overlay::json closed = Overlay::TallyBody(store, 1000, 2000, false);
+	const std::string dump = closed.dump();
+	const Overlay::json &events = closed["events"];
+	const bool closedOk = events.is_array() && events.size() == 2 && events[0]["id"] == "tally-start" &&
+			      events[0]["count"] == 5 && events[1]["id"] == "tally-end" &&
+			      !events[1].contains("count") && closed["since"] == 1000 && closed["until"] == 2000 &&
+			      closed["live"] == false && dump.find("selftest-tally-name") == std::string::npos &&
+			      dump.find("selftest-tally-message") == std::string::npos;
+
+	const Overlay::json open = Overlay::TallyBody(store, 1000, 0, true);
+	const bool openOk = open["events"].size() == 3 && open["until"].is_null() && open["live"] == true;
+
+	const Overlay::json none = Overlay::TallyBody(store, 0, 0, false);
+	const bool noneOk = none["since"].is_null() && none["until"].is_null() && none["events"].empty();
+
+	const bool ok = closedOk && openOk && noneOk;
+	HostLog(std::string("[selftest] overlay tally window -> ") + (ok ? "OK" : "MISMATCH") +
+		" (closed=" + (closedOk ? "ok" : "bad") + " open=" + (openOk ? "ok" : "bad") +
+		" none=" + (noneOk ? "ok" : "bad") + ")");
+	return ok;
 }
 
 // FileUtil::WriteBinaryFileAtomic, the write behind AddAsset, against a target another
@@ -497,15 +558,69 @@ void ObsBootstrap::RunOverlaySelfTest()
 			// happened, a replayed moderation op or event redaction names what a fresh page
 			// never drew, and a replayed viewer count would assert an audience that may no
 			// longer be watching.
+			// The tally is a counting type's alone: every other page would only discard it.
 			replayScopeOk = acc.find("event: chat") == std::string::npos &&
 					acc.find("event: moderation") == std::string::npos &&
 					acc.find("event: eventredaction") == std::string::npos &&
-					acc.find("event: viewers") == std::string::npos;
+					acc.find("event: viewers") == std::string::npos &&
+					acc.find("event: tally") == std::string::npos;
 			closesocket(fresh);
 		}
 	}
 	HostLog(std::string("[selftest] overlay replay on connect -> ") + (replayOk ? "OK" : "MISMATCH"));
 	HostLog(std::string("[selftest] overlay replay scope -> ") + (noWindowOk && replayScopeOk ? "OK" : "MISMATCH"));
+
+	// 5b) The counter's tally on connect, over the SAME token gate as every /w/ route: a
+	// counting widget gets the live broadcast's window, then -- once the broadcast ends --
+	// the finished one's, closed, so a reload off air keeps the count; a wrong token gets
+	// 403 and no frame at all.
+	const bool tallyBodyOk = TallyBodySelectsTheWindow();
+	bool tallyLiveOk = false;
+	bool tallyEndedOk = false;
+	bool tallyAuthOk = false;
+	{
+		Overlay::Widget counter;
+		counter.id = "selftest-counter";
+		counter.token = "selftesttoken3";
+		counter.name = "selftest counter";
+		counter.type = "counter";
+		Overlay::Store().InjectForTest(counter);
+
+		const std::string kPath = "/w/selftest-counter/events?t=selftesttoken3";
+		const std::string since = "\"since\":" + std::to_string(liveSinceMs);
+		const std::string live = ConnectSse(port, kPath, [&](const std::string &a) {
+			return NamedFrameArrived(a, "tally", since);
+		});
+		tallyLiveOk = NamedFrameArrived(live, "tally", since) &&
+			      NamedFrameArrived(live, "tally", "\"live\":true") &&
+			      NamedFrameArrived(live, "tally", "\"until\":null");
+
+		Overlay::json ended = Overlay::json::object();
+		ended["active"] = false;
+		ended["startedAt"] = nullptr;
+		ended["destinations"] = Overlay::json::array();
+		server.BroadcastStreamState(ended);
+		const std::string after = ConnectSse(port, kPath, [&](const std::string &a) {
+			return NamedFrameArrived(a, "tally", since);
+		});
+		tallyEndedOk = NamedFrameArrived(after, "tally", since) &&
+			       NamedFrameArrived(after, "tally", "\"live\":false") &&
+			       !NamedFrameArrived(after, "tally", "\"until\":null") &&
+			       after.find("event: backfill") == std::string::npos;
+
+		SOCKET bad = DialLoopback(port);
+		if (bad != INVALID_SOCKET) {
+			WriteAll(bad, "GET /w/selftest-counter/events?t=wrong HTTP/1.1\r\nHost: x\r\n\r\n");
+			const std::string resp = RecvUntilClose(bad);
+			tallyAuthOk = StatusOf(resp) == 403 && resp.find("event: tally") == std::string::npos;
+			closesocket(bad);
+		}
+		Overlay::Store().RemoveForTest("selftest-counter");
+	}
+	const bool tallyOk = tallyBodyOk && tallyLiveOk && tallyEndedOk && tallyAuthOk;
+	HostLog(std::string("[selftest] overlay tally on connect -> ") + (tallyOk ? "OK" : "MISMATCH") +
+		" (live=" + (tallyLiveOk ? "ok" : "bad") + " ended=" + (tallyEndedOk ? "ok" : "bad") +
+		" auth=" + (tallyAuthOk ? "ok" : "bad") + ")");
 
 	// 6) Wrong token -> 403.
 	bool authOk = false;
@@ -533,7 +648,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// on nothing arriving, so it neither sleeps nor passes by timing out.
 	//
 	// This is the invariant the acceptsReplay column in overlay_template.cpp encodes, and
-	// the one most likely to rot: a twelfth type added with no row -- or with a row that
+	// the one most likely to rot: a thirteenth type added with no row -- or with a row that
 	// leaves the column off -- changes what this step sees.
 	bool replayGateOk = false;
 	{
@@ -693,9 +808,9 @@ void ObsBootstrap::RunOverlaySelfTest()
 	Overlay::Store().RemoveForTest("selftest-widget");
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
-	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk &&
-	    replayGateOk && stockOk && sizesOk && atomicWriteOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/gate/auth/stock/sizes/atomic-write OK");
+	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && tallyOk &&
+	    authOk && replayGateOk && stockOk && sizesOk && atomicWriteOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/tally/gate/auth/stock/sizes/atomic-write OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

@@ -15099,7 +15099,7 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 	// its own rectangle, so a source created at the canvas instead draws a bar meant to be
 	// 54 px tall at fifteen times its type. The canvas base stays the fallback for a type
 	// the table does not know: the wrong scale, but at least on screen. No shipped type
-	// reaches it -- the table answers for all eleven -- and a twelfth added without a row
+	// reaches it -- the table answers for all twelve -- and a thirteenth added without a row
 	// fails the overlay self-test, which runs Overlay::TypesMissingNaturalSize against the
 	// staged rundir and whose verdict line the packaged smoke run treats as a crash.
 	uint32_t srcW = 1920;

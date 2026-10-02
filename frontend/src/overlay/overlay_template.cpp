@@ -48,16 +48,16 @@ std::string TemplateRoot()
 // not: a belt is height-bound, so widening one costs a streamer nothing and they stretch it
 // to whatever they want, whereas a 1920-wide row here would make the editor's preview --
 // which fits this rectangle into its pane -- draw 20-design-px type at six device px. 640
-// keeps it in the same proportion to its width term as the other ten.
+// keeps it in the same proportion to its width term as the other eleven.
 //
 // `replay` rides along as a second column because this table is the only registry of widget
 // types that exists in C++, and the rule it encodes -- whether the type accepts a REPLAYED
 // event (events.replay) -- has to be STATED per type rather than inferred from anything
-// else here. Only the alert box takes one: of the four templates that implement onEvent at
-// all, the other three accumulate (a goal's total, the labels' last-of-each, the recent-
-// events belt), and a replay must not be countable as a second real occurrence on stream;
-// the remaining seven never look at an event. Forking does not change a widget's `type`, so
-// a fork follows its type's row like any other widget of it.
+// else here. Only the alert box takes one: of the five templates that read events at all,
+// the other four accumulate (a goal's total, the labels' last-of-each, the recent-events
+// belt, the counter's session count), and a replay must not be countable as a second real
+// occurrence on stream; the remaining seven never look at an event. Forking does not change
+// a widget's `type`, so a fork follows its type's row like any other widget of it.
 //
 // False is the answer for a type with no row AND for a row that forgets the column (it
 // value-initializes), and that is deliberate: an absent type is a document from a newer
@@ -71,6 +71,10 @@ std::string TemplateRoot()
 // Plays is the enum's zero, so a row that leaves the column off stays in the mixer: a silent
 // type wrongly kept there costs a mixer row, while a sound-playing type wrongly marked silent
 // would drop its sound off the stream without a word.
+//
+// `tally` is the fourth (CountsEvents): whether a type is sent the `tally` frame on connect.
+// Only the counter is. A row that leaves it off value-initializes to false, which is right
+// for every type that does not count events.
 enum class PageAudio { Plays, Silent };
 
 struct TypeRow {
@@ -79,6 +83,7 @@ struct TypeRow {
 	uint32_t h;
 	bool replay;
 	PageAudio audio;
+	bool tally;
 };
 
 constexpr PageAudio kPlays = PageAudio::Plays;
@@ -87,10 +92,10 @@ constexpr PageAudio kSilent = PageAudio::Silent;
 constexpr TypeRow kTypeRows[] = {
 	{"alertbox", 600, 400, true, kPlays},          {"chatbox", 400, 480, false, kSilent},
 	{"chatleaderboard", 340, 191, false, kSilent}, {"countdown", 300, 54, false, kSilent},
-	{"followercount", 640, 58, false, kSilent},    {"goalbar", 600, 76, false, kSilent},
-	{"labels", 600, 54, false, kSilent},           {"ticker", 640, 24, false, kSilent},
-	{"uptime", 300, 54, false, kSilent},           {"viewercount", 400, 58, false, kSilent},
-	{"wheretowatch", 320, 174, false, kSilent},
+	{"counter", 400, 54, false, kSilent, true},    {"followercount", 640, 58, false, kSilent},
+	{"goalbar", 600, 76, false, kSilent},          {"labels", 600, 54, false, kSilent},
+	{"ticker", 640, 24, false, kSilent},           {"uptime", 300, 54, false, kSilent},
+	{"viewercount", 400, 58, false, kSilent},      {"wheretowatch", 320, 174, false, kSilent},
 };
 
 // `type`'s row, or null when the table has none.
@@ -198,6 +203,12 @@ bool PlaysAudio(const std::string &type)
 	return row == nullptr || row->audio == PageAudio::Plays;
 }
 
+bool CountsEvents(const std::string &type)
+{
+	const TypeRow *row = FindTypeRow(type);
+	return row != nullptr && row->tally;
+}
+
 std::vector<std::string> TypesMissingNaturalSize()
 {
 	std::vector<std::string> missing;
@@ -229,7 +240,7 @@ std::vector<std::string> TypesMissingNaturalSize()
 	}
 	// A directory that cannot be read answers "nothing missing" rather than "every type
 	// missing": this is a guard against a forgotten table row, and it must not turn a
-	// momentarily unreadable rundir into a failing self-test that names eleven types. This
+	// momentarily unreadable rundir into a failing self-test that names twelve types. This
 	// discards a partial sweep too -- half the directories read is not evidence about the
 	// half that did not.
 	return ec ? std::vector<std::string>() : missing;

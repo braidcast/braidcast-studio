@@ -16,13 +16,15 @@
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
-#include "util/file_util.hpp"      // FileUtil::ReadBinaryFile
-#include "util/http_status.hpp"    // Http::ReasonFor
-#include "util/string_util.hpp"    // StringUtil::ToLower
-#include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
-#include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
-#include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
-#include "overlay_template.hpp"    // Overlay::AcceptsReplay
+#include "util/file_util.hpp"        // FileUtil::ReadBinaryFile
+#include "util/http_status.hpp"      // Http::ReasonFor
+#include "util/string_util.hpp"      // StringUtil::ToLower
+#include "util/web_bundle.hpp"       // WebBundle::Root, WebBundle::ContentTypeForPath
+#include "../events/event_hub.hpp"   // Events::Store() -- the persisted event history
+#include "../events/event_store.hpp" // Events::EventStore::Select
+#include "util/time_util.hpp"        // TimeUtil::NowMs
+#include "overlay_store.hpp"         // Overlay::Store(), Widget, WidgetUrl
+#include "overlay_template.hpp"      // Overlay::AcceptsReplay, Overlay::CountsEvents
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -397,6 +399,20 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 	return NamedFrame("backfill", json{{"events", std::move(arr)}});
 }
 
+// What a count reads off one event, and nothing else: the tally goes to a page that only
+// counts, so a viewer's name or message has no reason to be on that socket.
+json TallyEventJson(const Events::NormalizedEvent &ev)
+{
+	json j = json{{"id", ev.id}, {"platform", ev.platform}, {"type", ev.type}, {"ts", ev.ts}};
+	if (ev.amount != 0) {
+		j["amount"] = ev.amount;
+	}
+	if (ev.count != 0) {
+		j["count"] = ev.count;
+	}
+	return j;
+}
+
 // The BroadcastFrame widgetFilter for events.replay: a widget whose id no longer resolves
 // (deleted mid-broadcast) is excluded the same as one whose type does not accept a replay.
 //
@@ -412,6 +428,25 @@ bool WidgetAcceptsReplay(const std::string &widgetId)
 }
 
 } // namespace
+
+json TallyBody(const Events::EventStore &store, int64_t sinceMs, int64_t untilMs, bool live)
+{
+	json events = json::array();
+	if (sinceMs > 0) {
+		const auto inWindow = [sinceMs, untilMs](const Events::NormalizedEvent &e) {
+			return e.ts >= sinceMs && (untilMs <= 0 || e.ts <= untilMs);
+		};
+		for (const Events::NormalizedEvent &ev : store.Select(inWindow)) {
+			events.push_back(TallyEventJson(ev));
+		}
+	}
+	return json{
+		{"since", sinceMs > 0 ? json(sinceMs) : json(nullptr)},
+		{"until", sinceMs > 0 && untilMs > 0 ? json(untilMs) : json(nullptr)},
+		{"live", live},
+		{"events", std::move(events)},
+	};
+}
 
 // ---- Broadcast --------------------------------------------------------------
 
@@ -618,15 +653,23 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 	// This frame is the only place the broadcast's start time is known, so it is also
 	// where the backfill window is set. A null startedAt under an active broadcast leaves
 	// it at 0: no output has reported a start, so there is no window to replay over.
+	const bool active = state.is_object() && state.value("active", false);
 	int64_t startedAt = 0;
-	if (state.is_object() && state.value("active", false)) {
+	if (active) {
 		const auto it = state.find("startedAt");
 		if (it != state.end() && it->is_number_integer()) {
 			startedAt = it->get<int64_t>();
 		}
 	}
+	const int64_t nowMs = TimeUtil::NowMs();
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
+		if (startedAt > 0) {
+			lastStartedAtMs_ = startedAt;
+			lastEndedAtMs_ = 0;
+		} else if (!active && streamStartedAtMs_ > 0) {
+			lastEndedAtMs_ = nowMs;
+		}
 		streamStartedAtMs_ = startedAt;
 	}
 	BroadcastStateFrame("stream", state);
@@ -1035,7 +1078,7 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 		return;
 	}
 	if (action == "/events") {
-		RunSse(clientSocket, id); // owns the socket; closes it itself on the way out
+		RunSse(clientSocket, id, CountsEvents(w->type)); // owns the socket; closes it itself on the way out
 		return;
 	}
 	if (action.rfind("/assets/", 0) == 0) {
@@ -1073,7 +1116,7 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 	CloseClient(clientSocket);
 }
 
-void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
+void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId, bool tally)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	// Bounded send so a stuck reader (full send buffer) can't park a broadcast pass or
@@ -1131,20 +1174,38 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 		// broadcast is state even when the individual events are not -- so they reach a
 		// connecting client as the separate, bounded `backfill` frame instead, which no
 		// consumer of the moment-by-moment stream sees.
+		//
+		// A widget that COUNTS events gets one more frame, `tally`, last: the events its count
+		// is rebuilt from, over the current broadcast or -- off air -- the most recent one, so
+		// a reload neither resets the count nor drops the finished broadcast's figure. Unlike
+		// the backfill it is uncapped (the store's own cap bounds it) and slim, since a count
+		// needs every event in the window and none of their text. It always comes, with a null
+		// window before any broadcast this run, so the page can tell "nothing to rebuild" from
+		// "not heard yet". Sent before registration like the rest, so no live event can
+		// precede it; an event stored in the gap between the read and registration reaches
+		// the page twice, which it dedupes by id.
 		std::vector<std::string> replay;
 		int64_t since = 0;
+		int64_t tallySince = 0;
+		int64_t tallyUntil = 0;
 		{
 			std::lock_guard<std::mutex> lock(sseMutex_);
-			replay.reserve(replayFrames_.size() + 1);
+			replay.reserve(replayFrames_.size() + 2);
 			for (const auto &[eventName, frame] : replayFrames_) {
 				replay.push_back(frame);
 			}
 			since = streamStartedAtMs_;
+			tallySince = since > 0 ? since : lastStartedAtMs_;
+			tallyUntil = since > 0 ? 0 : lastEndedAtMs_;
 		}
-		// Built outside sseMutex_: it reads the event store, whose own lock must never be
+		// Built outside sseMutex_: they read the event store, whose own lock must never be
 		// taken under this one.
 		if (since > 0) {
 			replay.push_back(BuildBackfillFrame(since));
+		}
+		if (tally) {
+			replay.push_back(
+				NamedFrame("tally", TallyBody(Events::Store(), tallySince, tallyUntil, since > 0)));
 		}
 		for (const std::string &frame : replay) {
 			send(sock, frame.c_str(), (int)frame.size(), 0);

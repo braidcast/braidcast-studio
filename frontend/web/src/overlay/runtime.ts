@@ -22,6 +22,18 @@ import { cssForSlots } from "./textStyle";
 import { fmtCount, fmtMoney, fmtTally, isTally } from "../lib/utils/format";
 import { fillTemplate } from "./fillTemplate";
 import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
+import {
+  COUNTER_EVENT_SOURCES,
+  SessionTally,
+  audienceTotal,
+  effectiveAnimation,
+  templateParts,
+  tweenValue,
+  viewerTotal,
+  withOffset,
+  type TallyCause,
+  type TallyFrame,
+} from "./counter";
 
 interface OverlayBootstrap {
   id: string;
@@ -91,6 +103,7 @@ type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
 // No Snapshot type alongside this one: the host already sends per-destination rows carrying
 // the platform key, so there is no per-account split for a widget to re-derive.
 type StreamHandler = (s: StreamState) => void;
+type SessionTallyHandler = (t: SessionTally, cause: TallyCause) => void;
 
 const boot: OverlayBootstrap = (window as unknown as { __OVERLAY__: OverlayBootstrap }).__OVERLAY__ ?? {
   id: "",
@@ -107,6 +120,11 @@ const eventRedactionHandlers: EventRedactionHandler[] = [];
 const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
 const streamHandlers: StreamHandler[] = [];
+const sessionTallyHandlers: SessionTallyHandler[] = [];
+// The current broadcast's events as this page knows them, for a widget that counts them.
+// Created by the host's `tally` frame -- which only a counting type is sent -- or by the
+// first onSessionTally, so every other widget carries none and holds no events.
+let sessionTally: SessionTally | null = null;
 
 // One <style> for every slot rule, created on first use: a widget whose slots are all
 // untouched compiles to nothing and never gets an element. Appended to <head> after the
@@ -610,6 +628,34 @@ const OBSOverlay = {
   onStream(fn: StreamHandler) {
     streamHandlers.push(fn);
   },
+  /** The session tally: every event of the current broadcast -- or, off air, the most recent
+   * one -- rebuilt from the host's event history on connect, so a count survives the source
+   * reloading mid-broadcast, then kept current by live events and broadcast starts and ends.
+   * Before any broadcast this run it counts from page load. Fired with the tally and why it
+   * changed; `t.ready` is false until the host's history has arrived. Registered after that
+   * history landed, the handler is called at once with "seed". */
+  onSessionTally(fn: SessionTallyHandler) {
+    sessionTally ??= new SessionTally();
+    sessionTallyHandlers.push(fn);
+    if (sessionTally.ready) {
+      const t = sessionTally;
+      queueMicrotask(() => callSessionTally(fn, t, "seed"));
+    }
+  },
+  /** The Counter's rules, shared so a fork counts exactly as the stock widget does: the
+   * session sources (`sources`), absent-is-not-zero totals over a set of platforms
+   * (`viewerTotal`, `audienceTotal`, null when no selected platform reported), the start
+   * offset, the animation a change gets under reduced motion, the count-up curve, and a
+   * format split around its `{n}` tokens. */
+  counter: {
+    sources: COUNTER_EVENT_SOURCES,
+    viewerTotal,
+    audienceTotal,
+    withOffset,
+    effectiveAnimation,
+    tweenValue,
+    templateParts,
+  },
   /** Play `url` at `volume` (0..1). Overlapping calls mix rather than queue.
    *
    * Plays from memory once the URL has been decoded, which for a sound the host declared is
@@ -638,7 +684,34 @@ function fireLoad() {
   window.dispatchEvent(new CustomEvent("obs:load", { detail: ctx }));
 }
 
+function callSessionTally(fn: SessionTallyHandler, t: SessionTally, cause: TallyCause) {
+  try {
+    fn(t, cause);
+  } catch (err) {
+    console.log("OBSOverlay onSessionTally threw: " + (err as Error).message);
+  }
+}
+
+function fireSessionTally(cause: TallyCause) {
+  if (!sessionTally) {
+    return;
+  }
+  for (const fn of sessionTallyHandlers) {
+    callSessionTally(fn, sessionTally, cause);
+  }
+}
+
+function fireTally(frame: TallyFrame) {
+  sessionTally ??= new SessionTally();
+  sessionTally.seed(frame);
+  fireSessionTally("seed");
+}
+
 function fireEvent(e: NormalizedEvent) {
+  // A replay is a second showing of an event already counted, never a new occurrence.
+  if (sessionTally && !e.replay && sessionTally.add(e)) {
+    fireSessionTally("event");
+  }
   for (const fn of eventHandlers) {
     try {
       fn(e);
@@ -746,6 +819,9 @@ function fireChannelStats(stats: ChannelStats) {
 }
 
 function fireStream(state: StreamState) {
+  if (sessionTally && sessionTally.onStream(state, Date.now())) {
+    fireSessionTally("window");
+  }
   for (const fn of streamHandlers) {
     try {
       fn(state);
@@ -820,6 +896,18 @@ src.addEventListener("channels", (msg) => {
 src.addEventListener("stream", (msg) => {
   try {
     fireStream(JSON.parse((msg as MessageEvent).data) as StreamState);
+  } catch {
+    /* ignore a malformed frame */
+  }
+});
+
+// The session tally's seed: the current broadcast's events (or, off air, the most recent
+// one's) from the host's event store, sent on connect only to a type that counts them, and
+// before any live frame, so nothing counted live can precede it. Sent again on every
+// reconnect, which re-adds only what is already held.
+src.addEventListener("tally", (msg) => {
+  try {
+    fireTally(JSON.parse((msg as MessageEvent).data) as TallyFrame);
   } catch {
     /* ignore a malformed frame */
   }

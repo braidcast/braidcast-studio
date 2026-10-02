@@ -15,7 +15,20 @@
 
 #include "../events/event_model.hpp" // Events::NormalizedEvent
 
+namespace Events {
+class EventStore;
+}
+
 namespace Overlay {
+
+// The body of the `tally` frame a widget that counts events (Overlay::CountsEvents) is sent on
+// connect: every event `store` holds with `sinceMs <= ts <= untilMs` (0 leaving `untilMs` open),
+// oldest first, cut down to the fields a count reads -- id, platform, type, ts, and amount and
+// count where non-zero -- so no viewer's name or message rides along. `sinceMs` 0 means no
+// broadcast has started this run: there is no window, so `since` is null and `events` empty.
+// The store's own cap bounds the list. Exposed so the self-test can run it against an
+// in-memory store rather than the user's history.
+nlohmann::json TallyBody(const Events::EventStore &store, int64_t sinceMs, int64_t untilMs, bool live);
 
 // Loopback-only HTTP/1.1 server for overlay widgets. GET routing + static file
 // serving + long-lived SSE. 127.0.0.1 only; per-widget token on every route.
@@ -83,7 +96,9 @@ public:
 	void BroadcastChannelStats(const nlohmann::json &stats);
 	// Push broadcast state -- whether anything is live, the wall-clock epoch ms it went
 	// live, and the destinations it is going out to -- to EVERY open widget socket as a
-	// named `stream` SSE event. Replayed on connect (see replayFrames_), so a browser
+	// named `stream` SSE event. Also where the backfill and tally windows are set: a start
+	// opens both, and an end closes the tally's at that moment so a counter that connects
+	// off air rebuilds the broadcast that just finished. Replayed on connect (see replayFrames_), so a browser
 	// source added mid-broadcast learns the state at once instead of at the next
 	// transition. It is also the only closing signal an overlay gets: the viewer poller
 	// stops with the stream without pushing a final zero, so a viewer widget clears off
@@ -120,7 +135,10 @@ private:
 	// connect, keyed by eventName. The one place a replayable frame is built and
 	// stored, so a second such channel cannot drift from the first.
 	void BroadcastStateFrame(const char *eventName, const nlohmann::json &body);
-	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
+	// Owns the socket for its lifetime. `tally`: the widget counts events, so it is sent the
+	// `tally` frame on connect (Overlay::CountsEvents, decided by the caller, which already
+	// holds the widget).
+	void RunSse(uintptr_t sock, const std::string &widgetId, bool tally);
 	// Live SSE sockets across every widget: the capacity ceiling's live half, and the
 	// audience a broadcast reaches. Caller must hold sseMutex_.
 	size_t LiveSseCount() const;
@@ -166,6 +184,13 @@ private:
 	// which is the only place that time is known. It bounds the `backfill` frame RunSse
 	// builds on connect: without it there is no window, so no backfill is sent.
 	int64_t streamStartedAtMs_ = 0;
+
+	// The most recent broadcast this run, for the `tally` frame: when it went live and, once
+	// it has, when it ended (0 while it is still live or before any has). Guarded by
+	// sseMutex_ like the field above. Unlike the backfill window this outlives the broadcast,
+	// because a counter that reloads off air must still show the count it finished on.
+	int64_t lastStartedAtMs_ = 0;
+	int64_t lastEndedAtMs_ = 0;
 
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The
