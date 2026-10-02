@@ -193,10 +193,11 @@
     font-size: 9.5px;
     letter-spacing: 0.09em;
     text-transform: var(--label-case);
-    color: var(--color-muted);
+    color: var(--color-dim);
   }
+  /* As GoalStrip's state: the accent and --color-muted fall under 4.5:1 on some presets. */
   .pstate.live {
-    color: var(--color-accent);
+    color: var(--color-text);
   }
   .pacts {
     margin-left: auto;

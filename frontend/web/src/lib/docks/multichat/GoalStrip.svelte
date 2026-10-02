@@ -124,11 +124,14 @@
     font-size: 9.5px;
     letter-spacing: 0.09em;
     text-transform: var(--label-case);
-    color: var(--color-muted);
+    color: var(--color-dim);
     white-space: nowrap;
   }
+  /* Text tokens, not the accent: --color-accent falls under 4.5:1 on the light mode and
+     --color-muted under it on light, industrial and slate. --color-dim is the faintest
+     neutral that clears 4.5:1 on every preset. */
   .achieved .state {
-    color: var(--color-accent);
+    color: var(--color-text);
   }
   .count {
     flex: none;
@@ -152,11 +155,13 @@
     position: absolute;
     inset: 0;
     transform-origin: left center;
-    background: var(--color-accent);
-    transition: transform 450ms cubic-bezier(0.22, 1, 0.36, 1);
+    background: var(--color-dim);
+    transition: transform 250ms cubic-bezier(0.22, 1, 0.36, 1);
   }
-  .over:not(.achieved) .fill {
-    background: var(--color-muted);
+  /* Both fills clear 3:1 against the track and the row on every preset; the accent and
+     --color-muted do not (amber on light is 1.7:1, muted on industrial's track 2.8:1). */
+  .achieved .fill {
+    background: var(--color-text);
   }
   @media (prefers-reduced-motion: reduce) {
     .fill {
