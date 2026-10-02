@@ -127,14 +127,15 @@ public:
 	uint64_t Stamp() { return ++stamped_; }
 
 	// SaveStoreJson(root, absPath), unless a later stamp has already been written. True
-	// when the file holds this snapshot or a newer one.
+	// when the file holds this snapshot or a newer one; false when the write failed, which
+	// leaves the file as it was, so the caller still owes this state a save.
 	bool Write(const nlohmann::json &root, const std::string &absPath, uint64_t stamp);
 
 private:
 	const SaveHistory history_;
 	uint64_t stamped_ = 0; // guarded by the CALLER's store mutex
 	std::mutex writeMutex_;
-	uint64_t written_ = 0; // guarded by writeMutex_
+	uint64_t written_ = 0; // the newest stamp on disk; guarded by writeMutex_
 };
 
 // A store file the app found but could not use, kept beside the original so that a

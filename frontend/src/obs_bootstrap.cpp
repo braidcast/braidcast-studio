@@ -10928,7 +10928,9 @@ void ObsBootstrap::RunEventSelfTest()
 	// YouTube subscribers are reported once each. A first read seeds the account silently;
 	// a subscriber already seen never comes back, however long they stay among the newest;
 	// an account bounds what it keeps by count and by age; what is kept survives a reload
-	// and goes with the account. A private store, then a file of the test's own.
+	// and goes with the account, and a read that finishes after the account went records
+	// nothing; an account unread past the age limit is not reloaded; a failed save is owed
+	// and made by the next read. Private stores, then files of the test's own.
 	{
 		using Events::SeenSubscribers;
 		const int64_t t0 = 10 * SeenSubscribers::kMaxAge;
@@ -10958,6 +10960,17 @@ void ObsBootstrap::RunEventSelfTest()
 		seen.Observe("youtube:3", many, t0 + 1);
 		const bool capOk = seen.Observe("youtube:3", {"UColdest"}, t0 + 2).size() == 1;
 
+		// The removal drops the account, then purges it; a read still under way then finishes.
+		std::set<std::string> connectedIds{"youtube:g"};
+		SeenSubscribers gated{std::string(), [&connectedIds](const std::string &id) {
+					      return connectedIds.count(id) > 0;
+				      }};
+		gated.Observe("youtube:g", {"UCg"}, t0);
+		connectedIds.erase("youtube:g");
+		const bool gatedPurged = gated.PurgeAccount("youtube:g");
+		const bool goneOk = gatedPurged && gated.Observe("youtube:g", {"UCg", "UCh"}, t0 + 1).empty() &&
+				    !gated.Seeded("youtube:g", t0 + 1) && !gated.PurgeAccount("youtube:g");
+
 		const std::string seenPath = MultistreamBasicPath("youtube_subscribers_seen-selftest.json");
 		const auto clearSeen = [&] {
 			restore(seenPath, std::nullopt);
@@ -10970,21 +10983,45 @@ void ObsBootstrap::RunEventSelfTest()
 			SeenSubscribers saved{seenPath};
 			saved.Observe("youtube:1", {"UCa", "UCb"}, now);
 			saved.Observe("youtube:2", {"UCz"}, now);
+			saved.Observe("youtube:old", {"UCo"}, now - SeenSubscribers::kMaxAge - 1000);
 		}
 		SeenSubscribers loaded{seenPath};
 		const bool roundTrip = loaded.Seeded("youtube:1", now) &&
-				       loaded.Observe("youtube:1", {"UCa", "UCb"}, now).empty();
+				       loaded.Observe("youtube:1", {"UCa", "UCb"}, now).empty() &&
+				       !loaded.PurgeAccount("youtube:old");
 		const bool purged = loaded.PurgeAccount("youtube:2");
 		SeenSubscribers afterPurge{seenPath};
 		const bool purgeOk = purged && !afterPurge.Seeded("youtube:2", now) &&
 				     afterPurge.Seeded("youtube:1", now) && !afterPurge.PurgeAccount("youtube:9");
 		clearSeen();
 
-		const bool ok = onceOk && ageOk && capOk && roundTrip && purgeOk;
+		// The file's folder is a file, so the first save fails; the next read has nothing
+		// new, and saves anyway.
+		bool retryOk = false;
+		{
+			namespace fs = std::filesystem;
+			std::error_code ec;
+			const std::string blocker = MultistreamBasicPath("youtube_subscribers_seen-selftest-blocker");
+			const std::string owedPath = blocker + "/youtube_subscribers_seen.json";
+			fs::remove_all(fs::u8path(blocker), ec);
+			std::ofstream(fs::u8path(blocker)) << "blocks a folder of this name";
+			{
+				SeenSubscribers owed{owedPath};
+				owed.Observe("youtube:1", {"UCr"}, now);
+				fs::remove(fs::u8path(blocker), ec);
+				owed.Observe("youtube:1", {"UCr"}, now + 1);
+			}
+			SeenSubscribers back{owedPath};
+			retryOk = back.Seeded("youtube:1", now + 1) &&
+				  back.Observe("youtube:1", {"UCr"}, now + 2).empty();
+			fs::remove_all(fs::u8path(blocker), ec);
+		}
+
+		const bool ok = onceOk && ageOk && capOk && goneOk && roundTrip && purgeOk && retryOk;
 		HostLog(std::string("[selftest] events youtube subscribers seen -> ") + (ok ? "OK" : "FAIL") +
 			" (once " + (onceOk ? "1" : "0") + ", age " + (ageOk ? "1" : "0") + ", cap " +
-			(capOk ? "1" : "0") + ", reload " + (roundTrip ? "1" : "0") + ", purge " +
-			(purgeOk ? "1" : "0") + ")");
+			(capOk ? "1" : "0") + ", gone " + (goneOk ? "1" : "0") + ", reload " + (roundTrip ? "1" : "0") +
+			", purge " + (purgeOk ? "1" : "0") + ", retry " + (retryOk ? "1" : "0") + ")");
 	}
 
 	// Restore: wipe the synthetic history from memory, then put the user's original

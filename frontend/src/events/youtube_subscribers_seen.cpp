@@ -5,13 +5,20 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../oauth/account_store.hpp"
+#include "../oauth/registry.hpp"
+
 namespace Events {
 
 using json = nlohmann::json;
 
-SeenSubscribers::SeenSubscribers(std::string path) : path_(std::move(path))
+SeenSubscribers::SeenSubscribers(std::string path, AccountCheck connected)
+	: path_(std::move(path)),
+	  connected_(std::move(connected))
 {
-	Load();
+	if (!path_.empty()) {
+		Load();
+	}
 }
 
 std::string SeenSubscribers::FilePath()
@@ -43,10 +50,13 @@ void SeenSubscribers::Load()
 				}
 			}
 		}
-		TrimLocked(a, now);
-		if (a.readMs > 0 || !a.seenMs.empty()) {
-			accounts_[accountId] = std::move(a);
+		// An account unread for kMaxAge has nothing left to keep: every subscriber a read
+		// returned is at least that old, and the account reads as never seeded.
+		if (a.readMs <= 0 || now - a.readMs > kMaxAge) {
+			continue;
 		}
+		TrimLocked(a, now);
+		accounts_[accountId] = std::move(a);
 	}
 }
 
@@ -79,11 +89,14 @@ std::vector<std::string> SeenSubscribers::Observe(const std::string &accountId,
 	uint64_t stamp = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
+		if (connected_ && !connected_(accountId)) {
+			return fresh;
+		}
 		auto [it, created] = accounts_.try_emplace(accountId);
 		Account &a = it->second;
 		// Aged entries go first, so a subscriber past kMaxAge reads as new rather than
 		// being refreshed back into the store.
-		bool changed = TrimLocked(a, nowMs) || created || nowMs - a.readMs > kRefreshSaveAfter;
+		bool changed = TrimLocked(a, nowMs) || created || unsaved_ || nowMs - a.readMs > kRefreshSaveAfter;
 		a.readMs = nowMs;
 		for (const std::string &channelId : channelIds) {
 			if (channelId.empty()) {
@@ -144,17 +157,25 @@ json SeenSubscribers::SnapshotLocked(uint64_t &stamp)
 		accounts[accountId] = {{"read", a.readMs}, {"seen", std::move(seen)}};
 	}
 	stamp = writer_.Stamp();
+	unsaved_ = false;
 	return {{"version", 1}, {"accounts", std::move(accounts)}};
 }
 
 void SeenSubscribers::Save(const json &root, uint64_t stamp)
 {
-	writer_.Write(root, path_, stamp);
+	if (writer_.Write(root, path_, stamp)) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(mutex_);
+	unsaved_ = true;
 }
 
 SeenSubscribers &YouTubeSubscribersSeen()
 {
-	static SeenSubscribers store(SeenSubscribers::FilePath());
+	static SeenSubscribers store(SeenSubscribers::FilePath(), [](const std::string &accountId) {
+		const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(accountId);
+		return acct && OAuth::IsAccountConnected(*acct);
+	});
 	return store;
 }
 

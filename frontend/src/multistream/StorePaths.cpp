@@ -342,8 +342,11 @@ bool OrderedStoreSave::Write(const nlohmann::json &root, const std::string &absP
 	if (stamp < written_) {
 		return true; // a newer snapshot is already on disk
 	}
+	if (!SaveStoreJson(root, absPath, history_)) {
+		return false;
+	}
 	written_ = stamp;
-	return SaveStoreJson(root, absPath, history_);
+	return true;
 }
 
 nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr)
