@@ -21,6 +21,10 @@ import { EV } from "$lib/utils/eventNames";
   import FieldsPanel from "$lib/overlays/FieldsPanel.svelte";
   import { labelFor, WIDGET_TYPES } from "$lib/overlays/widgetTypes";
   import PreviewPane from "$lib/overlays/PreviewPane.svelte";
+  import ScopedEditor from "$lib/overlays/scopes/ScopedEditor.svelte";
+  import type { ScopeLayers } from "$lib/overlays/scopes/scopeEdit";
+  import { uploadInFlight } from "$lib/overlays/scopes/scopedAssets";
+  import { canonicalJson } from "$lib/utils/canonicalJson";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -53,6 +57,9 @@ import { EV } from "$lib/utils/eventNames";
   let pane = $state<PaneMode>("simple");
   let wide = $state(false);
   let reloadKey = $state(0);
+  // Bumped by a save that landed, and by nothing else: the scoped editor's stage replays the
+  // selected scope after one, which a reload for any other reason must not trigger.
+  let savedKey = $state(0);
   let portChanged = $state(false);
   let serverDown = $state(false);
   let loaded = $state(false);
@@ -77,8 +84,11 @@ import { EV } from "$lib/utils/eventNames";
   // still reaches the host.
   let forking = $state(false);
 
-  const paneOptions = $derived(wide ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
   const forked = $derived(!!widget?.custom);
+  // A stock widget whose type declares scopes edits in the scoped editor, which carries its
+  // own stage at every width -- so it never needs the narrow layout's Preview mode.
+  const scoped = $derived(!!widget && !widget.custom && !!widget.scopes);
+  const paneOptions = $derived(wide || scoped ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
 
   // A stock widget's code is on disk, not on the widget, so the read is keyed by TYPE.
   // Going through `stockType` rather than reading the widget directly is what keeps the
@@ -99,10 +109,11 @@ import { EV } from "$lib/utils/eventNames";
     return () => mq.removeEventListener("change", sync);
   });
 
-  // Widening past the breakpoint retires the Preview cell, so a selection made while
-  // narrow would otherwise leave the toggle pointing at an option that no longer exists.
+  // Widening past the breakpoint retires the Preview cell, and so does opening a scoped
+  // widget, so a selection made before would otherwise leave the toggle pointing at an
+  // option that no longer exists.
   $effect(() => {
-    if (wide && pane === "preview") {
+    if ((wide || scoped) && pane === "preview") {
       pane = "simple";
     }
   });
@@ -232,12 +243,21 @@ import { EV } from "$lib/utils/eventNames";
   // change under a selection: a document answering to a different one is a different
   // widget, not an edit to this one. A persisted field that can change belongs in here.
   //
-  // The sort is the part that has to be right. The host emits `settings` from a sorted map
-  // while the local copy appends new keys last, so an unsorted compare would read our own
-  // save echo as an external edit and reload the preview a second time on every save.
+  // The sort is the part that has to be right. The host emits every object from a sorted
+  // map, at every depth, while the local copy appends new keys last -- an animation value
+  // built as {preset, speed} comes back as {preset, speed} only by luck -- so an unsorted
+  // compare would read our own save echo as an external edit and reload the preview a
+  // second time on every save, cutting off the replay the first reload started.
   function docJson(w: OverlayWidget): string {
-    const settings = Object.entries(w.settings).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return JSON.stringify({ name: w.name, rev: w.rev, settings, custom: w.custom, assets: w.assets });
+    return canonicalJson({
+      name: w.name,
+      rev: w.rev,
+      settings: w.settings,
+      overrides: w.overrides ?? {},
+      variations: w.variations ?? [],
+      custom: w.custom,
+      assets: w.assets,
+    });
   }
 
   // Writes the open document. `id` names the widget the unsaved edits belong to; the
@@ -271,6 +291,14 @@ import { EV } from "$lib/utils/eventNames";
         // time. The code goes only for a forked widget: a stock one has none of its own, and
         // the host rejects an update that tries to give it some.
         const patch: OverlayUpdateParams = { id: w.id, name: w.name, settings: { ...w.settings } };
+        // The scope layers replace wholesale too, and go whenever the document carries them:
+        // the host stores them on every widget, scoped editor or not.
+        if (w.overrides) {
+          patch.overrides = { ...w.overrides };
+        }
+        if (w.variations) {
+          patch.variations = [...w.variations];
+        }
         if (w.custom) {
           patch.html = w.custom.html;
           patch.css = w.custom.css;
@@ -286,8 +314,13 @@ import { EV } from "$lib/utils/eventNames";
         // flag along with the work.
         if (saveGen === gen) {
           dirty = false;
+          // Inside the queued body, so nothing can reorder a prune ahead of the save that
+          // released its files; and only once nothing newer is pending, since the host keeps
+          // whatever the STORED document still names.
+          await drainPrunes(w.id);
         }
         reloadKey++;
+        savedKey++;
         // Keep the list row's name label in sync without a full re-fetch.
         items = items.map((it) => (it.id === w.id ? { ...it, name: w.name } : it));
       } catch (e) {
@@ -296,6 +329,39 @@ import { EV } from "$lib/utils/eventNames";
         saving = false;
       }
     });
+  }
+
+  // Uploads a scope stopped naming, removed once the edit that released them is saved. The
+  // host deletes only files the stored document no longer references, so pruning ahead of
+  // the save would keep them; and the buffer may name a file again before it saves, which
+  // is why the check is the host's, against what was actually written.
+  const prunes = new Map<string, Set<string>>();
+  function queuePrune(id: string, scope: string): void {
+    let pending = prunes.get(id);
+    if (!pending) {
+      pending = new Set();
+      prunes.set(id, pending);
+    }
+    pending.add(scope);
+    void runQueued(() => drainPrunes(id));
+  }
+  // Runs inside the mutation queue only. Leaves the work for the save that follows while
+  // that widget still has unsaved edits, or while an upload's file is recorded on the host
+  // but not yet named by any setting -- a prune then would delete it.
+  async function drainPrunes(id: string): Promise<void> {
+    const pending = prunes.get(id);
+    if (!pending || (dirty && widget?.id === id) || uploadInFlight()) {
+      return;
+    }
+    prunes.delete(id);
+    for (const scope of pending) {
+      try {
+        await obs.call("overlays.removeScopeAssets", { id, scope });
+      } catch {
+        // Best effort: the files are orphans, not damage, and the scope's next prune
+        // removes them.
+      }
+    }
   }
 
   async function create(type: string, name: string): Promise<void> {
@@ -420,10 +486,20 @@ import { EV } from "$lib/utils/eventNames";
         // Taking the server's `name` here is what let the following flush write the old name
         // back over a rename typed inside the window. Everything else, `custom` above all, is
         // what the reset just changed and has to come from the server.
-        const unsaved = dirty && widget ? { name: widget.name, settings: { ...widget.settings } } : null;
+        const unsaved =
+          dirty && widget
+            ? {
+                name: widget.name,
+                settings: { ...widget.settings },
+                overrides: widget.overrides,
+                variations: widget.variations,
+              }
+            : null;
         if (unsaved) {
           w.name = unsaved.name;
           w.settings = unsaved.settings;
+          w.overrides = unsaved.overrides;
+          w.variations = unsaved.variations;
         } else {
           dirty = false;
         }
@@ -512,6 +588,14 @@ import { EV } from "$lib/utils/eventNames";
   function onSettings(next: Record<string, unknown>): void {
     if (widget) {
       widget.settings = next;
+      scheduleSave();
+    }
+  }
+  function onLayers(next: ScopeLayers): void {
+    if (widget) {
+      widget.settings = next.settings;
+      widget.overrides = next.overrides;
+      widget.variations = next.variations;
       scheduleSave();
     }
   }
@@ -664,76 +748,84 @@ import { EV } from "$lib/utils/eventNames";
             <Button tone="live" onclick={() => void confirmDelete()}>Delete</Button>
           </div>
 
-          <div class="editor-body" class:split={wide}>
-            {#if wide || pane !== "preview"}
-              <div class="edit-pane">
-                {#if pane === "advanced"}
-                  <!-- The two arms are mutually exclusive on purpose: CodePane fixes its
-                       read-only state at mount, so forking has to arrive as a fresh grid. -->
-                  <div class="code-stack">
-                    {#if widget.custom}
-                      <div class="code-note">
-                        <p>
-                          <b>This overlay runs your own code.</b> It no longer picks up improvements to the built-in
-                          {labelFor(widget.type)} template. "{RESET_LABEL}" discards your code and puts it back on the
-                          built-in template, keeping your settings.
-                        </p>
-                        <Button disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</Button>
-                      </div>
-                      <CodeGrid
-                        html={widget.custom.html}
-                        css={widget.custom.css}
-                        js={widget.custom.js}
-                        onChange={onCode}
-                      />
-                    {:else}
-                      <div class="code-note">
-                        <p>
-                          <b>This overlay uses the built-in {labelFor(widget.type)} template</b>, shown below, and picks
-                          up improvements to it automatically. Customizing takes a private copy you can edit — from then
-                          on this overlay stops receiving those improvements. Your settings are kept, and "{RESET_LABEL}"
-                          puts it back on the built-in template.
-                        </p>
-                        <Button variant="filled" disabled={forking} onclick={() => void forkCode()}>
-                          {forking ? "Customizing…" : "Customize code"}
-                        </Button>
-                      </div>
-                      {#if stockTemplate}
-                        {#await stockTemplate}
-                          <p class="tpl-state">Reading the built-in template…</p>
-                        {:then template}
-                          <CodeGrid html={template.html} css={template.css} js={template.js} readonly />
-                        {:catch e}
-                          <p class="tpl-state tpl-state--err">The built-in template can't be shown ({e.message}).</p>
-                        {/await}
+          {#if scoped && pane === "simple"}
+            <!-- Keyed by widget: the editor's selected scope and undo window belong to one
+                 widget, and must not carry over to the next. -->
+            {#key widget.id}
+              <ScopedEditor {widget} {wide} {reloadKey} {savedKey} {onLayers} onPrune={queuePrune} />
+            {/key}
+          {:else}
+            <div class="editor-body" class:split={wide}>
+              {#if wide || pane !== "preview"}
+                <div class="edit-pane">
+                  {#if pane === "advanced"}
+                    <!-- The two arms are mutually exclusive on purpose: CodePane fixes its
+                         read-only state at mount, so forking has to arrive as a fresh grid. -->
+                    <div class="code-stack">
+                      {#if widget.custom}
+                        <div class="code-note">
+                          <p>
+                            <b>This overlay runs your own code.</b> It no longer picks up improvements to the built-in
+                            {labelFor(widget.type)} template. "{RESET_LABEL}" discards your code and puts it back on the
+                            built-in template, keeping your settings.
+                          </p>
+                          <Button disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</Button>
+                        </div>
+                        <CodeGrid
+                          html={widget.custom.html}
+                          css={widget.custom.css}
+                          js={widget.custom.js}
+                          onChange={onCode}
+                        />
+                      {:else}
+                        <div class="code-note">
+                          <p>
+                            <b>This overlay uses the built-in {labelFor(widget.type)} template</b>, shown below, and picks
+                            up improvements to it automatically. Customizing takes a private copy you can edit — from then
+                            on this overlay stops receiving those improvements. Your settings are kept, and "{RESET_LABEL}"
+                            puts it back on the built-in template.
+                          </p>
+                          <Button variant="filled" disabled={forking} onclick={() => void forkCode()}>
+                            {forking ? "Customizing…" : "Customize code"}
+                          </Button>
+                        </div>
+                        {#if stockTemplate}
+                          {#await stockTemplate}
+                            <p class="tpl-state">Reading the built-in template…</p>
+                          {:then template}
+                            <CodeGrid html={template.html} css={template.css} js={template.js} readonly />
+                          {:catch e}
+                            <p class="tpl-state tpl-state--err">The built-in template can't be shown ({e.message}).</p>
+                          {/await}
+                        {/if}
                       {/if}
-                    {/if}
-                  </div>
-                {:else}
-                  <div class="scroll-pane">
-                    <FieldsPanel
-                      schema={widget.schema}
-                      settings={widget.settings}
-                      widgetId={widget.id}
-                      onChange={onSettings}
-                    />
-                  </div>
-                {/if}
-              </div>
-            {/if}
-            {#if wide || pane === "preview"}
-              <div class="preview-pane">
-                <PreviewPane
-                  url={widget.url}
-                  widgetId={widget.id}
-                  widgetType={widget.type}
-                  naturalW={widget.naturalW}
-                  naturalH={widget.naturalH}
-                  {reloadKey}
-                />
-              </div>
-            {/if}
-          </div>
+                    </div>
+                  {:else}
+                    <div class="scroll-pane">
+                      <FieldsPanel
+                        schema={widget.schema}
+                        settings={widget.settings}
+                        widgetId={widget.id}
+                        onChange={onSettings}
+                      />
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+              {#if wide || pane === "preview"}
+                <div class="preview-pane">
+                  <PreviewPane
+                    url={widget.url}
+                    widgetId={widget.id}
+                    widgetType={widget.type}
+                    naturalW={widget.naturalW}
+                    naturalH={widget.naturalH}
+                    {reloadKey}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
