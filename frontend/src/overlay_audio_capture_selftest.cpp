@@ -1007,8 +1007,9 @@ bool SetUp(State &st)
 		Bail(st, 3, "could not store the clip as the widget's sound");
 		return false;
 	}
-	// Two-second alerts, so the card is long gone by the next one and every alert plays at once.
-	const json patch{{"settings", {{"sound", soundPath}, {"duration", 2}}}};
+	// Two-second alerts, so the card is long gone by the next one and every alert plays at once,
+	// at full volume so the level measured is the clip's own.
+	const json patch{{"settings", {{"sound", soundPath}, {"duration", 2}, {"volume", 100}}}};
 	if (Overlay::Store().Update(st.widgetId, patch) != Overlay::MutateResult::Ok) {
 		Bail(st, 3, "could not set the widget's sound");
 		return false;

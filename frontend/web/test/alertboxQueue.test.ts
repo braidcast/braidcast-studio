@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { fillTemplate } from "../src/overlay/fillTemplate";
+import {
+  ALERTBOX_DEFAULTS,
+  ALERTBOX_SCHEMA,
+  ALERTBOX_SCOPES,
+  ALERTBOX_SOURCE,
+  alertboxOverlay,
+  type StubScopes,
+} from "./alertboxStub";
 
 // The default alertbox is a bundler-free overlay script, so it is loaded here the way the
 // overlay page loads it: as source, run against stand-ins for the globals it touches. The
@@ -13,12 +20,9 @@ interface Burst {
   events: { type: string; id: string }[];
 }
 
-const SOURCE = await Bun.file(new URL("../public/overlay/default-alertbox/template.js", import.meta.url)).text();
-const SCHEMA: { key: string; default?: unknown }[] = await Bun.file(
-  new URL("../public/overlay/default-alertbox/fields.json", import.meta.url),
-).json();
-// What the host injects for a stock widget: each schema default, under the user's overrides.
-const DEFAULT_FIELDS = Object.fromEntries(SCHEMA.map((f) => [f.key, f.default]));
+const SOURCE = ALERTBOX_SOURCE;
+const SCHEMA = ALERTBOX_SCHEMA;
+const DEFAULT_FIELDS = ALERTBOX_DEFAULTS;
 
 function fakeEl(): Record<string, unknown> {
   const el: Record<string, unknown> = {
@@ -38,7 +42,7 @@ function fakeEl(): Record<string, unknown> {
   return el;
 }
 
-function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
+function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS, scopes: StubScopes = {}) {
   let now = 0;
   let handler: (e: unknown) => void = () => {};
   const document = {
@@ -46,20 +50,11 @@ function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
     documentElement: fakeEl(),
     body: fakeEl(),
   };
-  const overlay = {
-    fields,
-    onLoad() {},
+  const overlay = alertboxOverlay(fields, scopes, {
     onEvent(fn: (e: unknown) => void) {
       handler = fn;
     },
-    onEventRedaction() {},
-    formatAmount: () => "",
-    formatAmountText: () => "",
-    formatCount: (n: number) => String(n),
-    fillTemplate,
-    textField: (f: Record<string, unknown>, k: string, d: string) => (f[k] != null ? String(f[k]) : d),
-    playSound() {},
-  };
+  });
   const run = new Function(
     "document",
     "OBSOverlay",
@@ -72,8 +67,8 @@ function alertbox(fields: Record<string, unknown> = DEFAULT_FIELDS) {
     queue: () => Burst[];
     current: () => Burst | null;
     fillSummary: (el: unknown, b: Burst) => void;
-    fillCard: (el: unknown, e: unknown) => void;
-    TYPES: Record<string, { msg?: string; group?: string; alone?: string }>;
+    fillCard: (el: unknown, e: unknown, look: unknown) => void;
+    TYPES: Record<string, { group?: string; alone?: string }>;
   };
   let seq = 0;
   return {
@@ -113,25 +108,44 @@ function summaries(fields: Record<string, unknown>) {
   return { overflow: fill(a.box.queue().at(-1)!), burst: fill(burst) };
 }
 
-// The name and message lines fillCard writes for one event.
-function cardLines(e: Record<string, unknown>, fields: Record<string, unknown> = DEFAULT_FIELDS) {
+// The name and message lines fillCard writes for one event, under the widget's scope layers.
+function cardLines(e: Record<string, unknown>, scopes: StubScopes = {}) {
   const name = { textContent: "" };
   const msg = { textContent: "" };
-  const el = { dataset: {}, querySelector: (sel: string) => (sel === ".alert-name" ? name : msg) };
-  alertbox(fields).box.fillCard(el, e);
+  const el = {
+    dataset: {},
+    querySelector: (sel: string) => (sel === ".alert-name" ? name : sel === ".alert-msg" ? msg : fakeEl()),
+  };
+  alertbox(DEFAULT_FIELDS, scopes).box.fillCard(el, e, { media: "", layout: "none" });
   return { name: name.textContent, msg: msg.textContent };
 }
 
 describe("alertbox follow wording", () => {
+  const follow = (platform: string) => ({ type: "follow", platform, actorName: "Ann" });
+
   test("a YouTube follow says subscribed; Twitch and Kick say followed", () => {
-    expect(cardLines({ type: "follow", platform: "youtube", actorName: "Ann" }).msg).toBe("just subscribed!");
-    expect(cardLines({ type: "follow", platform: "twitch", actorName: "Ann" }).msg).toBe("just followed!");
-    expect(cardLines({ type: "follow", platform: "kick", actorName: "Ann" }).msg).toBe("just followed!");
+    expect(cardLines(follow("youtube")).msg).toBe("just subscribed!");
+    expect(cardLines(follow("twitch")).msg).toBe("just followed!");
+    expect(cardLines(follow("kick")).msg).toBe("just followed!");
   });
 
-  test("a fork without the YouTube field falls back to the follow message", () => {
-    const { msgSubscribeYouTube: _, ...forked } = DEFAULT_FIELDS;
-    expect(cardLines({ type: "follow", platform: "youtube", actorName: "Ann" }, forked).msg).toBe("just followed!");
+  test("a follow override reaches YouTube; a YouTube variation keeps it apart", () => {
+    const overridden = { overrides: { follow: { message: "{name} joined!" } } };
+    expect(cardLines(follow("youtube"), overridden).msg).toBe("joined!");
+    // The shape the v2 -> v3 upgrade writes when msgFollow was changed (Task 7).
+    const upgraded = {
+      ...overridden,
+      variations: [
+        {
+          id: "v_follow_youtube",
+          event: "follow",
+          when: { field: "platform", op: "==", value: "youtube" },
+          settings: { message: "{name} just subscribed!" },
+        },
+      ],
+    };
+    expect(cardLines(follow("youtube"), upgraded).msg).toBe("just subscribed!");
+    expect(cardLines(follow("twitch"), upgraded).msg).toBe("joined!");
   });
 });
 
@@ -204,10 +218,11 @@ describe("alertbox queue", () => {
     expect(summaries(forked).overflow.msg).toBe("superchat");
   });
 
-  test("every type has its message field, and every play-alone type its overflow name field", () => {
+  test("every type has an event scope with a built-in message, and every play-alone type its overflow name field", () => {
     const keys = new Set(SCHEMA.map((f) => f.key));
     for (const [type, t] of Object.entries(alertbox().box.TYPES)) {
-      expect([type, keys.has(t.msg ?? "")]).toEqual([type, true]);
+      const scope = ALERTBOX_SCOPES.events.find((s) => s.types.includes(type));
+      expect([type, !!scope?.message]).toEqual([type, true]);
       if (t.alone) {
         expect([type, keys.has(t.alone)]).toEqual([type, true]);
         expect(t.group).toBeUndefined();

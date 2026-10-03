@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fillTemplate } from "../src/overlay/fillTemplate";
+import { ALERTBOX_SOURCE, alertboxOverlay } from "./alertboxStub";
 
 // The default alert box and event ticker are bundler-free overlay scripts, run here as source
 // against stand-ins for the globals they touch (the alertboxQueue.test.ts pattern). The host
@@ -98,19 +98,23 @@ function alertbox() {
   };
   let onEvent: (e: unknown) => void = () => {};
   let onRedaction: RedactionFn = () => {};
-  const overlay = {
-    // {message} is in no default template, so these put it where a user would.
-    fields: { msgSuperchat: "{name} sent {amount}: {message}", msgSub: "{name} subscribed: {message}" },
-    onLoad() {},
-    onEvent: (fn: typeof onEvent) => (onEvent = fn),
-    onEventRedaction: (fn: RedactionFn) => (onRedaction = fn),
-    formatAmount: () => "$5",
-    formatAmountText: () => "$5",
-    formatCount: (n: number) => String(n),
-    fillTemplate,
-    textField: (f: Record<string, unknown>, k: string, d: string) => (f[k] != null ? String(f[k]) : d),
-    playSound() {},
-  };
+  // {message} is in no built-in message, so these put it where a user would: in the two
+  // events' own overrides.
+  const overlay = alertboxOverlay(
+    undefined,
+    {
+      overrides: {
+        superchat: { message: "{name} sent {amount}: {message}" },
+        sub: { message: "{name} subscribed: {message}" },
+      },
+    },
+    {
+      onEvent: (fn: typeof onEvent) => (onEvent = fn),
+      onEventRedaction: (fn: RedactionFn) => (onRedaction = fn),
+      formatAmount: () => "$5",
+      formatAmountText: () => "$5",
+    },
+  );
   const run = new Function(
     "document",
     "OBSOverlay",
@@ -125,7 +129,7 @@ function alertbox() {
   };
   return {
     box,
-    deck: () => ids["deck"],
+    deck: () => ids["deck-idle"],
     live: () => ids["alert-live"],
     fire: (e: Record<string, unknown>) => onEvent(e),
     redact: (gone: string[]) => onRedaction(...redaction(gone)),
@@ -172,7 +176,7 @@ function ticker() {
 }
 
 const SOURCES = {
-  alertbox: await Bun.file(new URL("../public/overlay/default-alertbox/template.js", import.meta.url)).text(),
+  alertbox: ALERTBOX_SOURCE,
   ticker: await Bun.file(new URL("../public/overlay/default-ticker/template.js", import.meta.url)).text(),
 };
 

@@ -1,4 +1,4 @@
-:root { --accent: #9147ff; }
+:root { --accent: #9147ff; --alert-text: #f2f2f5; --alert-bg: rgba(18, 18, 22, 0.92); }
 /* Scale knob. Every length below is rem, so this one value carries the whole card and it
    renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
    Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
@@ -19,13 +19,17 @@ body { margin: 0; background: transparent; overflow: hidden; font-family: var(--
 /* The deck: the one positioned box. It holds the front card in flow, which sizes it, and
    everything else is laid over that card. width:max-content is what lets the front card
    size it: `left: 50%` leaves only half the rectangle to shrink-to-fit into, and without it
-   every alert draws at min-width however long the message is. */
+   every alert draws at min-width however long the message is.
+   Its own transform only centres it. Entrance, exit and idle motion run as Web Animations
+   on the two wrappers inside (animation/engine.ts), so they never fight this translate. */
 .deck {
-  position: fixed; left: 50%; top: 40%; transform: translate(-50%, 1.25rem);
+  position: fixed; left: 50%; top: 40%; transform: translate(-50%, 0);
   width: max-content;
-  opacity: 0; transition: opacity 320ms ease, transform 320ms ease;
+  opacity: 0;
 }
-.deck.show { opacity: 1; transform: translate(-50%, 0); }
+.deck.show { opacity: 1; }
+/* .deck-motion plays In and Out; .deck-idle loops the idle animation and holds the pile. */
+.deck-motion, .deck-idle { position: relative; }
 /* One card. --depth is its place in the stack: 0 is the front, 1 and 2 peek out above it,
    each smaller and fainter, so a burst reads as a pile rather than as one alert. The card
    takes its width from its message, between the two bounds. */
@@ -33,7 +37,7 @@ body { margin: 0; background: transparent; overflow: hidden; font-family: var(--
   position: relative; z-index: calc(3 - var(--depth, 0));
   display: flex; align-items: center; gap: 1rem;
   min-width: 22.5rem; max-width: 34rem; width: max-content;
-  padding: 1.125rem 1.5rem; background: rgba(18, 18, 22, 0.92);
+  padding: 1.125rem 1.5rem; background: var(--alert-bg);
   border-left: 0.25rem solid var(--accent); border-radius: 0.625rem;
   box-shadow: 0 0.75rem 2.5rem rgba(0, 0, 0, 0.55);
   transform-origin: 50% 0;
@@ -49,10 +53,27 @@ body { margin: 0; background: transparent; overflow: hidden; font-family: var(--
 .alert > * { transition: opacity 200ms ease; }
 .alert.peek > * { opacity: 0; }
 /* A card on its way out leaves the flow so the next one can size the deck. The script
-   freezes its width, height and centring margin first, so it keeps its own shape. */
-.alert.exiting { position: absolute; left: 50%; top: 0; z-index: 4; pointer-events: none; }
+   freezes its width, height and centring margin first, so it keeps its own shape; its exit
+   is a Web Animation (the burstExit field). */
+.alert.exiting { position: absolute; left: 50%; top: 0; z-index: 4; pointer-events: none; transition: none; }
 /* The "+N more" card has a headline and no message line. */
 .alert.summary .alert-msg { display: none; }
+/* Media: the card's layout attribute places it; without media, or with layout "none", the
+   media box is gone and the avatar shows as before. */
+.alert-media { display: none; flex: 0 0 auto; }
+.alert[data-layout="above"] .alert-media,
+.alert[data-layout="left"] .alert-media,
+.alert[data-layout="over"] .alert-media { display: block; }
+.alert[data-layout] .alert-avatar { display: none; }
+.alert[data-layout="none"] .alert-avatar { display: block; }
+.alert[data-layout="above"] { flex-direction: column; text-align: center; }
+.alert-media img, .alert-media video { display: block; max-width: 100%; max-height: 12rem; object-fit: contain; }
+.alert[data-layout="left"] .alert-media img, .alert[data-layout="left"] .alert-media video { max-width: 8rem; max-height: 8rem; }
+.alert[data-layout="over"] { overflow: hidden; }
+.alert[data-layout="over"] .alert-media { position: absolute; inset: 0; z-index: 0; }
+.alert[data-layout="over"] .alert-media img,
+.alert[data-layout="over"] .alert-media video { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: cover; }
+.alert[data-layout="over"] .alert-body { position: relative; z-index: 1; text-shadow: 0 0.125rem 0.5rem rgba(0, 0, 0, 0.8); }
 /* "3 / 10": only while a burst has more than one card, riding the front card's top edge. */
 .deck-count {
   position: absolute; z-index: 5; top: -0.7rem; right: 1.25rem;
@@ -75,43 +96,13 @@ body { margin: 0; background: transparent; overflow: hidden; font-family: var(--
 .alert-body { min-width: 0; overflow-wrap: anywhere; }
 .alert-avatar { width: 2.75rem; height: 2.75rem; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .alert-name { color: var(--accent); font-weight: 700; font-size: 1.375rem; line-height: 1.15; }
-.alert-msg { color: #f2f2f5; font-size: 1rem; margin-top: 0.125rem; }
+.alert-msg { color: var(--alert-text); font-size: 1rem; margin-top: 0.125rem; }
+/* One animated grapheme of a text effect: inline-block so it can move, and never wider or
+   narrower than the letter it holds. */
+.fx-g { display: inline-block; white-space: pre; }
 
-/* Burst exit styles. One block per style, named exit-<style>; template.js maps the
-   burstAnimation field onto these class names. Each runs well inside the 350 ms shortest
-   card hold, so no more than two exiting cards are ever alive at once. */
-.alert.exit-slide { animation: exit-slide 300ms cubic-bezier(0.55, 0, 1, 0.45) forwards; }
-@keyframes exit-slide {
-  from { transform: translateX(0) rotate(0); opacity: 1; }
-  to { transform: translateX(-120%) rotate(-4deg); opacity: 0; }
-}
-.alert.exit-flip { animation: exit-flip 320ms ease-in forwards; }
-@keyframes exit-flip {
-  from { transform: perspective(40rem) translateY(0) rotateX(0); opacity: 1; }
-  to { transform: perspective(40rem) translateY(-1.5rem) rotateX(80deg); opacity: 0; }
-}
-.alert.exit-fall { animation: exit-fall 320ms cubic-bezier(0.55, 0, 1, 0.45) forwards; }
-@keyframes exit-fall {
-  from { transform: translateY(0) rotate(0); opacity: 1; }
-  to { transform: translateY(8rem) rotate(10deg); opacity: 0; }
-}
-.alert.exit-fade { animation: exit-fade 260ms ease-in forwards; }
-@keyframes exit-fade {
-  from { transform: translateY(0); opacity: 1; }
-  to { transform: translateY(-1.5rem); opacity: 0; }
-}
-.alert.exit-zoom { transform-origin: 50% 50%; animation: exit-zoom 280ms ease-in forwards; }
-@keyframes exit-zoom {
-  from { transform: scale(1); opacity: 1; }
-  to { transform: scale(1.3); opacity: 0; }
-}
-
-/* Reduced motion: nothing travels. The deck and the pile keep their places and every
-   change, the exit style included, becomes a short crossfade. Last in the file so it
-   outranks the exit classes above at equal specificity. */
+/* Reduced motion: nothing travels. The engine turns every animation into a 200 ms
+   crossfade; this keeps the pile's own CSS moves from travelling either. */
 @media (prefers-reduced-motion: reduce) {
-  .deck, .deck.show { transform: translate(-50%, 0); transition: opacity 200ms ease; }
   .alert { transition: opacity 200ms ease; }
-  .alert.exiting { animation: exit-crossfade 200ms ease forwards; }
 }
-@keyframes exit-crossfade { to { opacity: 0; } }

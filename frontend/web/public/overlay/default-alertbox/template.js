@@ -1,11 +1,14 @@
 const deckEl = document.getElementById("deck");
+const motionEl = document.getElementById("deck-motion");
+const pileEl = document.getElementById("deck-idle");
 const countEl = document.getElementById("deck-count");
 const liveEl = document.getElementById("alert-live");
 const cardTpl = document.getElementById("alert-card");
 
 // Event type -> how the deck treats it (registry map, not a switch: a new type is one entry).
-//   msg    the field key holding its message template; an unlisted type gets a generic line.
-//   platformMsg  per-platform override of `msg` (the platform names the act differently).
+// What an alert of a type SAYS and how it LOOKS comes from its scope (OBSOverlay.resolveAlert:
+// Defaults, then the event's override, then the winning variation); this table is only about
+// how alerts share the deck.
 //   group  the burst group it stacks with; without one, a type is a group of its own.
 //   alone  plays alone, whole, with its own sound -- it never joins a burst and none joins
 //          it. The value is the field key naming what its overflow card counts: that card
@@ -13,27 +16,22 @@ const cardTpl = document.getElementById("alert-card");
 //          every tip (cheers, Super Chats, Super Stickers, Kicks), so whoever paid sees their
 //          own name and message, and a raid.
 const TYPES = {
-  follow: { msg: "msgFollow", platformMsg: { youtube: "msgSubscribeYouTube" } },
-  sub: { msg: "msgSub", group: "subs" },
-  resub: { msg: "msgSub", group: "subs" },
-  subgift: { msg: "msgSub", group: "subs" },
-  member: { msg: "msgMember", group: "members" },
-  cheer: { msg: "msgCheer", alone: "nounCheer" },
-  raid: { msg: "msgRaid", alone: "nounRaid" },
-  superchat: { msg: "msgSuperchat", alone: "nounSuperchat" },
-  supersticker: { msg: "msgSupersticker", alone: "nounSupersticker" },
-  kicks: { msg: "msgKicks", alone: "nounKicks" },
+  follow: {},
+  sub: { group: "subs" },
+  resub: { group: "subs" },
+  subgift: { group: "subs" },
+  member: { group: "members" },
+  cheer: { alone: "nounCheer" },
+  raid: { alone: "nounRaid" },
+  superchat: { alone: "nounSuperchat" },
+  supersticker: { alone: "nounSupersticker" },
+  kicks: { alone: "nounKicks" },
 };
 
-// burstAnimation value -> the class that plays a card's exit (one keyframes block each in
-// template.css). An unknown value plays the default's.
-const EXIT_CLASS = {
-  slide: "exit-slide",
-  flip: "exit-flip",
-  fall: "exit-fall",
-  fade: "exit-fade",
-  zoom: "exit-zoom",
-};
+// The card layouts the layout field offers; anything else reads as the default.
+const LAYOUTS = { above: true, over: true, left: true, none: true };
+// Media the card plays as video rather than as an image.
+const VIDEO_FILE = /\.webm(?:[?#]|$)/i;
 
 // Cards peeking out behind the front one.
 const PEEK_DEPTH = 2;
@@ -53,11 +51,12 @@ const MAX_WAITING = 3;
 // own card. Past this, more of that type fold into one waiting "+N more" card for the type,
 // so a storm of one-bit cheers still ends in bounded time.
 const MAX_ALONE_WAITING = 10;
-// Outlasts the deck's 320 ms hide transition in template.css.
-const HIDE_MS = 360;
-// Removes an exiting card if its animationend never arrives. Longer than every exit
-// animation in template.css; the queue itself never waits on either.
-const EXIT_REMOVE_MS = 700;
+// The least time the deck takes to leave, so a zero-length exit still hides before the next
+// burst draws.
+const MIN_LEAVE_MS = 60;
+// Removes an exiting card this long after its exit should have finished, if the animation's
+// own end never arrives. The queue itself never waits on either.
+const EXIT_GRACE_MS = 150;
 // A registry entry for `key`, or undefined. Own properties only: the keys come from event
 // payloads and user settings, and "constructor" must not resolve to Object's.
 const own = (map, key) => (Object.hasOwn(map, key) ? map[key] : undefined);
@@ -71,7 +70,7 @@ const DEFAULTS = {
   duration: 5,
   burstWindow: 1.5,
   cardInterval: 1,
-  burstAnimation: "slide",
+  volume: 80,
   msgBurstMore: "and {count} more!",
 };
 
@@ -82,12 +81,19 @@ let fields = OBSOverlay.fields || {};
 let queue = []; // bursts waiting for the deck, oldest first
 let current = null; // the burst on the deck
 let timer = 0; // the deck's one pending step; every step replaces it
+let idleTimer = 0; // starts the idle loop once the entrance has played
+let idleAnim = null;
 
 OBSOverlay.onLoad((ctx) => {
   fields = ctx.fields || {};
-  if (fields.accent) document.documentElement.style.setProperty("--accent", String(fields.accent));
-  if (fields.font) document.body.style.setProperty("--ov-font", String(fields.font));
+  applyLook(fields);
 });
+
+// A burst's look: what its first alert resolves to. Every card of the burst shares it, so a
+// burst reads as one alert; each card still says its own alert's message.
+function lookOf(e) {
+  return OBSOverlay.resolveAlert(e).settings;
+}
 
 OBSOverlay.onEvent((e) => {
   const now = performance.now();
@@ -123,7 +129,18 @@ OBSOverlay.onEvent((e) => {
     return;
   }
   const overflow = alone?.full === true;
-  queue.push({ group, overflow, events: [e], lastAt: now, startAt: 0, front: 0, frontAt: 0, summaryFrom: -1, leaving: false });
+  queue.push({
+    group,
+    overflow,
+    look: lookOf(e),
+    events: [e],
+    lastAt: now,
+    startAt: 0,
+    front: 0,
+    frontAt: 0,
+    summaryFrom: -1,
+    leaving: false,
+  });
   if (!current) next();
 });
 
@@ -146,7 +163,7 @@ OBSOverlay.onEventRedaction((ids, redacts) => {
     liveEl.textContent = "";
     return;
   }
-  for (const el of deckEl.querySelectorAll(".alert.exiting")) if (hit.has(el.dataset.key)) el.remove();
+  for (const el of pileEl.querySelectorAll(".alert.exiting")) if (hit.has(el.dataset.key)) el.remove();
   for (const el of standing()) if (hit.has(el.dataset.key)) delete el.dataset.filled;
   layout(current);
   if (hit.has(cardKey(current, current.front))) announce(current);
@@ -182,20 +199,32 @@ const VARS = {
   count: (e) => (e.count ? OBSOverlay.formatCount(e.count) : ""),
 };
 
-function render(tmpl, e) {
+function valuesOf(e) {
   const values = {};
   for (const key in VARS) values[key] = VARS[key](e);
-  return OBSOverlay.fillTemplate(tmpl || "", values);
+  return values;
+}
+
+// The card shows the name on its own line, so the message line drops the {name} it opens
+// with, and the one space after it -- the whole of what render used to strip, fallback name
+// included, so an unnamed actor never shows as "Someone Someone just followed!".
+function withoutLeadingName(parts, shownName) {
+  const i = parts.findIndex((p) => p.key === "name" && p.text === shownName);
+  const after = parts[i + 1];
+  if (i < 0 || !after || after.key !== null || !after.text.startsWith(" ")) return parts;
+  const out = parts.slice();
+  out.splice(i, 2, { text: after.text.slice(1), key: null });
+  return out.filter((p) => p.text !== "");
 }
 
 // A numeric field in seconds. Zero is an answer (burstWindow 0 turns bursts off), so only
 // a missing, negative or non-numeric value falls back.
-function seconds(key) {
-  const v = Number(fields[key]);
-  return fields[key] != null && fields[key] !== "" && Number.isFinite(v) && v >= 0 ? v : DEFAULTS[key];
+function seconds(key, from = fields) {
+  const v = Number(from[key]);
+  return from[key] != null && from[key] !== "" && Number.isFinite(v) && v >= 0 ? v : DEFAULTS[key];
 }
 
-const durationMs = () => (Number(fields.duration) || DEFAULTS.duration) * 1000;
+const durationMs = (b) => (Number(b.look.duration) || DEFAULTS.duration) * 1000;
 const intervalMs = () => Math.max(CARD_FLOOR_MS, (seconds("cardInterval") || DEFAULTS.cardInterval) * 1000);
 
 // A burst on the deck takes more of its group until it starts to leave, and until its time
@@ -224,7 +253,7 @@ const cardKey = (b, k) => (isSummary(b, k) ? "summary" : "e" + k);
 // them, the burst is cut to the cards that do fit and a "+N more" card.
 function holdMs(b) {
   const last = cardCount(b) - 1;
-  if (b.front >= last) return durationMs();
+  if (b.front >= last) return durationMs(b);
   const toGo = last - b.front;
   const left = Math.max(0, b.startAt + BURST_EXTRA_MS - b.frontAt);
   if (left / toGo >= CARD_FLOOR_MS) return Math.min(intervalMs(), left / toGo);
@@ -248,6 +277,21 @@ function setStep(ms, fn) {
   timer = setTimeout(fn, Math.max(0, ms));
 }
 
+// The deck-wide styling a look carries. Defaults paint it at load; each burst repaints it.
+function applyLook(look) {
+  const style = deckEl.style;
+  if (look.accent) style.setProperty("--accent", String(look.accent));
+  if (look.textColor) style.setProperty("--alert-text", String(look.textColor));
+  if (look.cardColor) style.setProperty("--alert-bg", String(look.cardColor));
+  if (look.font) document.body.style.setProperty("--ov-font", String(look.font));
+}
+
+function stopIdle() {
+  clearTimeout(idleTimer);
+  if (idleAnim) idleAnim.cancel();
+  idleAnim = null;
+}
+
 function next() {
   current = queue.shift() || null;
   if (!current) return;
@@ -255,10 +299,17 @@ function next() {
   current.startAt = now;
   current.frontAt = now;
   clearCards();
+  applyLook(current.look);
   plan(current, now);
   announce(current);
   deckEl.classList.add("show");
-  if (fields.sound) OBSOverlay.playSound(String(fields.sound), 1);
+  const look = current.look;
+  OBSOverlay.animate(motionEl, "in", look.inAnim);
+  stopIdle();
+  idleTimer = setTimeout(() => {
+    idleAnim = OBSOverlay.animate(pileEl, "idle", look.idleAnim);
+  }, OBSOverlay.animationMs("in", look.inAnim));
+  if (look.sound) OBSOverlay.playSound(String(look.sound), seconds("volume", look) / 100);
 }
 
 function advance() {
@@ -273,8 +324,12 @@ function advance() {
 function leave() {
   current.leaving = true;
   countEl.classList.remove("on");
-  deckEl.classList.remove("show");
-  setStep(HIDE_MS, () => {
+  stopIdle();
+  const out = current.look.outAnim;
+  OBSOverlay.animate(motionEl, "out", out);
+  setStep(Math.max(MIN_LEAVE_MS, OBSOverlay.animationMs("out", out)), () => {
+    deckEl.classList.remove("show");
+    for (const a of motionEl.getAnimations?.() ?? []) a.cancel();
     current = null;
     clearCards();
     next();
@@ -282,10 +337,10 @@ function leave() {
 }
 
 function clearCards() {
-  for (const el of deckEl.querySelectorAll(".alert")) el.remove();
+  for (const el of pileEl.querySelectorAll(".alert")) el.remove();
 }
 
-const standing = () => deckEl.querySelectorAll(".alert:not(.exiting)");
+const standing = () => pileEl.querySelectorAll(".alert:not(.exiting)");
 
 function cardEl(key) {
   for (const el of standing()) if (el.dataset.key === key) return el;
@@ -305,7 +360,7 @@ function layout(b) {
   const want = new Map();
   for (let d = 0; d <= PEEK_DEPTH && b.front + d < cardCount(b); d++) want.set(cardKey(b, b.front + d), d);
   for (const el of standing()) if (!want.has(el.dataset.key)) el.remove();
-  const fresh = !deckEl.querySelector(".alert");
+  const fresh = !pileEl.querySelector(".alert");
   for (const [key, d] of want) {
     let el = cardEl(key);
     if (!el) {
@@ -315,11 +370,12 @@ function layout(b) {
         el.style.setProperty("--depth", String(PEEK_DEPTH + 1));
         el.classList.add("peek");
       }
-      deckEl.insertBefore(el, countEl);
+      pileEl.insertBefore(el, countEl);
       if (!fresh) void el.offsetWidth; // commit the starting depth so the move animates
     }
     if (key === "summary") fillSummary(el, b);
-    else if (!el.dataset.filled) fillCard(el, b.events[b.front + d]);
+    else if (!el.dataset.filled) fillCard(el, b.events[b.front + d], b.look);
+    if (d === 0 && key !== "summary") playTextFx(el, b.look);
     el.style.setProperty("--depth", String(d));
     el.classList.toggle("peek", d > 0);
   }
@@ -328,16 +384,58 @@ function layout(b) {
   countEl.classList.toggle("on", multi);
 }
 
-function fillCard(el, e) {
-  const t = own(TYPES, e.type);
-  const platformKey = own(t?.platformMsg ?? {}, e.platform);
-  const tmpl = (platformKey && fields[platformKey]) || (t?.msg && fields[t.msg]) || "{name}";
-  // The strip has to remove exactly what render() substituted for {name}, fallback
-  // included -- otherwise an unnamed actor shows as "Someone Someone just followed!".
+// The card's text, plain. Its text effect starts only when the card reaches the front (see
+// playTextFx), so an effect that plays once is not spent while the card is still a peek.
+function fillCard(el, e, look) {
   const shownName = actorLabel(e);
+  const message = String(OBSOverlay.resolveAlert(e).settings.message || "{name}");
+  const msg = withoutLeadingName(OBSOverlay.fillTemplateParts(message, valuesOf(e)), shownName);
+  el.textParts = { name: [{ text: shownName, key: "name" }], msg };
   el.querySelector(".alert-name").textContent = shownName;
-  el.querySelector(".alert-msg").textContent = render(tmpl, e).replace(shownName + " ", "");
+  el.querySelector(".alert-msg").textContent = msg.map((p) => p.text).join("");
+  fillMedia(el, look);
   el.dataset.filled = "1";
+  delete el.dataset.fx;
+}
+
+function playTextFx(el, look) {
+  if (el.dataset.fx || !el.textParts) return;
+  el.dataset.fx = "1";
+  OBSOverlay.applyTextFx(el.querySelector(".alert-name"), el.textParts.name, look.textFx);
+  OBSOverlay.applyTextFx(el.querySelector(".alert-msg"), el.textParts.msg, look.textFx);
+}
+
+// The card's image or video, placed by the look's layout. Anything that will not show --
+// no media, a missing upload, a file that does not decode -- leaves a text-only card, and
+// says so once in the log.
+function fillMedia(el, look) {
+  const box = el.querySelector(".alert-media");
+  const url = String(look.media || "");
+  const layout = own(LAYOUTS, look.layout) ? look.layout : "above";
+  box.textContent = "";
+  if (!url || layout === "none") {
+    el.dataset.layout = "none";
+    return;
+  }
+  const video = VIDEO_FILE.test(url);
+  const media = document.createElement(video ? "video" : "img");
+  const fail = () => {
+    OBSOverlay.logOnce("media|" + url, "could not show alert media " + url.split("?")[0] + "; showing text only");
+    media.remove();
+    el.dataset.layout = "none";
+  };
+  media.addEventListener("error", fail, { once: true });
+  if (video) {
+    // Muted and looping: the alert's sound is the Sound field, and a clip shorter than the
+    // alert repeats while a longer one is cut off when the card leaves.
+    media.muted = true;
+    media.loop = true;
+    media.autoplay = true;
+    media.playsInline = true;
+  }
+  media.src = url;
+  box.appendChild(media);
+  el.dataset.layout = layout;
 }
 
 function fillSummary(el, b) {
@@ -370,9 +468,9 @@ function announce(b) {
     .join(" ");
 }
 
-// Sends the front card off with the chosen exit. Frozen at its own size first, because once
+// Sends the front card off with the burst exit. Frozen at its own size first, because once
 // it leaves the flow the next card sizes the deck. Purely visual: the deck has already moved
-// on, and the card is removed on animationend or, failing that, on a timeout.
+// on, and the card is removed when its exit finishes or, failing that, on a timeout.
 function exitFront(b) {
   const el = cardEl(cardKey(b, b.front));
   if (!el) return;
@@ -380,8 +478,9 @@ function exitFront(b) {
   el.style.width = w + "px";
   el.style.height = el.offsetHeight + "px";
   el.style.marginLeft = -w / 2 + "px";
-  el.classList.add("exiting", own(EXIT_CLASS, fields.burstAnimation) || EXIT_CLASS[DEFAULTS.burstAnimation]);
+  el.classList.add("exiting");
   const drop = () => el.remove();
-  el.addEventListener("animationend", drop, { once: true });
-  setTimeout(drop, EXIT_REMOVE_MS);
+  const exit = OBSOverlay.animate(el, "out", fields.burstExit);
+  if (exit) exit.finished.then(drop, drop);
+  setTimeout(drop, OBSOverlay.animationMs("out", fields.burstExit) + EXIT_GRACE_MS);
 }
