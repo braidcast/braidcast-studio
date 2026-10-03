@@ -16,16 +16,35 @@
   //
   // Which control a row renders is read from FIELD_TYPES, so a new field type is one entry
   // in fieldTypes.ts. Settings stay immutable: each edit builds the next map through
-  // withOverride and hands it to onChange, which the page debounces into overlays.update.
-  import { obs, type OverlayField } from "$lib/api/bridge";
+  // withScopedOverride and hands it to onChange, which the page debounces into
+  // overlays.update.
+  //
+  // Scoped use (the alert box's event and variation scopes): `settings` is then that scope's
+  // own map and `inherit` says what each field would be without it -- the value and the
+  // scope it comes from. An unset row shows that inherited value, greyed, with where it comes
+  // from; editing it creates the scope's override; Reset writes the inherited value back,
+  // which removes it. Without `inherit` the schema default plays that part, as it always has.
+  import { obs, type OverlayAsset, type OverlayField } from "$lib/api/bridge";
   import {
     needsFontList,
     specFor,
     suggestsFonts,
     textStyleDefaultFault,
-    withOverride,
+    withScopedOverride,
   } from "$lib/overlays/fieldTypes";
+  import AnimationPicker from "$lib/overlays/AnimationPicker.svelte";
+  import MediaPicker from "$lib/overlays/MediaPicker.svelte";
+  import SoundPicker from "$lib/overlays/SoundPicker.svelte";
+  import {
+    assetFileOf,
+    assetKindOf,
+    scopedAssetKey,
+    trackUpload,
+    uploadProblem,
+    type AssetLimits,
+  } from "$lib/overlays/scopes/scopedAssets";
   import TextStyleControl from "$lib/overlays/TextStyleControl.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import FontDatalist from "$lib/ui/FontDatalist.svelte";
   import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
@@ -37,11 +56,29 @@
     settings,
     widgetId,
     onChange,
+    scope = "default",
+    inherit,
+    visible,
+    assets = [],
+    widgetUrl = "",
+    onAssetReleased,
   }: {
     schema: OverlayField[];
     settings: Record<string, unknown>;
     widgetId: string;
     onChange: (next: Record<string, unknown>) => void;
+    /** The scope `settings` belongs to; it names the files a sound or media field uploads. */
+    scope?: string;
+    /** What a field resolves to when this scope leaves it out, and the label of the scope
+     * that supplies it. Absent in Defaults, where the schema default is that value. */
+    inherit?: (f: OverlayField) => { value: unknown; fromLabel: string };
+    /** Which fields this scope shows; all of them when absent. */
+    visible?: (f: OverlayField) => boolean;
+    assets?: OverlayAsset[];
+    widgetUrl?: string;
+    /** A sound or media field stopped naming an uploaded file. The page prunes the scope's
+     * unreferenced uploads once the edit is saved. */
+    onAssetReleased?: () => void;
   } = $props();
 
   let uploadingKey = $state<string | null>(null);
@@ -69,6 +106,9 @@
   const runs = $derived.by<FieldRun[]>(() => {
     const out: FieldRun[] = [];
     schema.forEach((f, i) => {
+      if (visible && !visible(f)) {
+        return;
+      }
       const group = f.group || null;
       const last = out[out.length - 1];
       if (last && last.group === group) {
@@ -84,17 +124,27 @@
     return Object.hasOwn(settings, f.key);
   }
 
-  // The override when there is one, otherwise the default its schema field declares —
-  // the same rule the host applies when it assembles the page, read off the same payload.
-  // Not the host's own merge OUTPUT: that resolves an overridden key to the override, so
-  // using it as the fallback would keep showing the value a moment after it was cleared,
-  // and a control moved back to its default would visibly snap away from it.
+  /** What the field is when this scope leaves it out: the inherited value in a scope, the
+   * schema default in Defaults. */
+  function baseOf(f: OverlayField): unknown {
+    return inherit ? inherit(f).value : f.default;
+  }
+
+  // The override when there is one, otherwise the value the row inherits -- the same rule
+  // the host applies when it assembles the page, read off the same payload. Not the host's
+  // own merge OUTPUT: that resolves an overridden key to the override, so using it as the
+  // fallback would keep showing the value a moment after it was cleared, and a control moved
+  // back to its default would visibly snap away from it.
   function valueOf(f: OverlayField): unknown {
-    return isOverridden(f) ? settings[f.key] : f.default;
+    return isOverridden(f) ? settings[f.key] : baseOf(f);
   }
 
   function setValue(f: OverlayField, v: unknown): void {
-    onChange(withOverride(settings, f, v));
+    const before = settings[f.key];
+    onChange(withScopedOverride(settings, f.key, v, baseOf(f)));
+    if (assetFileOf(before) && before !== v) {
+      onAssetReleased?.();
+    }
   }
 
   // --- value coercion helpers (a setting is unknown; inputs need concrete types) ---
@@ -109,7 +159,45 @@
     return v === true || v === "true";
   }
 
-  async function upload(f: OverlayField, file: File, kind: "image" | "sound"): Promise<void> {
+  // The host's per-kind caps, fetched once per panel and only once a scoped upload starts,
+  // so an oversize file is refused before any of it is read.
+  let limits: Promise<AssetLimits> | null = null;
+  function assetLimits(): Promise<AssetLimits> {
+    limits ??= obs.call("overlays.assetLimits").catch((e: unknown) => {
+      limits = null;
+      throw e;
+    });
+    return limits;
+  }
+
+  /** A sound or media upload: named for its scope and field, checked against the cap first. */
+  async function uploadScoped(f: OverlayField, file: File): Promise<void> {
+    uploadError = null;
+    const kind = assetKindOf(file);
+    if (!kind) {
+      uploadError = `${file.name} is not a file this field takes.`;
+      return;
+    }
+    try {
+      const problem = uploadProblem(file, kind, await assetLimits());
+      if (problem) {
+        uploadError = problem;
+        return;
+      }
+    } catch (e) {
+      uploadError = (e as Error).message;
+      return;
+    }
+    await upload(f, file, kind, scopedAssetKey(scope, f.key, file.name), scope);
+  }
+
+  async function upload(
+    f: OverlayField,
+    file: File,
+    kind: "image" | "sound" | "video",
+    key: string,
+    assetScope: string | undefined,
+  ): Promise<void> {
     // Pinned alongside the key, because the encode below is a real wait on a large file
     // and the page can select another overlay inside it. Reading the prop afterwards would
     // upload against whichever widget is open by then, and the host both writes the blob
@@ -125,12 +213,14 @@
         r.onerror = () => rej(r.error);
         r.readAsDataURL(file);
       });
-      const { path } = await obs.call("overlays.uploadAsset", { id: target, key: file.name, kind, base64 });
-      // The panel may be looking at another widget by now; writing the path would set it
-      // on that widget's settings instead.
-      if (widgetId === target) {
-        setValue(f, path);
-      }
+      await trackUpload(async () => {
+        const { path } = await obs.call("overlays.uploadAsset", { id: target, key, kind, base64, scope: assetScope });
+        // The panel may be looking at another widget by now; writing the path would set it
+        // on that widget's settings instead.
+        if (widgetId === target) {
+          setValue(f, path);
+        }
+      });
     } catch (e) {
       uploadError = (e as Error).message;
     } finally {
@@ -145,7 +235,7 @@
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (file) {
-      void upload(f, file, kind);
+      void upload(f, file, kind, file.name, undefined);
     }
   }
 </script>
@@ -166,8 +256,21 @@
     {@const placeholder = spec.control === "text" ? (spec.placeholder ?? "") : ""}
     {@const set = isOverridden(f)}
     {@const value = valueOf(f)}
-    <li class="frow" class:frow--set={set} class:frow--tall={spec.control === "textstyle"}>
-      <span class="cv-ci__name fname" title={f.key}>{name}</span>
+    {@const inherited = inherit && !set ? inherit(f) : null}
+    {@const tall = spec.control === "textstyle" || spec.control === "animation" || spec.control === "sound"}
+    <li
+      class="frow"
+      class:frow--set={set && !inherit}
+      class:frow--scoped={set && !!inherit}
+      class:frow--inherited={!!inherited}
+      class:frow--tall={tall}
+    >
+      <span class="fname">
+        <span class="cv-ci__name fname__label" title={f.key}>{name}</span>
+        {#if inherited}
+          <span class="fname__from">from {inherited.fromLabel}</span>
+        {/if}
+      </span>
 
       <div class="fval">
         {#if spec.control === "switch"}
@@ -237,6 +340,36 @@
               <span class="fnote ok" title={asText(value)}>{asText(value)}</span>
             {/if}
           </div>
+        {:else if spec.control === "animation"}
+          <AnimationPicker
+            {value}
+            layer={f.layer ?? "in"}
+            {name}
+            ariaDescribedBy={helpId}
+            onChange={(next) => setValue(f, next)}
+          />
+        {:else if spec.control === "sound"}
+          <SoundPicker
+            value={asText(value)}
+            {name}
+            {assets}
+            {widgetUrl}
+            uploading={uploadingKey === f.key}
+            ariaDescribedBy={helpId}
+            onUpload={(file) => void uploadScoped(f, file)}
+            onChange={(next) => setValue(f, next)}
+          />
+        {:else if spec.control === "media"}
+          <MediaPicker
+            value={asText(value)}
+            {name}
+            {assets}
+            {widgetUrl}
+            uploading={uploadingKey === f.key}
+            ariaDescribedBy={helpId}
+            onUpload={(file) => void uploadScoped(f, file)}
+            onChange={(next) => setValue(f, next)}
+          />
         {:else if spec.control === "textstyle"}
           {@const fault = textStyleDefaultFault(f)}
           {#if fault}
@@ -272,8 +405,12 @@
 
       <!-- The slot is always laid out, so a row does not shift as it gains or loses its
            override. Writing the default back is what clears the key (see withOverride). -->
-      <div class="freset">
-        {#if set}
+      <div class="freset" class:freset--wide={!!inherit}>
+        {#if set && inherit}
+          <Button size="xs" variant="bare" tone="warn" aria-label="Reset {name}" onclick={() => setValue(f, baseOf(f))}>
+            Reset
+          </Button>
+        {:else if set}
           <IconButton
             icon="x"
             {...ICONBTN_TOOLBAR}
@@ -302,10 +439,12 @@
   <div class="flist">
     {#each runs as run, ri (widgetId + ":run:" + ri)}
       {#if run.group}
-        <section class="fgroup">
-          <h3 class="fgroup__h">{run.group}</h3>
+        <!-- Native disclosure: keyboard, focus and the expanded state come with it, and the
+             open state survives a scope switch because the section is keyed by position. -->
+        <details class="fgroup" open>
+          <summary class="fgroup__h">{run.group}</summary>
           {@render rowList(run.items)}
-        </section>
+        </details>
       {:else}
         {@render rowList(run.items)}
       {/if}
@@ -358,6 +497,7 @@
   }
   .fgroup__h {
     margin: 0;
+    cursor: pointer;
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 400;
@@ -379,6 +519,21 @@
   .frow--set {
     border-left-color: var(--color-accent);
   }
+  /* An override set in an event or variation scope: amber, so it reads as "this scope
+     differs" rather than as the Defaults marker. */
+  .frow--scoped {
+    border-left-color: var(--color-warn);
+  }
+  /* Inherited: the control shows the value it inherits, greyed until it is pointed at or
+     focused -- never while focused, so the focus edge is drawn at full strength. */
+  .frow--inherited .fval {
+    opacity: 0.55;
+    transition: opacity 150ms ease;
+  }
+  .frow--inherited .fval:hover,
+  .frow--inherited .fval:focus-within {
+    opacity: 1;
+  }
   /* A control that grows downward when it opens: the label stays at the row's top edge
      instead of drifting to the vertical middle of an expanded editor. */
   .frow--tall {
@@ -387,15 +542,30 @@
   .frow--tall .fname {
     padding-top: 6px;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .frow--inherited .fval {
+      transition: none;
+    }
+  }
   .frow--tall .fval {
     display: block;
   }
   .fname {
-    flex: 0 0 180px;
+    flex: 0 0 140px;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .fname__label {
     /* Overrides .cv-ci__name's dim resting color: that class dims until its row is
        selected, and these rows have no selected state to brighten into. */
     color: var(--color-text);
+  }
+  .fname__from {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--color-muted);
   }
   .fval {
     flex: 1;
@@ -417,6 +587,9 @@
     flex: 0 0 25px;
     display: flex;
     justify-content: flex-end;
+  }
+  .freset--wide {
+    flex-basis: 52px;
   }
   .ftext {
     width: 100%;
