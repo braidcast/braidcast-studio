@@ -353,6 +353,9 @@ target_sources(
     # Overlay self-test: real loopback CLIENT sockets, so winsock-only (no obs.h) and
     # kept out of obs_bootstrap.cpp to dodge the winsock2/windows.h include-order clash.
     src/overlay/overlay_selftest.cpp
+    # Overlay scope self-test: drives the widget store and the served-data builder
+    # directly, no sockets and no obs.h.
+    src/overlay/overlay_scope_selftest.cpp
     # Phase 8d: generic ingest-key writeback (marshals an RTMP server+key into a
     # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
     src/ingest_writeback.cpp

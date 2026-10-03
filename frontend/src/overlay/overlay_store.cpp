@@ -237,6 +237,27 @@ std::string SanitizeAssetKey(const std::string &key)
 	return out;
 }
 
+constexpr char kAssetPrefix[] = "assets/";
+
+// Every upload file `v` names, at any depth: a string value "assets/<file>" anywhere in an
+// object or array. Read off the values rather than the schema, so a reference is found
+// whatever field type holds it -- the same prefix test the server's rewrite uses.
+void CollectAssetRefs(const json &v, std::set<std::string> &out)
+{
+	if (v.is_string()) {
+		const std::string &s = v.get_ref<const std::string &>();
+		if (s.rfind(kAssetPrefix, 0) == 0) {
+			out.insert(s.substr(sizeof(kAssetPrefix) - 1));
+		}
+		return;
+	}
+	if (v.is_object() || v.is_array()) {
+		for (const json &child : v) {
+			CollectAssetRefs(child, out);
+		}
+	}
+}
+
 } // namespace
 
 json CustomCode::ToJson() const
@@ -263,9 +284,16 @@ json Widget::ToJson() const
 	// reads it as the stock/forked flag, and a key that comes and goes would make an
 	// absent one ambiguous with a field the transport dropped.
 	return json{
-		{"id", id},         {"token", token},       {"name", name},
-		{"type", type},     {"settings", settings}, {"custom", custom ? custom->ToJson() : json(nullptr)},
-		{"assets", assets}, {"rev", rev},
+		{"id", id},
+		{"token", token},
+		{"name", name},
+		{"type", type},
+		{"settings", settings},
+		{"overrides", overrides},
+		{"variations", variations},
+		{"custom", custom ? custom->ToJson() : json(nullptr)},
+		{"assets", assets},
+		{"rev", rev},
 	};
 }
 
@@ -286,6 +314,12 @@ Widget Widget::FromJson(const json &j)
 	w.type = j.value("type", std::string());
 	if (j.contains("settings") && j["settings"].is_object()) {
 		w.settings = j["settings"];
+	}
+	if (j.contains("overrides") && j["overrides"].is_object()) {
+		w.overrides = j["overrides"];
+	}
+	if (j.contains("variations") && j["variations"].is_array()) {
+		w.variations = j["variations"];
 	}
 	// Only an object forks a widget. A null -- what a stock widget persists -- and an
 	// absent key both mean stock, so neither obs_data's round trip nor a hand-trimmed
@@ -437,6 +471,12 @@ MutateResult OverlayStore::Update(const std::string &id, const json &patch, int 
 	}
 	if (patch.contains("settings") && patch["settings"].is_object()) {
 		w->settings = patch["settings"];
+	}
+	if (patch.contains("overrides") && patch["overrides"].is_object()) {
+		w->overrides = patch["overrides"];
+	}
+	if (patch.contains("variations") && patch["variations"].is_array()) {
+		w->variations = patch["variations"];
 	}
 	if (carriesCode) {
 		if (patch.contains("html") && patch["html"].is_string()) {
@@ -649,10 +689,10 @@ bool OverlayStore::Delete(const std::string &id)
 }
 
 std::string OverlayStore::AddAsset(const std::string &id, const std::string &key, const std::string &kind,
-				   const std::vector<unsigned char> &bytes)
+				   const std::vector<unsigned char> &bytes, const std::string &scope)
 {
 	const std::string safeKey = SanitizeAssetKey(key);
-	if (safeKey.empty()) {
+	if (safeKey.empty() || SanitizeAssetKey(scope) != scope) {
 		return std::string();
 	}
 	{
@@ -691,15 +731,22 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 		Widget *target = FindWidget(widgets_, id);
 		if (target) {
 			stillPresent = true;
+			json record{{"key", key}, {"kind", kind}, {"file", safeKey}, {"bytes", bytes.size()}};
+			if (!scope.empty()) {
+				record["scope"] = scope;
+			}
+			// A re-upload under the same name replaces the record too, so its size and
+			// kind describe the bytes now on disk rather than the first upload's.
 			bool exists = false;
-			for (const json &a : target->assets) {
+			for (json &a : target->assets) {
 				if (a.is_object() && a.value("file", std::string()) == safeKey) {
+					a = record;
 					exists = true;
 					break;
 				}
 			}
 			if (!exists) {
-				target->assets.push_back(json{{"key", key}, {"kind", kind}, {"file", safeKey}});
+				target->assets.push_back(std::move(record));
 			}
 			// Unconditionally, including when `exists` was already true -- that is the
 			// re-upload-under-the-same-name case, where the filename and therefore the
@@ -770,6 +817,53 @@ bool OverlayStore::RemoveAsset(const std::string &id, const std::string &file)
 	std::error_code ec;
 	std::filesystem::remove(std::filesystem::u8path(AssetsDir(id) + "/" + safeFile), ec);
 	return true;
+}
+
+size_t OverlayStore::RemoveScopeAssets(const std::string &id, const std::string &scope)
+{
+	// The same shape AddAsset accepts, so a scope that could never have been recorded is
+	// refused before anything is compared against it.
+	if (scope.empty() || SanitizeAssetKey(scope) != scope) {
+		return 0;
+	}
+	std::vector<std::string> doomed;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		Widget *target = FindWidget(widgets_, id);
+		if (target == nullptr) {
+			return 0;
+		}
+		std::set<std::string> referenced;
+		CollectAssetRefs(target->settings, referenced);
+		CollectAssetRefs(target->overrides, referenced);
+		CollectAssetRefs(target->variations, referenced);
+		json kept = json::array();
+		for (const json &a : target->assets) {
+			const std::string file = a.is_object() ? a.value("file", std::string()) : std::string();
+			const bool ours = a.is_object() && a.value("scope", std::string()) == scope;
+			if (ours && !file.empty() && referenced.count(file) == 0) {
+				doomed.push_back(file);
+				continue;
+			}
+			kept.push_back(a);
+		}
+		if (doomed.empty()) {
+			return 0;
+		}
+		target->assets = std::move(kept);
+		Save();
+	}
+	// Outside mutex_, after the registry stopped naming them -- RemoveAsset's ordering, for
+	// its reason: a crash in between orphans a file, never a record. A recorded name that
+	// is not already sanitized was not written by AddAsset and is left alone.
+	for (const std::string &file : doomed) {
+		if (SanitizeAssetKey(file) != file) {
+			continue;
+		}
+		std::error_code ec;
+		std::filesystem::remove(std::filesystem::u8path(AssetsDir(id) + "/" + file), ec);
+	}
+	return doomed.size();
 }
 
 void OverlayStore::InjectForTest(const Widget &w)

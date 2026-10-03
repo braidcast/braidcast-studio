@@ -14745,6 +14745,25 @@ bool MethodOverlaysAssetLimits(const json & /*params*/, json &result, std::strin
 	return true;
 }
 
+// overlays.removeScopeAssets {id,scope} -> {removed}: drop the uploads recorded under one
+// editor scope that the stored widget no longer references. The store does the reference
+// check, so the editor can ask after any save that released a file without tracking which.
+bool MethodOverlaysRemoveScopeAssets(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	const std::string scope = OptString(p, "scope");
+	if (id.empty() || scope.empty()) {
+		error = "overlays.removeScopeAssets requires id and scope";
+		return false;
+	}
+	const size_t removed = Overlay::Store().RemoveScopeAssets(id, scope);
+	if (removed > 0) {
+		EmitEvent(EventNames::kOverlaysChanged, json::object());
+	}
+	result = json{{"removed", removed}};
+	return true;
+}
+
 bool MethodOverlaysUrl(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
@@ -15005,13 +15024,15 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 	return true;
 }
 
-// overlays.uploadAsset {id,key,kind,base64} -> {path:"assets/<file>"} (async lane).
+// overlays.uploadAsset {id,key,kind,base64,scope?} -> {path:"assets/<file>"} (async lane).
+// `scope` is the editor scope the upload belongs to, recorded for overlays.removeScopeAssets.
 bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
 	const std::string key = OptString(p, "key");
 	const std::string kind = OptString(p, "kind");
 	const std::string b64 = OptString(p, "base64");
+	const std::string scope = OptString(p, "scope");
 	if (id.empty() || key.empty() || b64.empty()) {
 		error = "overlays.uploadAsset requires id, key, base64";
 		return false;
@@ -15034,7 +15055,7 @@ bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 		error = tooLarge;
 		return false;
 	}
-	const std::string rel = Overlay::Store().AddAsset(id, key, kind, bytes);
+	const std::string rel = Overlay::Store().AddAsset(id, key, kind, bytes, scope);
 	if (rel.empty()) {
 		error = "failed to store asset";
 		return false;
@@ -15436,6 +15457,7 @@ void Init()
 		{"overlays.usage", MethodOverlaysUsage},
 		{"overlays.removeAsset", MethodOverlaysRemoveAsset},
 		{"overlays.assetLimits", MethodOverlaysAssetLimits},
+		{"overlays.removeScopeAssets", MethodOverlaysRemoveScopeAssets},
 		{"overlays.url", MethodOverlaysUrl},
 		{"overlays.serverInfo", MethodOverlaysServerInfo},
 		{"overlays.addToScene", MethodOverlaysAddToScene},

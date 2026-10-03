@@ -29,7 +29,8 @@ struct CustomCode {
 };
 
 // One overlay widget. settings/assets are stored as verbatim json objects so a new field
-// type is a data change, never a C++ branch. asset: {key,kind,file}.
+// type is a data change, never a C++ branch. asset: {key,kind,file,bytes?,scope?} -- `bytes`
+// and `scope` are absent on uploads made before they were recorded.
 struct Widget {
 	std::string id;    // uuid (os_generate_uuid)
 	std::string token; // 32 hex chars; empty only when the RNG failed, and the server then serves nothing
@@ -39,6 +40,14 @@ struct Widget {
 	// rather than holding a copy of it, which is what lets a field added to a shipped
 	// fields.json show up on widgets that already exist.
 	json settings = json::object();
+	// The scope layers above `settings` for a type that declares scopes (scopes.json):
+	// {eventKey: {schemaKey: value}} and [{id, event, label?, when, settings}]. Overrides
+	// only, like `settings`, and stored verbatim: what they mean is decided by the one
+	// resolver the overlay runtime and the editor share (alertScopes.ts), never here. Kept on
+	// every widget, forked or not -- a fork is served flat Defaults and ignores them, and
+	// returning it to stock picks them back up.
+	json overrides = json::object();
+	json variations = json::array();
 	// Absent until the user forks. While it is absent the server serves
 	// default-<type>/template.* and reads the schema from that type's fields.json, so an
 	// improved template reaches this widget with no action from anyone.
@@ -134,9 +143,11 @@ public:
 	// type, an install missing a file, a file locked for a moment), or all four read and
 	// fields.json did not parse as a field list (a truncated or hand-edited one).
 	//
-	// {name?,settings?,html?,css?,js?,fields?}. `settings` REPLACES the override set
-	// wholesale -- the editor sends all of it, so a key it omits is a value returned to
-	// its schema default rather than one left alone. html/css/js/fields are refused
+	// {name?,settings?,overrides?,variations?,html?,css?,js?,fields?}. `settings` REPLACES the
+	// override set wholesale -- the editor sends all of it, so a key it omits is a value
+	// returned to its schema default rather than one left alone. `overrides` (an object) and
+	// `variations` (an array) replace theirs the same way; a value of the wrong type is
+	// ignored rather than stored. html/css/js/fields are refused
 	// (NotForked, widget untouched) unless the widget is forked, so saving a form can
 	// never quietly detach a widget from its shipped template. Bumps the revision and
 	// reports the new value through *newRev, so a caller can hand it back to the editor
@@ -162,12 +173,22 @@ public:
 	MutateResult ReturnToStock(const std::string &id, int *newRev = nullptr);
 	std::optional<Widget> Duplicate(const std::string &id); // new id+token, assets copied
 	bool Delete(const std::string &id);                     // removes widget + overlays/<id> dir
-	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on failure).
+	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on
+	// failure). `scope` names the editor scope the upload belongs to ("default", an event key,
+	// a variation id) and is recorded so RemoveScopeAssets can find it; empty for an upload
+	// that belongs to no scope. A scope that is not already a safe file-name fragment is
+	// refused, since the editor builds the key from it.
 	std::string AddAsset(const std::string &id, const std::string &key, const std::string &kind,
-			     const std::vector<unsigned char> &bytes);
+			     const std::vector<unsigned char> &bytes, const std::string &scope = std::string());
 	// Drop one stored asset: its record and its file. `file` is the served basename as it
 	// appears in the widget's assets[]; it is sanitized before it reaches the filesystem.
 	bool RemoveAsset(const std::string &id, const std::string &file);
+	// Drop every upload recorded under `scope` that the widget's STORED document no longer
+	// names anywhere -- settings, any override, any variation. The editor asks after a save
+	// that released a scope's file (a reset or replaced field, a deleted variation); checking
+	// references here rather than trusting the editor is what makes a stale or repeated
+	// request harmless. Returns how many were removed.
+	size_t RemoveScopeAssets(const std::string &id, const std::string &scope);
 
 	static std::string FilePath();                       // MultistreamBasicPath("overlays.json")
 	static std::string AssetsDir(const std::string &id); // .../basic/overlays/<id>/assets

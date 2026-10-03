@@ -661,6 +661,13 @@ void RunEventsPagingSelfTest();
 // in-memory only (never persisted), so it leaves overlays.json untouched. Gated by the
 // caller to the smoke path.
 void RunOverlaySelfTest();
+// The alert-box scope layers on the host side, on throwaway stores under the self-test
+// config directory: scope-qualified uploads and the reference-checked prune, the v2 -> v3
+// store migration (every legacy key set, and none) with its backup and forks left alone,
+// and the served document data -- every scope rewritten and every scope's sound preloaded.
+// Touches neither the user's overlays.json nor the live server. Gated by the caller to the
+// smoke path.
+void RunOverlayScopeSelfTest();
 // Headless proof that the host's residual native chrome was darkened at startup:
 // assert NativeTheme::AppliedCount() >= 1 (the host is the only owned window up at
 // smoke time). There is no headless pixel check, so this only confirms ApplyDark
