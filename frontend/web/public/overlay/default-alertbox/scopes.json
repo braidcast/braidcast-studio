@@ -1,0 +1,12 @@
+{
+  "events": [
+    { "key": "follow", "label": "Follows", "types": ["follow"], "conditions": ["platform"], "message": "{name} just followed!", "platformMessages": { "youtube": "{name} just subscribed!" } },
+    { "key": "sub", "label": "Subs", "types": ["sub", "resub", "subgift"], "conditions": ["tier", "months", "count", "gift", "platform"], "message": "{name} subscribed!" },
+    { "key": "cheer", "label": "Bits", "types": ["cheer"], "conditions": ["amount"], "message": "{name} cheered {amountText}!" },
+    { "key": "raid", "label": "Raids", "types": ["raid"], "conditions": ["amount", "platform"], "message": "{name} raided with {amountText}!" },
+    { "key": "superchat", "label": "Super Chats", "types": ["superchat"], "conditions": ["amount"], "message": "{name} sent {amount}!" },
+    { "key": "supersticker", "label": "Super Stickers", "types": ["supersticker"], "conditions": ["amount"], "message": "{name} sent a {amount} sticker!" },
+    { "key": "member", "label": "Members", "types": ["member"], "conditions": ["tier", "months"], "message": "{name} is now a member!" },
+    { "key": "kicks", "label": "Kicks", "types": ["kicks"], "conditions": ["amount"], "message": "{name} sent {amountText}!" }
+  ]
+}
