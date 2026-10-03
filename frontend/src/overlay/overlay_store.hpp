@@ -205,9 +205,9 @@ private:
 	// the log quietly contradicts. Also false, always, while upgradeDeferred_ is set.
 	bool Save() const;
 	// Keep a copy of the pre-upgrade document beside `path` before the first migrated
-	// save overwrites it. `asRead` is what Load() parsed, used only when the file itself
-	// can no longer be read.
-	void WritePreMigrationBackup(const std::string &path, const json &asRead) const;
+	// save overwrites it, named for the version it was (overlays.json.v<from>.bak). `asRead`
+	// is what Load() parsed, used only when the file itself can no longer be read.
+	void WritePreMigrationBackup(const std::string &path, const json &asRead, int fromVersion) const;
 	// The widgets as Save writes them, and what UnusableStoreHold compares: the port is
 	// left out because only the server's own bind at start (SetPort) ever changes it.
 	json WidgetsJson() const;
@@ -216,7 +216,7 @@ private:
 	mutable std::mutex mutex_;
 	std::vector<Widget> widgets_;
 	int port_ = 43000;
-	// Set when Load() declined to upgrade a v1 document because a type's template read
+	// Set when Load() declined to upgrade a pre-v2 document because a type's template read
 	// back incomplete, and never cleared: the decision is retried from scratch on the next
 	// start. While it is set the store is READ-ONLY -- see Save() -- because the widgets in
 	// memory are already converted and any save writes the whole document, so a single

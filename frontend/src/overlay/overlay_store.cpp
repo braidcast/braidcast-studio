@@ -27,19 +27,24 @@ namespace {
 constexpr size_t kTokenBytes = 16;
 
 // The persisted document's shape. v2 replaced a widget's baked-in html/css/js/fields with
-// `settings` (overrides only) plus `custom` (absent until the user forks). A document
-// already carrying this number is loaded as it stands, which is the whole of the
-// already-migrated test: the number is written by the same Save that installs the new
-// shape, so it cannot be present without it.
-constexpr int kStoreVersion = 2;
+// `settings` (overrides only) plus `custom` (absent until the user forks). v3 added the
+// alert box's scope layers (`overrides`, `variations`) and moved its per-event message and
+// burst keys into them (MigrateV2AlertBox). A document already carrying this number is
+// loaded as it stands, which is the whole of the already-migrated test: the number is
+// written by the same Save that installs the new shape, so it cannot be present without it.
+constexpr int kStoreVersion = 3;
 
-// Where the pre-v2 document is kept, beside overlays.json. Deliberately NOT
+// Where the pre-upgrade document is kept, beside overlays.json, named for the version it was
+// so a v1 copy an earlier upgrade kept is never confused with a v2 one. Deliberately NOT
 // "overlays.json.bak": that name is the save envelope's own rotation slot
 // (obs_data_save_json_pretty_safe writes .tmp then rotates the outgoing file into .bak)
 // and Load() reads it as the fallback for a torn write, so the first ordinary save after
 // the migration would overwrite a pre-migration backup stored there with post-migration
 // content.
-constexpr char kPreMigrationSuffix[] = ".v1.bak";
+std::string PreMigrationSuffix(int fromVersion)
+{
+	return ".v" + std::to_string(fromVersion) + ".bak";
+}
 
 // A widget's own directory (the parent of AssetsDir): the single place the
 // overlays/<id> layout is spelled out.
@@ -161,6 +166,131 @@ Widget MigrateV1Widget(const json &j)
 		w.settings[key] = *valueIt;
 	}
 	return w;
+}
+
+// The alert box's v2 per-event message keys, the event each now overrides, and the text each
+// shipped with. Frozen: the v3 template ships these messages in scopes.json instead, and a
+// value equal to what v2 shipped was never the user's choice, so it is dropped rather than
+// pinned as an override that would then ignore a later change to the built-in message.
+struct LegacyMessage {
+	const char *key;
+	const char *event;
+	const char *shipped;
+};
+
+constexpr LegacyMessage kLegacyMessages[] = {
+	{"msgFollow", "follow", "{name} just followed!"},
+	{"msgSub", "sub", "{name} subscribed!"},
+	{"msgCheer", "cheer", "{name} cheered {amountText}!"},
+	{"msgRaid", "raid", "{name} raided with {amountText}!"},
+	{"msgSuperchat", "superchat", "{name} sent {amount}!"},
+	{"msgSupersticker", "supersticker", "{name} sent a {amount} sticker!"},
+	{"msgMember", "member", "{name} is now a member!"},
+	{"msgKicks", "kicks", "{name} sent {amountText}!"},
+};
+
+// v2's burst exit dropdown, by value, to the v3 Out preset that draws the same motion. The
+// v2 cards left at 1.5x the In speed; v2's default ("slide") is v3's default exit exactly,
+// so it is dropped rather than stored.
+struct LegacyBurstExit {
+	const char *from;
+	const char *preset;
+};
+
+constexpr LegacyBurstExit kLegacyBurstExits[] = {
+	{"flip", "flip-out-x"},
+	{"fall", "drop-out"},
+	{"fade", "fade-out"},
+	{"zoom", "zoom-out"},
+};
+constexpr char kLegacyBurstKey[] = "burstAnimation";
+constexpr char kLegacyBurstDefault[] = "slide";
+constexpr char kBurstExitKey[] = "burstExit";
+constexpr double kLegacyBurstSpeed = 1.5;
+constexpr char kAlertBoxType[] = "alertbox";
+
+// v2's YouTube follow message. v2 showed it for every YouTube follow, whatever msgFollow said
+// (its shipped text when the widget never set it). v3 ships that text as the follow event's
+// built-in YouTube message, but a follow override's message reaches YouTube too, so when the
+// upgrade moves a changed msgFollow into the override, or the user changed this key, a
+// follow variation on YouTube keeps v2's YouTube wording.
+constexpr char kLegacyYouTubeFollowKey[] = "msgSubscribeYouTube";
+constexpr char kLegacyYouTubeFollowShipped[] = "{name} just subscribed!";
+constexpr char kYouTubeFollowVariationId[] = "v_follow_youtube";
+
+// Adds the YouTube follow variation unless one with its id is already there.
+void AddYouTubeFollowVariation(Widget &w, const std::string &message)
+{
+	if (!w.variations.is_array()) {
+		w.variations = json::array();
+	}
+	for (const json &v : w.variations) {
+		if (v.is_object() && v.value("id", std::string()) == kYouTubeFollowVariationId) {
+			return;
+		}
+	}
+	w.variations.push_back(json{{"id", kYouTubeFollowVariationId},
+				    {"event", "follow"},
+				    {"when", {{"field", "platform"}, {"op", "=="}, {"value", "youtube"}}},
+				    {"settings", {{"message", message}}}});
+}
+
+// One stock alert box in the v3 model: each legacy message the user changed becomes that
+// event's override, and the burst dropdown becomes the burstExit animation value. Forks are
+// left exactly as they are -- their own code reads the old keys -- and so is every other key.
+// Idempotent, so returning a fork to stock can run it again on whatever the fork kept.
+void MigrateV2AlertBox(Widget &w)
+{
+	if (w.IsForked() || w.type != kAlertBoxType) {
+		return;
+	}
+	bool movedFollow = false;
+	for (const LegacyMessage &m : kLegacyMessages) {
+		const auto it = w.settings.find(m.key);
+		if (it == w.settings.end()) {
+			continue;
+		}
+		const json value = *it;
+		w.settings.erase(m.key);
+		if (!value.is_string() || value == m.shipped) {
+			continue;
+		}
+		json &layer = w.overrides[m.event];
+		if (!layer.is_object()) {
+			layer = json::object();
+		}
+		// A message the v3 layer already holds was set in v3 and wins over the old one.
+		if (!layer.contains("message")) {
+			layer["message"] = value;
+			movedFollow = movedFollow || std::string(m.event) == "follow";
+		}
+	}
+	const auto youtube = w.settings.find(kLegacyYouTubeFollowKey);
+	std::string youtubeMessage = kLegacyYouTubeFollowShipped;
+	if (youtube != w.settings.end()) {
+		if (youtube->is_string()) {
+			youtubeMessage = youtube->get<std::string>();
+		}
+		w.settings.erase(kLegacyYouTubeFollowKey);
+	}
+	if (movedFollow || youtubeMessage != kLegacyYouTubeFollowShipped) {
+		AddYouTubeFollowVariation(w, youtubeMessage);
+	}
+	const auto burst = w.settings.find(kLegacyBurstKey);
+	if (burst == w.settings.end()) {
+		return;
+	}
+	const std::string from = burst->is_string() ? burst->get<std::string>() : std::string();
+	w.settings.erase(kLegacyBurstKey);
+	if (from == kLegacyBurstDefault || w.settings.contains(kBurstExitKey)) {
+		return;
+	}
+	for (const LegacyBurstExit &b : kLegacyBurstExits) {
+		if (from == b.from) {
+			w.settings[kBurstExitKey] = json{{"preset", b.preset}, {"speed", kLegacyBurstSpeed}};
+			return;
+		}
+	}
 }
 
 // How hard the upgrade tries before it believes a partial read. Small on purpose: the
@@ -603,6 +733,9 @@ MutateResult OverlayStore::ReturnToStock(const std::string &id, int *newRev)
 	}
 	const Widget before = *w;
 	w->custom.reset();
+	// The fork kept the alert box's v2 keys for its own code; back on the shipped template
+	// they mean nothing, so they move to where v3 reads them, exactly as the upgrade does.
+	MigrateV2AlertBox(*w);
 	++w->rev;
 	if (!Save()) {
 		*w = before;
@@ -899,13 +1032,19 @@ void OverlayStore::Load()
 	}
 	port_ = parsed.value("port", 43000);
 	// Every document written before the field existed is a v1 document.
-	const bool migrating = parsed.value("version", 1) < kStoreVersion;
-	// Asked before a single widget is converted, because the answer decides whether
-	// anything at all may be written for the rest of the session.
-	const std::optional<std::string> unreadableType = migrating ? FirstTypeStillPartial(widgets) : std::nullopt;
+	const int version = parsed.value("version", 1);
+	const bool migrating = version < kStoreVersion;
+	// Only the v1 step compares code against the shipped templates, so only it can be
+	// misled by a partial read. Asked before a single widget is converted, because the
+	// answer decides whether anything at all may be written for the rest of the session.
+	const std::optional<std::string> unreadableType = version < 2 ? FirstTypeStillPartial(widgets) : std::nullopt;
 	upgradeDeferred_ = unreadableType.has_value();
 	for (const json &item : widgets) {
-		widgets_.push_back(migrating ? MigrateV1Widget(item) : Widget::FromJson(item));
+		Widget w = version < 2 ? MigrateV1Widget(item) : Widget::FromJson(item);
+		if (migrating) {
+			MigrateV2AlertBox(w);
+		}
+		widgets_.push_back(std::move(w));
 	}
 
 	// The server refuses a request whose token is empty, so a stored widget without one
@@ -927,7 +1066,7 @@ void OverlayStore::Load()
 
 	if (migrating) {
 		if (upgradeDeferred_) {
-			// The v1 document stays exactly as it is and this session runs read-only
+			// The old document stays exactly as it is and this session runs read-only
 			// on the in-memory conversion, so nothing commits a verdict reached from
 			// an incomplete read. Whether the cause was a momentary lock or a genuinely
 			// broken rundir cannot be told apart from here, and both are served by the
@@ -937,9 +1076,9 @@ void OverlayStore::Load()
 			// cannot say it per call: only Update, Fork and ReturnToStock surface the
 			// refusal. This one line is the only notice the other five give.
 			const std::string warning =
-				"[overlay] overlays.json left at v1: the template for type '" + *unreadableType +
-				"' at " + TemplateDir(*unreadableType) + " still read back incomplete after " +
-				std::to_string(kPartialReadAttempts) +
+				"[overlay] overlays.json left at v" + std::to_string(version) +
+				": the template for type '" + *unreadableType + "' at " + TemplateDir(*unreadableType) +
+				" still read back incomplete after " + std::to_string(kPartialReadAttempts) +
 				" attempts, and the upgrade needs it to tell an edited widget from an untouched "
 				"one. The overlay store is READ-ONLY until the install is repaired: edits, forks "
 				"and resets refuse outright, while new widgets, deletes and asset changes appear "
@@ -950,11 +1089,11 @@ void OverlayStore::Load()
 		// The whole conversion happened in memory above, so nothing on disk has moved
 		// yet and a throw on the way here would have left the v1 file exactly as it was.
 		// The copy goes down before the save that replaces it.
-		WritePreMigrationBackup(path_, parsed);
+		WritePreMigrationBackup(path_, parsed, version);
 		HostLog("[overlay] overlays.json upgraded to v" + std::to_string(kStoreVersion) + " (" +
 			std::to_string(widgets_.size()) + " widgets)");
 		if (!Save()) {
-			// The document on disk is still v1, so the next start reads it and upgrades
+			// The document on disk is still the old version, so the next start reads it and upgrades
 			// again -- the conversion is idempotent, and this session runs on the
 			// in-memory result meanwhile.
 			HostLog("[overlay] the upgraded overlays.json could not be written; it will be upgraded "
@@ -969,14 +1108,14 @@ void OverlayStore::Load()
 
 // Keep the document as it was read, beside overlays.json, before the migrated save
 // replaces it. Best-effort by design, for two reasons. The save envelope already rotates
-// the outgoing v1 file into overlays.json.bak by itself, so this is a second copy rather
-// than the only one. And skipping the upgrade save would not even stop v2 reaching disk:
-// the widgets are already converted in memory, and the next Save from any source rewrites
-// the whole document -- SetPort does it on every boot -- so refusing here would lose the
-// backup and write v2 anyway.
-void OverlayStore::WritePreMigrationBackup(const std::string &path, const json &asRead) const
+// the outgoing old file into overlays.json.bak by itself, so this is a second copy rather
+// than the only one. And skipping the upgrade save would not even stop the new version
+// reaching disk: the widgets are already converted in memory, and the next Save from any
+// source rewrites the whole document -- SetPort does it on every boot -- so refusing here
+// would lose the backup and write the new version anyway.
+void OverlayStore::WritePreMigrationBackup(const std::string &path, const json &asRead, int fromVersion) const
 {
-	const std::string backupPath = path + kPreMigrationSuffix;
+	const std::string backupPath = path + PreMigrationSuffix(fromVersion);
 	std::error_code ec;
 	if (std::filesystem::exists(std::filesystem::u8path(backupPath), ec)) {
 		// An earlier upgrade already put one here. The one that is already down is the
@@ -1008,8 +1147,8 @@ void OverlayStore::WritePreMigrationBackup(const std::string &path, const json &
 bool OverlayStore::Save() const
 {
 	if (upgradeDeferred_) {
-		// Writing anything writes the WHOLE document, in the v2 shape the widgets already
-		// hold in memory -- which is exactly the upgrade Load() declined to commit.
+		// Writing anything writes the WHOLE document, in the current shape the widgets
+		// already hold in memory -- which is exactly the upgrade Load() declined to commit.
 		//
 		// What that costs is uneven, and this is the honest account of it. Update, Fork and
 		// ReturnToStock roll back and answer NotPersisted, so those three refuse where the
