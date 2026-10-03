@@ -13,6 +13,7 @@
   import { testsFor, type TestCapability } from "$lib/overlays/widgetTypes";
   import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
+  import type { PreviewBackground } from "$lib/overlays/scopes/previewBackground";
 
   let {
     url,
@@ -21,6 +22,8 @@
     reloadKey,
     naturalW,
     naturalH,
+    background = "base",
+    onReady,
   }: {
     url: string;
     widgetId: string;
@@ -28,6 +31,11 @@
     reloadKey: number;
     naturalW?: number;
     naturalH?: number;
+    /** What shows through the widget's transparent areas: the app's own base colour, or one
+     * of the three stage backdrops the scoped editor offers. */
+    background?: PreviewBackground;
+    /** The document in the frame opened its event stream, so a test fired now reaches it. */
+    onReady?: () => void;
   } = $props();
 
   // The document is rendered at the widget type's own design rectangle and the whole frame
@@ -133,6 +141,25 @@
   // loaded frame has its subscription in flight.
   let loadedKey = $state(-1);
   const previewListening = $derived(loadedKey === reloadKey);
+
+  // The runtime posts obs-overlay:ready to its parent once its event stream is open -- later
+  // than `load`, which fires while the EventSource is still connecting. Only a message from
+  // THIS frame's window counts: the page can hold other frames, and any of them can post.
+  let frame = $state<HTMLIFrameElement | null>(null);
+  $effect(() => {
+    if (!onReady) {
+      return;
+    }
+    const ready = onReady;
+    const onMessage = (e: MessageEvent): void => {
+      const d = e.data as { type?: unknown } | null;
+      if (frame && e.source === frame.contentWindow && d?.type === "obs-overlay:ready") {
+        ready();
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  });
 
   // Rejections are toasted rather than logged: these are direct user actions, and a button
   // that failed outright would otherwise look exactly like one that worked.
@@ -241,9 +268,10 @@
       </div>
     </div>
   {/if}
-  <div class="frame" bind:clientWidth={paneW} bind:clientHeight={paneH}>
+  <div class="frame" data-bg={background} bind:clientWidth={paneW} bind:clientHeight={paneH}>
     {#key reloadKey}
       <iframe
+        bind:this={frame}
         class:fitted={!!fitted}
         title="Overlay preview"
         src={url}
@@ -319,7 +347,25 @@
     width: 100%;
     height: 100%;
     border: 0;
-    background: var(--color-base);
+    background: transparent;
+    /* The overlay document declares no color-scheme, so it renders light. An iframe whose
+       scheme differs from its document's gets an opaque canvas painted behind the page
+       (Chromium's cross-scheme rule), which would hide the backdrop below; matching it keeps
+       the frame transparent, the way a browser source draws. */
+    color-scheme: light;
+  }
+  /* Stage backdrops. Fixed colours rather than theme tokens: they stand in for what a
+     stream puts behind the overlay, which the app's theme has no say over. */
+  .frame[data-bg="checker"] {
+    background-color: #2a2a2e;
+    background-image: conic-gradient(#3a3a40 25%, transparent 0 50%, #3a3a40 0 75%, transparent 0);
+    background-size: 20px 20px;
+  }
+  .frame[data-bg="dark"] {
+    background: #0b0b0d;
+  }
+  .frame[data-bg="light"] {
+    background: #f4f4f6;
   }
   /* Sized in the markup to the widget's design rectangle; --preview-scale is what fits
      that rectangle into the pane. */
