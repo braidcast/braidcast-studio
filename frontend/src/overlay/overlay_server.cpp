@@ -23,7 +23,7 @@
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "util/time_util.hpp"      // TimeUtil::NowMs
 #include "overlay_assets.hpp"      // Overlay::MaxAssetBytes
-#include "overlay_scopes.hpp"      // Overlay::LibraryRoot, IsSafeLibraryPath
+#include "overlay_scopes.hpp"      // Overlay::BuildServedData, LibraryRoot, IsSafeLibraryPath
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
 #include "overlay_template.hpp"    // Overlay::AcceptsReplay, Overlay::CountsEvents
 
@@ -58,18 +58,23 @@ constexpr size_t kMaxBackfillEvents = 200;     // ceiling on the connect-time ev
 // and `immutable` would tell the client not to check even on a reload.
 constexpr int kAssetMaxAgeSeconds = 86400;
 
-// The bundled library's route. Its URLs carry no version, so its freshness rests on the
-// ETag revalidation alone once a day is up; a library id never changes its sound, which is
-// what makes a day safe.
-constexpr char kLibraryRoutePrefix[] = "/lib/";
+// The bundled library (kLibraryRoutePrefix) is cached the same day, but its URLs carry no
+// version, so once that is up its freshness rests on ETag revalidation alone; a library id
+// never changes its sound, which is what makes a day safe.
 
-// The fields.json `type` whose value is an audio file the page plays. The editor's half of
-// the same registry is `frontend/web/src/lib/overlays/fieldTypes.ts`; nothing links them,
-// so a rename there must be made here too. Listing these URLs in the bootstrap is what lets
-// the runtime decode a widget's sounds once at load rather than building, fetching and
-// decoding a fresh media element per alert -- and it covers a FORKED widget for free,
-// because a fork carries its own schema through the same Resolve().
-constexpr const char *kSoundFieldType = "sound-upload";
+// "</" inside a JSON string is legal JSON and would still close the <script> element it is
+// inlined into -- a message a user typed as "</script>" would end the bootstrap early.
+// "<\/" is the same string to a JSON parser.
+std::string ScriptSafeJson(const json &value)
+{
+	std::string out = value.dump();
+	size_t pos = 0;
+	while ((pos = out.find("</", pos)) != std::string::npos) {
+		out.replace(pos, 2, "<\\/");
+		pos += 3;
+	}
+	return out;
+}
 
 // The cap a stored upload is served under: its record's kind, looked up by the served
 // basename. A file no record names -- one left behind by a failed replace -- gets the
@@ -304,77 +309,20 @@ std::string AssembleDocument(const Widget &w, int port)
 	// come off disk, and taking them together is what keeps a template shipped with a new
 	// field from reaching this page as markup from one read and a schema from another.
 	const ResolvedWidget resolved = Resolve(w);
-	// Every key that schema declares, at the widget's override or the schema's default.
-	json fieldData = MergeSettings(resolved.schema, w.settings);
-	// The keys the rewrite below actually turned into a served URL. Collected rather than
-	// re-derived from the value afterwards, so "the runtime may fetch this" means exactly
-	// "this server serves it" by construction.
-	std::vector<std::string> servedKeys;
-	for (auto it = fieldData.begin(); it != fieldData.end(); ++it) {
-		// An uploaded asset field stores the portable, token-less "assets/<file>" as its
-		// persisted value. Rewrite ONLY the injected copy to the absolute tokenized URL the
-		// server actually serves (/w/<id>/assets/<file>?t=<token>&r=<rev>); a bare
-		// "assets/<file>" would resolve against /w/ (no <base>) and 404, and lacks the
-		// required token. Match the prefix so it works regardless of the field's declared
-		// type. The stored setting is left untouched so it survives token/port changes.
-		//
-		// `r` is the widget revision, and it is what makes this URL safe to cache for a
-		// long time. AddAsset replaces an upload IN PLACE at the same filename, so without
-		// it a re-upload under the same name keeps the same URL and a browser source that
-		// reloaded would re-read its own still-fresh cache entry and play the OLD bytes.
-		// AddAsset is the only writer of those bytes and bumps the revision itself, under
-		// the same lock as the write, so that cannot happen: changing the bytes changes
-		// this URL. What this does NOT do is reload a source already on a scene --
-		// overlays.uploadAsset sweeps nothing -- so that source keeps its old document and
-		// its old sound until something else reloads it. Every document assembled from the
-		// write onwards names the new bytes, which is the whole claim here.
-		if (!it->is_string()) {
-			continue;
-		}
-		const std::string s = it->get<std::string>();
-		if (s.rfind("assets/", 0) == 0) {
-			*it = "/w/" + w.id + "/" + s + "?t=" + w.token + "&r=" + std::to_string(w.rev);
-			servedKeys.push_back(it.key());
-		}
+	const ServedData served = BuildServedData(w, resolved);
+	json overlay = json{{"id", w.id},
+			    {"token", w.token},
+			    {"port", port},
+			    {"fields", served.fields},
+			    {"sounds", served.sounds}};
+	if (!served.scopes.is_null()) {
+		overlay["scopes"] = served.scopes;
 	}
-	// Every sound this widget could play, as the tokenized URLs the rewrite above just
-	// produced, so the runtime can decode them at load. Read off the schema rather than
-	// guessed from the value, because only the schema knows a string is audio.
-	//
-	// Restricted to keys the rewrite handled. A widget with no sound configured has an empty
-	// value and is simply not listed -- but so is a fork whose fields.json defaults a sound
-	// field to an absolute http(s) URL. A media element plays a cross-origin sound without
-	// CORS; fetch does not, so preloading one would spend a request to earn a CORS failure
-	// and a log line on every page load, then fall back to the element and play it correctly
-	// anyway. Leaving it off the list is what keeps that path quiet and working.
-	json sounds = json::array();
-	if (resolved.schema.is_array()) {
-		for (const json &f : resolved.schema) {
-			if (!f.is_object() || f.value("type", std::string()) != kSoundFieldType) {
-				continue;
-			}
-			const std::string key = f.value("key", std::string());
-			if (std::find(servedKeys.begin(), servedKeys.end(), key) == servedKeys.end()) {
-				continue;
-			}
-			const auto valueIt = fieldData.find(key);
-			if (valueIt == fieldData.end() || !valueIt->is_string()) {
-				continue;
-			}
-			// Two fields can point at one upload; decoding it twice would just evict
-			// something else from the runtime's cache.
-			if (std::find(sounds.begin(), sounds.end(), *valueIt) == sounds.end()) {
-				sounds.push_back(*valueIt);
-			}
-		}
-	}
-	const json overlay =
-		json{{"id", w.id}, {"token", w.token}, {"port", port}, {"fields", fieldData}, {"sounds", sounds}};
 	std::string doc = "<!doctype html><html><head><meta charset=\"utf-8\">\n<style>\n";
 	doc += resolved.css;
 	doc += "\n</style></head><body>\n";
 	doc += resolved.html;
-	doc += "\n<script>window.__OVERLAY__=" + overlay.dump() + ";</script>\n";
+	doc += "\n<script>window.__OVERLAY__=" + ScriptSafeJson(overlay) + ";</script>\n";
 	// `v` is the runtime's content hash. The runtime is cached for a day, but this document
 	// is not cached at all and inlines a template written against one runtime; without `v`
 	// a rebuild that changed both would pair the new template with the day-old runtime, and

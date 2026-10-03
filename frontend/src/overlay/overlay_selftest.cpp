@@ -475,7 +475,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// Forked rather than stock, so the served document is decided entirely by this widget
 	// and the assertions below do not depend on which templates the rundir happens to
 	// hold. `accent` carries an override and `bg` does not, which is what makes the
-	// document check below cover both halves of the merge.
+	// document check below cover both halves of the merge. `note` holds what would end the
+	// bootstrap's <script> early if it reached the page as typed.
 	Overlay::Widget w;
 	w.id = "selftest-widget";
 	w.token = "selftesttoken";
@@ -488,9 +489,10 @@ void ObsBootstrap::RunOverlaySelfTest()
 	code.fields = Overlay::json::array({
 		Overlay::json{{"key", "accent"}, {"type", "color"}, {"label", "Accent"}, {"default", "#9147ff"}},
 		Overlay::json{{"key", "bg"}, {"type", "color"}, {"label", "Background"}, {"default", "#101014"}},
+		Overlay::json{{"key", "note"}, {"type", "text"}, {"label", "Note"}, {"default", ""}},
 	});
 	w.custom = code;
-	w.settings = Overlay::json{{"accent", "#00ff00"}};
+	w.settings = Overlay::json{{"accent", "#00ff00"}, {"note", "</script><b>x"}};
 	Overlay::Store().InjectForTest(w);
 
 	// A private server on an ephemeral port, NOT Overlay::Server(). That matters beyond
@@ -527,7 +529,9 @@ void ObsBootstrap::RunOverlaySelfTest()
 				resp.find("#a{color:#fff}") != std::string::npos &&
 				resp.find("OBSOverlay.onEvent(function(e){});") != std::string::npos &&
 				resp.find("\"accent\":\"#00ff00\"") != std::string::npos &&
-				resp.find("\"bg\":\"#101014\"") != std::string::npos;
+				resp.find("\"bg\":\"#101014\"") != std::string::npos &&
+				resp.find("\"note\":\"<\\/script><b>x\"") != std::string::npos &&
+				resp.find("</script><b>x") == std::string::npos;
 			closesocket(c);
 		}
 	}

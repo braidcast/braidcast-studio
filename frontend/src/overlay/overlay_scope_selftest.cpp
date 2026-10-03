@@ -13,6 +13,7 @@
 #include "../obs_bootstrap.hpp"
 #include "util/file_util.hpp"
 #include "util/selftest_paths.hpp"
+#include "overlay_scopes.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
 
@@ -336,6 +337,71 @@ bool TypeScopesStep()
 	return ok;
 }
 
+// The served copy of a stock alert box: uploads and library sounds in every scope become
+// served URLs, a sound only a variation names is still preloaded, widget-only keys and
+// unknown keys stay out of the scope layers, stored values are untouched, and a fork gets
+// the events alone.
+bool ServedDataStep()
+{
+	json schema = json::array();
+	schema.push_back(json{{"key", "sound"}, {"type", "sound"}, {"scope", "alert"}, {"default", ""}});
+	schema.push_back(json{{"key", "media"}, {"type", "media"}, {"scope", "alert"}, {"default", ""}});
+	schema.push_back(json{{"key", "burstWindow"}, {"type", "slider"}, {"scope", "widget"}, {"default", 1.5}});
+	Overlay::ResolvedWidget resolved;
+	resolved.schema = schema;
+	resolved.scopes = json{{"events", json::array({json{{"key", "cheer"}, {"label", "Bits"}}})}};
+
+	Overlay::Widget w;
+	w.id = "served";
+	w.token = "tok";
+	w.rev = 7;
+	w.type = "alertbox";
+	w.settings = json{{"sound", "library:chime-01"}};
+	w.overrides = json{{"cheer", json{{"media", "assets/cheer-media.webm"}, {"burstWindow", 9}, {"stray", 1}}}};
+	json variation = json::object();
+	variation["id"] = "v_ab12";
+	variation["event"] = "cheer";
+	variation["when"] = json{{"field", "amount"}, {"op", ">="}, {"value", 1000}};
+	variation["settings"] = json{{"sound", "assets/v_ab12-sound.ogg"}, {"media", "library:chime-01"}};
+	w.variations = json::array({variation});
+	const Overlay::Widget stored = w;
+
+	const Overlay::ServedData served = Overlay::BuildServedData(w, resolved);
+	const std::string chime = "/lib/" + Overlay::LibraryFileFor("chime-01").value_or("?");
+	const std::string upload = "/w/served/assets/v_ab12-sound.ogg?t=tok&r=7";
+	const json expectedSounds = json::array({chime, upload});
+	const bool fieldsOk = served.fields.value("sound", std::string()) == chime &&
+			      served.fields.value("burstWindow", 0.0) == 1.5;
+	const json &scopes = served.scopes;
+	const bool layersOk = scopes.is_object() && scopes["events"] == resolved.scopes["events"] &&
+			      scopes["overrides"] ==
+				      json{{"cheer", json{{"media", "/w/served/assets/cheer-media.webm?t=tok&r=7"}}}} &&
+			      scopes["variations"].size() == 1 &&
+			      scopes["variations"][0]["settings"]["sound"] == upload &&
+			      // A library id on a field that is not a sound is not a sound URL.
+			      scopes["variations"][0]["settings"]["media"] == "library:chime-01" &&
+			      scopes["variations"][0]["when"] == variation["when"];
+	const bool soundsOk = served.sounds == expectedSounds;
+	const bool storedOk = w.settings == stored.settings && w.overrides == stored.overrides &&
+			      w.variations == stored.variations;
+
+	Overlay::Widget fork = w;
+	fork.custom = Overlay::CustomCode{};
+	const Overlay::ServedData forked = Overlay::BuildServedData(fork, resolved);
+	const bool forkOk = forked.scopes == json{{"events", resolved.scopes["events"]}};
+
+	Overlay::ResolvedWidget plain;
+	plain.schema = schema;
+	const bool plainOk = Overlay::BuildServedData(w, plain).scopes.is_null();
+
+	const bool ok = fieldsOk && layersOk && soundsOk && storedOk && forkOk && plainOk;
+	HostLog(std::string("[selftest] overlay served scopes -> ") + (ok ? "OK" : "MISMATCH") +
+		" (fields=" + (fieldsOk ? "ok" : "bad") + " layers=" + (layersOk ? "ok" : "bad") +
+		" preload=" + (soundsOk ? "ok" : "bad") + " stored=" + (storedOk ? "ok" : "bad") +
+		" fork=" + (forkOk ? "ok" : "bad") + " plain=" + (plainOk ? "ok" : "bad") + ")");
+	return ok;
+}
+
 // One row per step, so a new check is a row rather than another hand-written conjunction.
 struct ScopeStep {
 	const char *name;
@@ -346,6 +412,7 @@ constexpr ScopeStep kScopeSteps[] = {
 	{"scoped assets", &ScopedAssetsStep},
 	{"v2 migration", &MigrationStep},
 	{"type scopes", &TypeScopesStep},
+	{"served scopes", &ServedDataStep},
 };
 
 } // namespace
