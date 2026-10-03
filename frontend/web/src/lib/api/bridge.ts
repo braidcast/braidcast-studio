@@ -10,6 +10,7 @@
 //   obs.on(event, handler)   -> unsubscribe()
 
 import type { BridgeEvent } from "$lib/utils/eventNames";
+import type { AlertEventScope, AlertVariation } from "../../overlay/alertScopes";
 
 // --- ambient CEF / push surface ---------------------------------------------
 
@@ -1849,7 +1850,10 @@ export interface OverlayField {
     | "image-upload"
     | "sound-upload"
     | "font"
-    | "textstyle";
+    | "textstyle"
+    | "animation"
+    | "sound"
+    | "media";
   label: string;
   default: unknown;
   options?: LabeledOption[];
@@ -1864,13 +1868,25 @@ export interface OverlayField {
    * the fields around it -- the place for a rule too long to live in a label or a group
    * heading. Optional and additive; a field naming none renders exactly as before. */
   help?: string;
+  /** Where the field may be set, for a type that declares scopes (scopes.json): `alert`
+   * fields in Defaults and in every event or variation, `widget` fields in Defaults only.
+   * Absent reads as `alert`. */
+  scope?: "alert" | "widget";
+  /** An `animation` field's layer, which decides the presets it offers. */
+  layer?: "in" | "out" | "idle" | "text";
 }
 
 export interface OverlayAsset {
   key: string;
   kind: string;
   file: string;
+  /** The scope the upload belongs to ("default", an event key, a variation id). Absent on an
+   * asset uploaded through a field that is not scoped. */
+  scope?: string;
+  /** The file's size, recorded at upload. Absent on assets uploaded before it was. */
+  bytes?: number;
 }
+
 
 /** A forked widget's own code, plus the field list that is then its schema. Null on a
  * stock widget, which is served straight from the shipped default-<type>/ template and so
@@ -1895,6 +1911,11 @@ export interface OverlayWidgetDoc {
   settings: Record<string, unknown>;
   custom: OverlayCustom | null;
   assets: OverlayAsset[];
+  /** Per-event overrides, keyed by event key: each OVERRIDES ONLY, like `settings`. Present
+   * on every widget; only a stock widget of a scoped type reads it. */
+  overrides?: Record<string, Record<string, unknown>>;
+  /** Conditional variations, in the order ties between them resolve. */
+  variations?: AlertVariation[];
   url: string;
   /** Document revision, bumped by every accepted overlays.update. The host appends it to
    * the URL it resolves for a live overlay source, which is what makes an edit reach a
@@ -1914,6 +1935,9 @@ export interface OverlayWidget extends OverlayWidgetDoc {
    * shape. Absent for a type this build doesn't ship. Not persisted. */
   naturalW?: number;
   naturalH?: number;
+  /** The events the type declares in its scopes.json, for a STOCK widget whose type has
+   * one. Absent otherwise, which is what keeps the editor single-scope. Not persisted. */
+  scopes?: { events: AlertEventScope[] };
 }
 
 /** Compact list row (overlays.list). */
@@ -1950,6 +1974,9 @@ export interface OverlayUpdateParams {
   id: string;
   name?: string;
   settings?: Record<string, unknown>;
+  /** Like `settings`, each replaces the stored value wholesale. */
+  overrides?: Record<string, Record<string, unknown>>;
+  variations?: AlertVariation[];
   html?: string;
   css?: string;
   js?: string;
@@ -2583,6 +2610,11 @@ export interface ObsMethods {
   "overlays.serverInfo": OverlayServerInfo;
   "overlays.uploadAsset": { path: string };
   "overlays.removeAsset": { ok: boolean };
+  // removeScopeAssets {id, scope}: deletes every asset uploaded in that scope (a deleted
+  // variation's files). assetLimits: the per-kind upload caps in bytes, the same table the
+  // host enforces, so the editor can refuse an oversize file before reading it.
+  "overlays.removeScopeAssets": { removed: number };
+  "overlays.assetLimits": { sound: number; image: number; video: number };
   "overlays.addToScene": { id: number; source: string };
   // Gated DEBUG logging (Phase 11 Part 1). get seeds the diagnostics store with the
   // live gate + the current session-log path (SessionLog::CurrentPath); setDebug

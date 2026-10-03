@@ -14,7 +14,18 @@ type FieldType = OverlayField["type"];
 
 /** The value control a row renders. Several types share one (text and font, the two
  * uploads), which is why the row dispatches on this rather than on the type. */
-type ValueControl = "text" | "number" | "slider" | "color" | "select" | "switch" | "upload" | "textstyle";
+type ValueControl =
+  | "text"
+  | "number"
+  | "slider"
+  | "color"
+  | "select"
+  | "switch"
+  | "upload"
+  | "textstyle"
+  | "animation"
+  | "sound"
+  | "media";
 
 /** A union rather than one interface with optionals, so `spec.accept` is reachable
  * exactly where `spec.control === "upload"` and nowhere else.
@@ -24,8 +35,12 @@ type ValueControl = "text" | "number" | "slider" | "color" | "select" | "switch"
  * CSS stack ("Inter, system-ui, sans-serif") rather than one installed family. */
 export type FieldTypeSpec =
   | { control: "upload"; accept: string; uploadKind: "image" | "sound" }
+  | { control: "media"; accept: string }
   | { control: "text"; placeholder?: string; suggest?: "font-family" }
-  | { control: Exclude<ValueControl, "upload" | "text"> };
+  | { control: Exclude<ValueControl, "upload" | "media" | "text"> };
+
+/** What a media field accepts: still and animated images, and WebM (VP8/VP9, alpha kept). */
+export const MEDIA_ACCEPT = "image/png,image/jpeg,image/gif,image/apng,image/webp,video/webm";
 
 export const FIELD_TYPES: Record<FieldType, FieldTypeSpec> = {
   text: { control: "text" },
@@ -38,6 +53,9 @@ export const FIELD_TYPES: Record<FieldType, FieldTypeSpec> = {
   "sound-upload": { control: "upload", accept: "audio/*", uploadKind: "sound" },
   font: { control: "text", placeholder: "CSS font-family", suggest: "font-family" },
   textstyle: { control: "textstyle" },
+  animation: { control: "animation" },
+  sound: { control: "sound" },
+  media: { control: "media", accept: MEDIA_ACCEPT },
 };
 
 /** The spec a field renders through. An unrecognized `type` reads as text rather than
@@ -109,12 +127,6 @@ function sameValue(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]));
 }
 
-/** Whether a value is indistinguishable from the schema default, and therefore not worth
- * storing. */
-function isDefaultValue(field: OverlayField, value: unknown): boolean {
-  return sameValue(value, field.default);
-}
-
 /** The next override set after editing one field. Writing the default back REMOVES the
  * key, which is also how a "reset to default" is expressed — pass `field.default`. */
 export function withOverride(
@@ -122,11 +134,24 @@ export function withOverride(
   field: OverlayField,
   value: unknown,
 ): Record<string, unknown> {
-  const next = { ...settings };
-  if (isDefaultValue(field, value)) {
-    delete next[field.key];
+  return withScopedOverride(settings, field.key, value, field.default);
+}
+
+/** The next override map after editing one key, for any layer that stores only what differs
+ * from the layer below it: Defaults against the schema default (withOverride), an event or
+ * variation scope against the value it would inherit. Writing back `inherited` removes the
+ * key, which is also how a per-field reset is expressed. */
+export function withScopedOverride(
+  layer: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  inherited: unknown,
+): Record<string, unknown> {
+  const next = { ...layer };
+  if (sameValue(value, inherited)) {
+    delete next[key];
   } else {
-    next[field.key] = value;
+    next[key] = value;
   }
   return next;
 }

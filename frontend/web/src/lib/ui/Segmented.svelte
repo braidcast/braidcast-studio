@@ -15,15 +15,18 @@
     value,
     onChange,
     size = "sm",
+    ariaLabel,
   }: {
     options: SegmentedOption[];
     value: string;
     onChange: (v: string) => void;
     size?: "sm" | "md";
+    /** Names the group for assistive tech when no visible heading is tied to it. */
+    ariaLabel?: string;
   } = $props();
 </script>
 
-<div class="seg" data-size={size} role="radiogroup">
+<div class="seg" data-size={size} role="radiogroup" aria-label={ariaLabel}>
   {#each options as opt (opt.value)}
     <button
       type="button"
