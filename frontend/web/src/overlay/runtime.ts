@@ -19,9 +19,12 @@ import type {
 // the $lib alias is Vite's and this file is built by `bun build` on its own.
 import { cssForSlots } from "./textStyle";
 import { fmtCount, fmtMoney, fmtTally } from "../lib/utils/format";
-import { fillTemplate } from "./fillTemplate";
+import { librarySoundId } from "../lib/overlays/soundLibrary";
+import { fillTemplate, fillTemplateParts } from "./fillTemplate";
 import { amountOf, MONEY_TYPES } from "./eventAmount";
+import { normalizeScopes, resolveAlertSettings, type ResolvedAlert } from "./alertScopes";
 import { logOnce } from "./logOnce";
+import { animate, applyTextFx, playMs } from "./animation/engine";
 import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
 import {
   COUNTER_EVENT_SOURCES,
@@ -46,6 +49,10 @@ interface OverlayBootstrap {
    * older build carries no such key -- an absent list means nothing preloads, not that the
    * widget is silent. */
   sounds?: string[];
+  /** The alert box's scope layers: {overrides, variations, events} for a stock widget whose
+   * template ships scopes.json, {events} alone for a fork, absent otherwise. Values are the
+   * host's served copies, with uploads and library sounds already rewritten to URLs. */
+  scopes?: unknown;
 }
 
 /** A viewer-count cycle as a widget sees it: the host payload verbatim, plus the
@@ -463,6 +470,13 @@ function playSound(url: string, volume = 1) {
   if (!url) {
     return;
   }
+  // The host rewrites every library id its manifest knows to a /lib/ URL, so one still
+  // spelled "library:" names a sound this build does not ship.
+  const missing = librarySoundId(url);
+  if (missing !== null) {
+    logOnce("library|" + missing, `sound library has no "${missing}"; playing nothing`);
+    return;
+  }
   const gain = Math.max(0, Math.min(1, volume));
   const entry = soundEntry(url);
   const ctx = entry.elementOnly ? null : soundContext();
@@ -525,6 +539,17 @@ function formatAmountText(e: NormalizedEvent): string {
   return MONEY_TYPES.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
 }
 
+const alertScopes = normalizeScopes(boot.scopes);
+
+/** An alert's settings after its scopes: Defaults, the event's override, the winning
+ * variation. console.log, not the session-log channel: this is a per-alert debug line, read
+ * in the source's DevTools, and obs-browser forwards only console.error. */
+function resolveAlert(e: NormalizedEvent): ResolvedAlert {
+  const resolved = resolveAlertSettings(boot.fields, alertScopes, e);
+  console.log(`OBSOverlay ${e.type} alert ${e.id} resolved to scope ${resolved.scope}`);
+  return resolved;
+}
+
 const OBSOverlay = {
   fields: boot.fields,
   /** Recompile every slot rule from `fields`. Called with the resolved fields before
@@ -567,6 +592,23 @@ const OBSOverlay = {
    * stay verbatim, empty values drop out with their leading spaces, and substituted text is
    * never re-expanded. Put the result in textContent, never innerHTML. */
   fillTemplate,
+  /** fillTemplate split into runs, each marked with the variable it came from (null for the
+   * template's own text), so a text effect can move only the filled-in values. */
+  fillTemplateParts,
+  /** The alert box's scope resolution for one event; see alertScopes.ts. A widget without
+   * scopes gets its flat fields back, with the event's built-in message when it has one. */
+  resolveAlert,
+  /** Play an animation field's value on an element: layer "in", "out", "idle" or "text".
+   * Returns the Animation, or null when the layer does nothing. Under reduced motion every
+   * In and Out is a 200 ms crossfade and idle and text effects do not run. */
+  animate,
+  /** How long `animate` with the same arguments runs before it is done, delay included; 0
+   * for a layer that does nothing. What a widget waits before removing what it animated. */
+  animationMs: playMs,
+  /** Render template parts into an element and start a text effect on them. */
+  applyTextFx,
+  /** One session-log line per key per page load. */
+  logOnce,
   /** What a widget keeps of a chat line it drew or counted, for onChatModeration's `removes`
    * to test later: identity, admission order and time, never text. */
   chatIdentity,
@@ -819,6 +861,13 @@ const src = new EventSource("/w/" + boot.id + "/events?t=" + boot.token);
 // Each connection opens with the host's tally, which covers every event an earlier one
 // delivered.
 src.addEventListener("open", () => sessionTally?.connected());
+// Tells an embedding editor this page is subscribed, so a test it fires now will be heard.
+// The id only, never the token: the parent is another origin.
+src.addEventListener("open", () => {
+  if (isPreview) {
+    window.parent.postMessage({ type: "obs-overlay:ready", id: boot.id }, "*");
+  }
+});
 src.onmessage = (msg) => {
   try {
     fireEvent(JSON.parse(msg.data) as NormalizedEvent);
