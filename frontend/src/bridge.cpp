@@ -14518,7 +14518,15 @@ bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 	}
 	result = w->ToJson();
 	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
-	result["schema"] = Overlay::Resolve(*w).schema;
+	Overlay::ResolvedWidget resolved = Overlay::Resolve(*w);
+	result["schema"] = std::move(resolved.schema);
+	// The events a stock widget can be customized per, which is what switches the editor to
+	// its scoped layout. Absent for a fork, which is edited as code and served flat Defaults,
+	// and for a type that declares no scopes.
+	if (!w->IsForked() && resolved.scopes.is_object() && resolved.scopes.contains("events") &&
+	    resolved.scopes["events"].is_array()) {
+		result["scopes"] = json{{"events", resolved.scopes["events"]}};
+	}
 	// The rectangle the editor's preview has to render this widget at to show what a
 	// browser source shows: the widget's stylesheet scales itself to its viewport, and the
 	// preview pane is not that shape. Resolved here rather than restated in the page,

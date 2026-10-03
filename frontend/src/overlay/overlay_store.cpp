@@ -464,12 +464,13 @@ Widget Widget::FromJson(const json &j)
 
 ResolvedWidget Resolve(const Widget &w)
 {
-	if (w.custom) {
-		return ResolvedWidget{w.custom->fields, w.custom->html, w.custom->css, w.custom->js};
-	}
 	TypeTemplate shipped = TemplateFor(w.type);
+	if (w.custom) {
+		return ResolvedWidget{w.custom->fields, w.custom->html, w.custom->css, w.custom->js,
+				      std::move(shipped.scopes)};
+	}
 	return ResolvedWidget{std::move(shipped.schema), std::move(shipped.html), std::move(shipped.css),
-			      std::move(shipped.js)};
+			      std::move(shipped.js), std::move(shipped.scopes)};
 }
 
 const char *DescribeMutateResult(MutateResult r)

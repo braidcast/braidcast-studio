@@ -164,6 +164,32 @@ TypeTemplate ReadTemplate(const std::string &type)
 		return t;
 	}
 	t.schema = std::move(parsed);
+
+	const std::string scopesPath = dir + "scopes.json";
+	std::error_code ec;
+	if (std::filesystem::exists(std::filesystem::u8path(scopesPath), ec)) {
+		std::string scopesJson;
+		if (!FileUtil::ReadUtf8File(scopesPath, scopesJson)) {
+			HostLog("[overlay] template for type '" + type + "' at " + dir +
+				" is incomplete (could not read scopes.json)");
+			t.status = TemplateStatus::Partial;
+			return t;
+		}
+		json scopes;
+		try {
+			scopes = json::parse(scopesJson);
+		} catch (const std::exception &e) {
+			HostLog("[overlay] scopes.json for type '" + type + "' is unparseable (" + e.what() + ")");
+			t.status = TemplateStatus::Corrupt;
+			return t;
+		}
+		if (!scopes.is_object()) {
+			HostLog("[overlay] scopes.json for type '" + type + "' is not an object");
+			t.status = TemplateStatus::Corrupt;
+			return t;
+		}
+		t.scopes = std::move(scopes);
+	}
 	t.status = TemplateStatus::Ok;
 	return t;
 }

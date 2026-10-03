@@ -98,12 +98,19 @@ enum class TemplateStatus {
 // One widget type's shipped template, exactly as it is on disk. `schema` is fields.json:
 // per entry {key,type,label,default} plus the type-specific extras (options|min|max|step).
 // It carries no values -- a value belongs to a widget, not to its type.
+//
+// `scopes` is the optional scopes.json beside it, {events:[{key,label,types,conditions,
+// message}]}: the events a widget of this type can be customized per, and null for a type
+// that declares none. Optional, so its absence is not a failed read; a scopes.json that is
+// there but does not read is Partial, and one that is not a JSON object is Corrupt, on the
+// same terms as the four files above.
 struct TypeTemplate {
 	TemplateStatus status = TemplateStatus::Absent;
 	std::string html;
 	std::string css;
 	std::string js;
 	json schema = json::array();
+	json scopes = json(nullptr);
 };
 
 // The shipped template for `type`. An Ok is cached for the rest of the process: templates

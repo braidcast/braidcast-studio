@@ -76,11 +76,16 @@ struct Widget {
 // shipped template while stock. Resolved in a single pass rather than one call per part,
 // so a stock widget's schema and its markup can never come from either side of a template
 // re-read.
+//
+// `scopes` is the TYPE's scope declaration (TypeTemplate::scopes) for stock and forked
+// widgets alike: a fork's copy of the template code still reads each event's built-in
+// message from it. Null for a type that declares none.
 struct ResolvedWidget {
 	json schema = json::array();
 	std::string html;
 	std::string css;
 	std::string js;
+	json scopes = json(nullptr);
 };
 ResolvedWidget Resolve(const Widget &w);
 

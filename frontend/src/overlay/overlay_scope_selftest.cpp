@@ -14,6 +14,7 @@
 #include "util/file_util.hpp"
 #include "util/selftest_paths.hpp"
 #include "overlay_store.hpp"
+#include "overlay_template.hpp"
 
 namespace {
 
@@ -313,6 +314,28 @@ bool MigrationStep()
 	return ok;
 }
 
+// The alert box's shipped scopes.json reads, declares the eight events the template handles,
+// and reaches a stock widget through Resolve.
+bool TypeScopesStep()
+{
+	const Overlay::TypeTemplate shipped = Overlay::TemplateFor("alertbox");
+	std::string keys;
+	if (shipped.scopes.is_object() && shipped.scopes.contains("events") && shipped.scopes["events"].is_array()) {
+		for (const json &ev : shipped.scopes["events"]) {
+			keys += keys.empty() ? "" : ",";
+			keys += ev.is_object() ? ev.value("key", std::string("?")) : std::string("?");
+		}
+	}
+	Overlay::Widget stock;
+	stock.type = "alertbox";
+	const bool resolved = Overlay::Resolve(stock).scopes == shipped.scopes;
+	const bool ok = shipped.status == Overlay::TemplateStatus::Ok &&
+			keys == "follow,sub,cheer,raid,superchat,supersticker,member,kicks" && resolved;
+	HostLog(std::string("[selftest] overlay type scopes -> ") + (ok ? "OK" : "MISMATCH") + " (events=" + keys +
+		")");
+	return ok;
+}
+
 // One row per step, so a new check is a row rather than another hand-written conjunction.
 struct ScopeStep {
 	const char *name;
@@ -322,6 +345,7 @@ struct ScopeStep {
 constexpr ScopeStep kScopeSteps[] = {
 	{"scoped assets", &ScopedAssetsStep},
 	{"v2 migration", &MigrationStep},
+	{"type scopes", &TypeScopesStep},
 };
 
 } // namespace
