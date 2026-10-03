@@ -22,6 +22,7 @@
 #include "util/selftest_paths.hpp"
 #include "../events/event_model.hpp"
 #include "util/time_util.hpp"
+#include "overlay_scopes.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 #include "overlay_template.hpp"
@@ -604,8 +605,13 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog(std::string("[selftest] overlay runtime version -> ") + (versionOk ? "OK" : "MISMATCH"));
 
 	// 1d) The bundled sound library: served with no token and a public cache policy, and
-	// nothing outside it however the path is spelled.
+	// nothing outside it however the path is spelled. A build without the pack (it is generated
+	// by scripts/build-sound-library.py and committed on its own) checks only the guard, which
+	// needs no file, and says the rest was skipped.
 	bool libraryOk = false;
+	std::error_code packEc;
+	const bool packBuilt =
+		std::filesystem::exists(std::filesystem::u8path(Overlay::LibraryRoot() + "/sounds.json"), packEc);
 	{
 		const auto get = [&](const std::string &target, const std::string &extraHeaders = std::string()) {
 			SOCKET c = DialLoopback(port);
@@ -651,10 +657,18 @@ void ObsBootstrap::RunOverlaySelfTest()
 				     StatusOf(past) == 416 &&
 				     past.find("Content-Range: bytes */" + size + "\r\n") != std::string::npos &&
 				     StatusOf(stale) == 200 && bodyOf(stale) == whole;
-		libraryOk = manifestOk && soundOk && guardOk && rangeOk;
-		HostLog(std::string("[selftest] overlay sound library -> ") + (libraryOk ? "OK" : "MISMATCH") +
-			" (manifest=" + (manifestOk ? "ok" : "bad") + " sound=" + (soundOk ? "ok" : "bad") +
-			" guard=" + (guardOk ? "ok" : "bad") + " range=" + (rangeOk ? "ok" : "bad") + ")");
+		if (packBuilt) {
+			libraryOk = manifestOk && soundOk && guardOk && rangeOk;
+			HostLog(std::string("[selftest] overlay sound library -> ") + (libraryOk ? "OK" : "MISMATCH") +
+				" (manifest=" + (manifestOk ? "ok" : "bad") + " sound=" + (soundOk ? "ok" : "bad") +
+				" guard=" + (guardOk ? "ok" : "bad") + " range=" + (rangeOk ? "ok" : "bad") + ")");
+		} else {
+			// The guard still means something: each escape names a file that exists outside
+			// the library (runtime.js). And a missing manifest must be a plain 404.
+			libraryOk = guardOk && StatusOf(manifest) == 404;
+			HostLog(std::string("[selftest] overlay sound library -> ") +
+				(libraryOk ? "SKIPPED (no sound pack; guard=ok)" : "MISMATCH (no sound pack)"));
+		}
 	}
 
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then

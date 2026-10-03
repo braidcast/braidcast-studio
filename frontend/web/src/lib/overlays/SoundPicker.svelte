@@ -13,6 +13,7 @@
     librarySoundId,
     loadSoundLibrary,
     SOUND_CATEGORIES,
+    SoundLibraryMissing,
     type LibrarySound,
   } from "$lib/overlays/soundLibrary";
   import { assetFileOf, assetPreviewUrl, formatBytes } from "$lib/overlays/scopes/scopedAssets";
@@ -52,11 +53,15 @@
   let query = $state("");
   let library = $state<LibrarySound[] | null>(null);
   let libraryError = $state<string | null>(null);
+  let libraryMissing = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
 
   loadSoundLibrary()
     .then((l) => (library = l))
-    .catch((e: unknown) => (libraryError = (e as Error).message));
+    .catch((e: unknown) => {
+      libraryMissing = e instanceof SoundLibraryMissing;
+      libraryError = (e as Error).message;
+    });
 
   const uploads = $derived(assets.filter((a) => a.kind === "sound"));
   const shown = $derived.by(() => {
@@ -151,7 +156,9 @@
           <input type="search" placeholder="Sound name" bind:value={query} />
         </label>
       </div>
-      {#if libraryError}
+      {#if libraryMissing}
+        <p class="sp__msg">This build has no library sounds yet. Upload one under My uploads.</p>
+      {:else if libraryError}
         <p class="sp__msg sp__msg--err">The sound library could not be loaded ({libraryError}).</p>
       {:else if !library}
         <p class="sp__msg">Loading sounds…</p>
