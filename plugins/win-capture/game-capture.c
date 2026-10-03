@@ -162,6 +162,10 @@ struct game_capture {
 	bool convert_16bit;
 	bool is_app;
 	bool cursor_hidden;
+	bool following;
+
+	struct game_capture *next_capture;
+	struct game_capture **prev_next_capture;
 
 	struct game_capture_config config;
 
@@ -221,6 +225,49 @@ struct game_capture {
 
 struct graphics_offsets offsets32 = {0};
 struct graphics_offsets offsets64 = {0};
+
+/* A game's hook serves one capture connection, as its pipe, events and maps are
+ * named by process id alone, so a second source on the same game cannot connect.
+ * It follows the source holding the connection instead and draws that source's
+ * frames. Owners are looked up on the video thread; create and destroy (the
+ * latter on libobs's destruction thread) change the list. An owner found under
+ * the lock stays valid until the lock is released. */
+static SRWLOCK captures_lock = SRWLOCK_INIT;
+static struct game_capture *captures = NULL;
+
+static void register_capture(struct game_capture *gc)
+{
+	AcquireSRWLockExclusive(&captures_lock);
+	gc->next_capture = captures;
+	gc->prev_next_capture = &captures;
+	if (captures) {
+		captures->prev_next_capture = &gc->next_capture;
+	}
+	captures = gc;
+	ReleaseSRWLockExclusive(&captures_lock);
+}
+
+static void unregister_capture(struct game_capture *gc)
+{
+	AcquireSRWLockExclusive(&captures_lock);
+	*gc->prev_next_capture = gc->next_capture;
+	if (gc->next_capture) {
+		gc->next_capture->prev_next_capture = gc->prev_next_capture;
+	}
+	ReleaseSRWLockExclusive(&captures_lock);
+}
+
+/* The source other than gc holding the hook connection to process_id. Call with
+ * captures_lock held. A follower never counts, as it is never active. */
+static struct game_capture *find_hook_owner(const struct game_capture *gc, DWORD process_id)
+{
+	for (struct game_capture *c = captures; c; c = c->next_capture) {
+		if (c != gc && c->active && c->process_id == process_id) {
+			return c;
+		}
+	}
+	return NULL;
+}
 
 static inline bool use_anticheat(struct game_capture *gc)
 {
@@ -422,7 +469,10 @@ static void stop_capture(struct game_capture *gc)
 
 	if (gc->active) {
 		info("capture stopped");
+	} else if (gc->following) {
+		info("stopped following the source that holds the game's hook");
 	}
+	gc->following = false;
 
 	// if it was previously capturing, send an unhooked signal
 	if (gc->capturing) {
@@ -459,6 +509,7 @@ static inline void free_config(struct game_capture_config *config)
 static void game_capture_destroy(void *data)
 {
 	struct game_capture *gc = data;
+	unregister_capture(gc);
 	stop_capture(gc);
 
 	if (gc->audio_source) {
@@ -701,6 +752,7 @@ static void *game_capture_create(obs_data_t *settings, obs_source_t *source)
 	signal_handler_connect(sh, "rename", rename_audio_source, &gc->audio_source);
 
 	game_capture_update(gc, settings);
+	register_capture(gc);
 	return gc;
 }
 
@@ -1256,6 +1308,29 @@ static void get_selected_window(struct game_capture *gc)
 	}
 }
 
+/* Follows the source already holding the hook on the target game. The owner's
+ * settings that reach the hook (frame generation capture, compatibility mode,
+ * overlays, the frame rate limit) apply to both. */
+static bool start_following(struct game_capture *gc)
+{
+	AcquireSRWLockShared(&captures_lock);
+	const struct game_capture *owner = find_hook_owner(gc, gc->process_id);
+	if (owner) {
+		info("following '%s', which holds this game's hook", obs_source_get_name(owner->source));
+	}
+	ReleaseSRWLockShared(&captures_lock);
+
+	if (!owner) {
+		return false;
+	}
+
+	gc->following = true;
+	gc->window = gc->next_window;
+	gc->next_window = NULL;
+	gc->retrying = 0;
+	return true;
+}
+
 static void try_hook(struct game_capture *gc)
 {
 	if (gc->config.mode == CAPTURE_MODE_ANY) {
@@ -1283,6 +1358,9 @@ static void try_hook(struct game_capture *gc)
 			return;
 		}
 
+		if (start_following(gc)) {
+			return;
+		}
 		if (!init_hook(gc)) {
 			stop_capture(gc);
 		}
@@ -1939,10 +2017,11 @@ static void check_foreground_window(struct game_capture *gc, float seconds)
  * is drawn, so the kind always matches whether this tick captured. A hook
  * without the counters marker (a game still holding an older hook) keeps the
  * kind at NONE. The path is the ring actually in use, not the setting, because
- * the ring can fail to engage. */
-static void relay_hook_frame_counts(struct game_capture *gc)
+ * the ring can fail to engage. A follower relays its owner's hook, whose ring
+ * slot may be picked later in the same tick, so its new frames lag by a tick. */
+static void relay_hook_frame_counts(struct game_capture *gc, const struct game_capture *owner)
 {
-	const struct hook_info *hook = gc->global_hook_info;
+	const struct hook_info *hook = owner ? owner->global_hook_info : NULL;
 	if (!gc->capturing || !hook || !hook_counts_frames(hook)) {
 		hook_frame_relay_reset(&gc->hook_relay);
 		obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_NONE);
@@ -1950,10 +2029,88 @@ static void relay_hook_frame_counts(struct game_capture *gc)
 	}
 
 	/* volatile, 4-aligned: each read is one untorn 32-bit load */
-	const struct hook_frame_report report = hook_frame_relay_step(
-		&gc->hook_relay, hook->bc_presents, hook->bc_frames_copied, gc->ring_count != 0, gc->ring_frame_no);
+	const struct hook_frame_report report = hook_frame_relay_step(&gc->hook_relay, hook->bc_presents,
+								      hook->bc_frames_copied, owner->ring_count != 0,
+								      owner->ring_frame_no);
 	obs_source_add_frame_report(gc->source, report.offered, report.delivered, report.new_frame);
 	obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_GAME_HOOK);
+}
+
+static void signal_hooked(struct game_capture *gc)
+{
+	if (gc->config.mode == CAPTURE_MODE_ANY) {
+		ms_get_window_exe(&gc->executable, gc->window);
+		ms_get_window_title(&gc->title, gc->window);
+		ms_get_window_class(&gc->class, gc->window);
+	}
+	signal_handler_t *sh = obs_source_get_signal_handler(gc->source);
+	calldata_t data = {0};
+
+	calldata_set_ptr(&data, "source", gc->source);
+	calldata_set_string(&data, "title", gc->title.array);
+	calldata_set_string(&data, "class", gc->class.array);
+	calldata_set_string(&data, "executable", gc->executable.array);
+
+	signal_handler_signal(sh, "hooked", &data);
+	calldata_free(&data);
+
+	if (gc->audio_source) {
+		reconfigure_audio_source(gc->audio_source, gc->window);
+	}
+}
+
+static void capture_cursor(struct game_capture *gc, float seconds)
+{
+	DPI_AWARENESS_CONTEXT previous = NULL;
+	if (gc->get_window_dpi_awareness_context != NULL) {
+		const DPI_AWARENESS_CONTEXT context = gc->get_window_dpi_awareness_context(gc->window);
+		previous = gc->set_thread_dpi_awareness_context(context);
+	}
+
+	check_foreground_window(gc, seconds);
+	obs_enter_graphics();
+	cursor_capture(&gc->cursor_data);
+	obs_leave_graphics();
+
+	if (previous) {
+		gc->set_thread_dpi_awareness_context(previous);
+	}
+}
+
+/* Mirrors the owner's capture, and ends the follow once no source holds the
+ * game's hook, so the next retry hooks the game itself or follows whichever
+ * source holds the hook by then. */
+static void update_following(struct game_capture *gc, float seconds)
+{
+	bool owner_capturing = false;
+
+	AcquireSRWLockShared(&captures_lock);
+	const struct game_capture *owner = find_hook_owner(gc, gc->process_id);
+	if (owner) {
+		owner_capturing = owner->capturing;
+		gc->window = owner->window;
+		gc->cx = owner->cx;
+		gc->cy = owner->cy;
+		/* The kind leads the size, as on the owner's own hooked path. */
+		if (owner_capturing && !gc->capturing && hook_counts_frames(owner->global_hook_info)) {
+			obs_source_set_frame_count_kind(gc->source, OBS_FRAME_COUNT_GAME_HOOK);
+		}
+	}
+	ReleaseSRWLockShared(&captures_lock);
+
+	if (!owner || (gc->capturing && !owner_capturing)) {
+		stop_capture(gc);
+		return;
+	}
+
+	if (owner_capturing && !gc->capturing) {
+		gc->capturing = true;
+		signal_hooked(gc);
+	}
+
+	if (gc->capturing && gc->config.cursor) {
+		capture_cursor(gc, seconds);
+	}
 }
 
 static void game_capture_update_hook(struct game_capture *gc, float seconds)
@@ -1985,7 +2142,7 @@ static void game_capture_update_hook(struct game_capture *gc, float seconds)
 
 	if (!obs_source_showing(gc->source)) {
 		if (gc->showing) {
-			if (gc->active) {
+			if (gc->active || gc->following) {
 				stop_capture(gc);
 			}
 			gc->showing = false;
@@ -2005,7 +2162,7 @@ static void game_capture_update_hook(struct game_capture *gc, float seconds)
 		debug("hook stop signal received");
 		stop_capture(gc);
 	}
-	if (gc->active && deactivate) {
+	if ((gc->active || gc->following) && deactivate) {
 		stop_capture(gc);
 	}
 
@@ -2055,25 +2212,7 @@ static void game_capture_update_hook(struct game_capture *gc, float seconds)
 
 		// If capture was successful, send a hooked signal
 		if (gc->capturing) {
-			if (gc->config.mode == CAPTURE_MODE_ANY) {
-				ms_get_window_exe(&gc->executable, gc->window);
-				ms_get_window_title(&gc->title, gc->window);
-				ms_get_window_class(&gc->class, gc->window);
-			}
-			signal_handler_t *sh = obs_source_get_signal_handler(gc->source);
-			calldata_t data = {0};
-
-			calldata_set_ptr(&data, "source", gc->source);
-			calldata_set_string(&data, "title", gc->title.array);
-			calldata_set_string(&data, "class", gc->class.array);
-			calldata_set_string(&data, "executable", gc->executable.array);
-
-			signal_handler_signal(sh, "hooked", &data);
-			calldata_free(&data);
-
-			if (gc->audio_source) {
-				reconfigure_audio_source(gc->audio_source, gc->window);
-			}
+			signal_hooked(gc);
 		}
 		if (result != CAPTURE_RETRY && !gc->capturing) {
 			gc->retry_interval = ERROR_RETRY_INTERVAL * hook_rate_to_float(gc->config.hook_rate);
@@ -2083,7 +2222,9 @@ static void game_capture_update_hook(struct game_capture *gc, float seconds)
 
 	gc->retry_time += seconds;
 
-	if (!gc->active) {
+	if (gc->following) {
+		update_following(gc, seconds);
+	} else if (!gc->active) {
 		if (!gc->error_acquiring && gc->retry_time > gc->retry_interval) {
 			if (gc->config.mode == CAPTURE_MODE_ANY || gc->activate_hook) {
 				try_hook(gc);
@@ -2103,21 +2244,7 @@ static void game_capture_update_hook(struct game_capture *gc, float seconds)
 			}
 
 			if (gc->config.cursor) {
-				DPI_AWARENESS_CONTEXT previous = NULL;
-				if (gc->get_window_dpi_awareness_context != NULL) {
-					const DPI_AWARENESS_CONTEXT context =
-						gc->get_window_dpi_awareness_context(gc->window);
-					previous = gc->set_thread_dpi_awareness_context(context);
-				}
-
-				check_foreground_window(gc, seconds);
-				obs_enter_graphics();
-				cursor_capture(&gc->cursor_data);
-				obs_leave_graphics();
-
-				if (previous) {
-					gc->set_thread_dpi_awareness_context(previous);
-				}
+				capture_cursor(gc, seconds);
 			}
 
 			gc->fps_reset_time += seconds;
@@ -2138,19 +2265,26 @@ static void game_capture_tick(void *data, float seconds)
 	struct game_capture *gc = data;
 
 	game_capture_update_hook(gc, seconds);
-	relay_hook_frame_counts(gc);
+
+	if (gc->following) {
+		AcquireSRWLockShared(&captures_lock);
+		relay_hook_frame_counts(gc, find_hook_owner(gc, gc->process_id));
+		ReleaseSRWLockShared(&captures_lock);
+	} else {
+		relay_hook_frame_counts(gc, gc);
+	}
 }
 
-static inline void game_capture_render_cursor(struct game_capture *gc)
+static inline void game_capture_render_cursor(struct game_capture *gc, const struct hook_info *hook)
 {
 	POINT p = {0};
 	HWND window;
 
-	if (!gc->global_hook_info->cx || !gc->global_hook_info->cy) {
+	if (!hook->cx || !hook->cy) {
 		return;
 	}
 
-	window = !!gc->global_hook_info->window ? (HWND)(uintptr_t)gc->global_hook_info->window : gc->window;
+	window = !!hook->window ? (HWND)(uintptr_t)hook->window : gc->window;
 
 	DPI_AWARENESS_CONTEXT previous = NULL;
 	if (gc->get_window_dpi_awareness_context != NULL) {
@@ -2164,22 +2298,21 @@ static inline void game_capture_render_cursor(struct game_capture *gc)
 		gc->set_thread_dpi_awareness_context(previous);
 	}
 
-	cursor_draw(&gc->cursor_data, -p.x, -p.y, gc->global_hook_info->cx, gc->global_hook_info->cy);
+	cursor_draw(&gc->cursor_data, -p.x, -p.y, hook->cx, hook->cy);
 }
 
-static void game_capture_render(void *data, gs_effect_t *unused)
+/* Draws the frames of owner, the source holding the game's hook (gc itself
+ * unless it follows another), with gc's own drawing settings. */
+static void draw_capture(struct game_capture *gc, const struct game_capture *owner)
 {
-	UNUSED_PARAMETER(unused);
-
-	struct game_capture *gc = data;
-	if (!gc->texture || !gc->active) {
+	if (!owner->texture || !owner->active) {
 		return;
 	}
 
 	const bool allow_transparency = gc->config.allow_transparency;
 	gs_effect_t *const effect = obs_get_base_effect(allow_transparency ? OBS_EFFECT_DEFAULT : OBS_EFFECT_OPAQUE);
 
-	gs_texture_t *texture = gc->texture;
+	gs_texture_t *texture = owner->texture;
 	enum gs_color_space source_space = GS_CS_SRGB;
 	bool is_10a2_compressed = false;
 	if (gs_texture_get_color_format(texture) == GS_R10G10B10A2) {
@@ -2189,12 +2322,12 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 		source_space = GS_CS_709_SCRGB;
 	}
 
-	bool linear_sample = gc->linear_sample;
+	bool linear_sample = owner->linear_sample;
 	const enum gs_color_space current_space = gs_get_color_space();
 	const bool texcoords_centered = obs_source_get_texcoords_centered(gc->source);
 	if (!linear_sample && !texcoords_centered) {
 		if (gs_texture_get_color_format(texture) == GS_R10G10B10A2) {
-			gs_texrender_t *const texrender = gc->extra_texrender;
+			gs_texrender_t *const texrender = owner->extra_texrender;
 			gs_texrender_reset(texrender);
 			const uint32_t cx = gs_texture_get_width(texture);
 			const uint32_t cy = gs_texture_get_height(texture);
@@ -2226,12 +2359,12 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 
 			is_10a2_compressed = false;
 		} else {
-			gs_texture_t *const extra_texture = gc->extra_texture;
+			gs_texture_t *const extra_texture = owner->extra_texture;
 			if (extra_texture) {
 				gs_copy_texture(extra_texture, texture);
 				texture = extra_texture;
 			} else {
-				gs_texrender_t *const texrender = gc->extra_texrender;
+				gs_texrender_t *const texrender = owner->extra_texrender;
 				gs_texrender_reset(texrender);
 				const uint32_t cx = gs_texture_get_width(texture);
 				const uint32_t cy = gs_texture_get_height(texture);
@@ -2260,7 +2393,7 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 	}
 
 	gs_eparam_t *const image = gs_effect_get_param_by_name(effect, "image");
-	const uint32_t flip = gc->global_hook_info->flip ? GS_FLIP_V : 0;
+	const uint32_t flip = owner->global_hook_info->flip ? GS_FLIP_V : 0;
 
 	const char *tech_name = "Draw";
 	float multiplier = 1.f;
@@ -2375,23 +2508,41 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 
 		while (gs_effect_loop(default_effect, cursor_tech_name)) {
 			gs_effect_set_float(gs_effect_get_param_by_name(effect, "multiplier"), cursor_multiplier);
-			game_capture_render_cursor(gc);
+			game_capture_render_cursor(gc, owner->global_hook_info);
 		}
 
 		gs_set_linear_srgb(previous);
 	}
 }
 
+static void game_capture_render(void *data, gs_effect_t *unused)
+{
+	UNUSED_PARAMETER(unused);
+
+	struct game_capture *gc = data;
+	if (!gc->following) {
+		draw_capture(gc, gc);
+		return;
+	}
+
+	AcquireSRWLockShared(&captures_lock);
+	const struct game_capture *owner = find_hook_owner(gc, gc->process_id);
+	if (owner) {
+		draw_capture(gc, owner);
+	}
+	ReleaseSRWLockShared(&captures_lock);
+}
+
 static uint32_t game_capture_width(void *data)
 {
 	struct game_capture *gc = data;
-	return (gc->active && gc->capturing) ? gc->cx : 0;
+	return ((gc->active || gc->following) && gc->capturing) ? gc->cx : 0;
 }
 
 static uint32_t game_capture_height(void *data)
 {
 	struct game_capture *gc = data;
-	return (gc->active && gc->capturing) ? gc->cy : 0;
+	return ((gc->active || gc->following) && gc->capturing) ? gc->cy : 0;
 }
 
 static const char *game_capture_name(void *unused)
@@ -2594,13 +2745,13 @@ static obs_properties_t *game_capture_properties(void *data)
 	return ppts;
 }
 
-enum gs_color_space game_capture_get_color_space(void *data, size_t count, const enum gs_color_space *preferred_spaces)
+static enum gs_color_space capture_color_space(const struct game_capture *gc, gs_texture_t *texture, size_t count,
+					       const enum gs_color_space *preferred_spaces)
 {
 	enum gs_color_space capture_space = GS_CS_SRGB;
 
-	struct game_capture *const gc = data;
-	if (gc->texture) {
-		const enum gs_color_format format = gs_texture_get_color_format(gc->texture);
+	if (texture) {
+		const enum gs_color_format format = gs_texture_get_color_format(texture);
 		if (((format == GS_R10G10B10A2) && gc->is_10a2_2100pq) || (format == GS_RGBA16F)) {
 			for (size_t i = 0; i < count; ++i) {
 				if (preferred_spaces[i] == GS_CS_709_SCRGB) {
@@ -2629,6 +2780,21 @@ enum gs_color_space game_capture_get_color_space(void *data, size_t count, const
 		}
 	}
 
+	return space;
+}
+
+enum gs_color_space game_capture_get_color_space(void *data, size_t count, const enum gs_color_space *preferred_spaces)
+{
+	struct game_capture *const gc = data;
+	if (!gc->following) {
+		return capture_color_space(gc, gc->texture, count, preferred_spaces);
+	}
+
+	AcquireSRWLockShared(&captures_lock);
+	const struct game_capture *owner = find_hook_owner(gc, gc->process_id);
+	const enum gs_color_space space =
+		capture_color_space(gc, owner ? owner->texture : NULL, count, preferred_spaces);
+	ReleaseSRWLockShared(&captures_lock);
 	return space;
 }
 
