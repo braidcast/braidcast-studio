@@ -281,21 +281,108 @@ void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std:
 	SendAll(sock, out.data(), out.size());
 }
 
+// What a Range header asks of a body: all of it, one byte span of it, or a span it does not
+// have.
+enum class RangeVerdict { Whole, Part, Unsatisfiable };
+
+// A run of ASCII digits as a number; false for anything else, and for more digits than any
+// body this server holds could need.
+bool ParseDigits(const std::string &s, size_t &out)
+{
+	constexpr size_t kMaxDigits = 15;
+	if (s.empty() || s.size() > kMaxDigits) {
+		return false;
+	}
+	out = 0;
+	for (char c : s) {
+		if (c < '0' || c > '9') {
+			return false;
+		}
+		out = out * 10 + static_cast<size_t>(c - '0');
+	}
+	return true;
+}
+
+// One "bytes=first-last", "bytes=first-" or "bytes=-suffix" span of a body of `size` bytes,
+// as inclusive [first, last]. A header this does not understand -- another unit, several
+// spans, a malformed one -- is answered with the whole body, which RFC 9110 SS14.2 allows a
+// server to do for any Range it chooses not to honour.
+RangeVerdict ParseByteRange(const std::string &header, size_t size, size_t &first, size_t &last)
+{
+	constexpr char kUnit[] = "bytes=";
+	if (header.rfind(kUnit, 0) != 0) {
+		return RangeVerdict::Whole;
+	}
+	const std::string spec = header.substr(sizeof(kUnit) - 1);
+	const size_t dash = spec.find('-');
+	if (dash == std::string::npos || spec.find(',') != std::string::npos) {
+		return RangeVerdict::Whole;
+	}
+	const std::string from = spec.substr(0, dash);
+	const std::string to = spec.substr(dash + 1);
+	size_t a = 0;
+	size_t b = 0;
+	if (from.empty()) {
+		if (!ParseDigits(to, b)) {
+			return RangeVerdict::Whole;
+		}
+		if (b == 0 || size == 0) {
+			return RangeVerdict::Unsatisfiable;
+		}
+		first = b >= size ? 0 : size - b;
+		last = size - 1;
+		return RangeVerdict::Part;
+	}
+	if (!ParseDigits(from, a) || (!to.empty() && !ParseDigits(to, b))) {
+		return RangeVerdict::Whole;
+	}
+	if (a >= size) {
+		return RangeVerdict::Unsatisfiable;
+	}
+	last = to.empty() ? size - 1 : std::min(b, size - 1);
+	if (last < a) {
+		return RangeVerdict::Whole;
+	}
+	first = a;
+	return RangeVerdict::Part;
+}
+
 // Send `body` as a cacheable representation: a strong ETag and `Cache-Control: <scope>,
 // max-age=<day>`, answered 304 when the client's validator already names these bytes. The
 // one implementation for every cacheable route, so they cannot drift apart on the parts a
 // naive 304 gets wrong.
+//
+// A single byte range is honoured (206), because Chromium's media stack reads a <video> in
+// spans and will not seek, or reliably loop, a WebM from a server that only ever sends it
+// whole. If-Range is honoured too: a range asked against bytes that have since changed gets
+// the new body whole rather than a span of it spliced onto the old one.
 void WriteCacheable(SOCKET sock, const std::string &ctype, const std::string &body, const char *cacheScope,
 		    const RequestHeaders &request)
 {
 	const std::string etag = StrongETag(body);
 	const std::string cacheHeaders = "Cache-Control: " + std::string(cacheScope) +
 					 ", max-age=" + std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag +
-					 "\r\n";
+					 "\r\nAccept-Ranges: bytes\r\n";
 	if (ETagMatches(request.ifNoneMatch, etag)) {
 		// The representation is passed so Content-Length still names what a 200 would have
 		// sent (RFC 9110 SS8.6); only the body write is suppressed.
 		WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
+		return;
+	}
+	const bool rangeApplies = !request.range.empty() && (request.ifRange.empty() || request.ifRange == etag);
+	size_t first = 0;
+	size_t last = 0;
+	const RangeVerdict verdict = rangeApplies ? ParseByteRange(request.range, body.size(), first, last)
+						  : RangeVerdict::Whole;
+	if (verdict == RangeVerdict::Part) {
+		WriteResponse(sock, 206, ctype, body.substr(first, last - first + 1),
+			      cacheHeaders + "Content-Range: bytes " + std::to_string(first) + "-" +
+				      std::to_string(last) + "/" + std::to_string(body.size()) + "\r\n");
+		return;
+	}
+	if (verdict == RangeVerdict::Unsatisfiable) {
+		WriteResponse(sock, 416, "text/plain", std::string(),
+			      cacheHeaders + "Content-Range: bytes */" + std::to_string(body.size()) + "\r\n");
 		return;
 	}
 	WriteResponse(sock, 200, ctype, body, cacheHeaders);
@@ -967,6 +1054,8 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	const std::string token = QueryToken(target, path);
 	RequestHeaders headers;
 	headers.ifNoneMatch = HeaderValue(headerBlock, "if-none-match");
+	headers.range = HeaderValue(headerBlock, "range");
+	headers.ifRange = HeaderValue(headerBlock, "if-range");
 
 	// Route table (order: most specific first). Data list, not a switch, so a new
 	// top-level widget-type route is a one-line add. The handler owns socket close;

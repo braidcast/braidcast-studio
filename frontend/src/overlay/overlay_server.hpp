@@ -24,6 +24,8 @@ namespace Overlay {
 // signature, so the route table stays one data list. Empty when the client did not send one.
 struct RequestHeaders {
 	std::string ifNoneMatch; // If-None-Match, verbatim
+	std::string range;       // Range, verbatim
+	std::string ifRange;     // If-Range, verbatim
 };
 
 // Loopback-only HTTP/1.1 server for overlay widgets. GET routing + static file

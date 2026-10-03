@@ -19,6 +19,7 @@ struct ReasonPhrase {
 inline constexpr ReasonPhrase kReasons[] = {
 	{200, "OK"},
 	{202, "Accepted"},
+	{206, "Partial Content"},
 	{304, "Not Modified"},
 	{400, "Bad Request"},
 	{401, "Unauthorized"},
@@ -26,6 +27,7 @@ inline constexpr ReasonPhrase kReasons[] = {
 	{404, "Not Found"},
 	{405, "Method Not Allowed"},
 	{413, "Payload Too Large"},
+	{416, "Range Not Satisfiable"},
 	{431, "Request Header Fields Too Large"},
 	{500, "Internal Server Error"},
 	{503, "Service Unavailable"},

@@ -607,12 +607,12 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// nothing outside it however the path is spelled.
 	bool libraryOk = false;
 	{
-		const auto get = [&](const std::string &target) {
+		const auto get = [&](const std::string &target, const std::string &extraHeaders = std::string()) {
 			SOCKET c = DialLoopback(port);
 			if (c == INVALID_SOCKET) {
 				return std::string();
 			}
-			WriteAll(c, "GET " + target + " HTTP/1.1\r\nHost: x\r\n\r\n");
+			WriteAll(c, "GET " + target + " HTTP/1.1\r\nHost: x\r\n" + extraHeaders + "\r\n");
 			const std::string resp = RecvUntilClose(c);
 			closesocket(c);
 			return resp;
@@ -631,10 +631,30 @@ void ObsBootstrap::RunOverlaySelfTest()
 					   "/lib/C:/Windows/win.ini", "/lib/.hidden", "/lib/", "/lib/a/b/c.ogg"}) {
 			guardOk = guardOk && StatusOf(get(escape)) == 404;
 		}
-		libraryOk = manifestOk && soundOk && guardOk;
+		// Byte ranges, which a <video> needs to seek and loop: a span, a suffix, one past the
+		// end, and a range asked against bytes that have since changed.
+		const auto bodyOf = [](const std::string &resp) {
+			const size_t head = resp.find("\r\n\r\n");
+			return head == std::string::npos ? std::string() : resp.substr(head + 4);
+		};
+		const std::string whole = bodyOf(sound);
+		const std::string size = std::to_string(whole.size());
+		const std::string span = get("/lib/sounds/chime-01.ogg", "Range: bytes=0-9\r\n");
+		const std::string suffix = get("/lib/sounds/chime-01.ogg", "Range: bytes=-5\r\n");
+		const std::string past = get("/lib/sounds/chime-01.ogg", "Range: bytes=" + size + "-\r\n");
+		const std::string stale =
+			get("/lib/sounds/chime-01.ogg", "Range: bytes=0-9\r\nIf-Range: \"not-these-bytes\"\r\n");
+		const bool rangeOk = whole.size() > 10 && sound.find("Accept-Ranges: bytes") != std::string::npos &&
+				     StatusOf(span) == 206 && bodyOf(span) == whole.substr(0, 10) &&
+				     span.find("Content-Range: bytes 0-9/" + size + "\r\n") != std::string::npos &&
+				     StatusOf(suffix) == 206 && bodyOf(suffix) == whole.substr(whole.size() - 5) &&
+				     StatusOf(past) == 416 &&
+				     past.find("Content-Range: bytes */" + size + "\r\n") != std::string::npos &&
+				     StatusOf(stale) == 200 && bodyOf(stale) == whole;
+		libraryOk = manifestOk && soundOk && guardOk && rangeOk;
 		HostLog(std::string("[selftest] overlay sound library -> ") + (libraryOk ? "OK" : "MISMATCH") +
 			" (manifest=" + (manifestOk ? "ok" : "bad") + " sound=" + (soundOk ? "ok" : "bad") +
-			" guard=" + (guardOk ? "ok" : "bad") + ")");
+			" guard=" + (guardOk ? "ok" : "bad") + " range=" + (rangeOk ? "ok" : "bad") + ")");
 	}
 
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then
