@@ -19,6 +19,13 @@
 
 namespace Overlay {
 
+// The request headers a route may act on, read once in HandleConnection -- the only scope
+// that still holds the header block -- and handed to every route through the shared handler
+// signature, so the route table stays one data list. Empty when the client did not send one.
+struct RequestHeaders {
+	std::string ifNoneMatch; // If-None-Match, verbatim
+};
+
 // Loopback-only HTTP/1.1 server for overlay widgets. GET routing + static file
 // serving + long-lived SSE. 127.0.0.1 only; per-widget token on every route.
 // Distinct from mcp/HttpServer (which is POST-only, single-connection).
@@ -113,13 +120,15 @@ public:
 private:
 	void AcceptLoop();
 	void HandleConnection(uintptr_t clientSocket); // runs on its own thread; closes the socket
-	// `ifNoneMatch` is the request's If-None-Match verbatim (empty when absent); only the
-	// asset route reads it, but it rides the shared route-handler signature so the route
-	// table stays one data list rather than splitting into cacheable/non-cacheable halves.
+	// Route handlers. Each owns closing the socket.
 	void ServeRuntime(uintptr_t sock, const std::string &path, const std::string &token,
-			  const std::string &ifNoneMatch);
+			  const RequestHeaders &headers);
 	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token,
-			 const std::string &ifNoneMatch);
+			 const RequestHeaders &headers);
+	// GET /lib/<path>: the bundled sound library. No token -- these are public files from
+	// the app's own bundle -- and nothing outside LibraryRoot() (IsSafeLibraryPath).
+	void ServeLibrary(uintptr_t sock, const std::string &path, const std::string &token,
+			  const RequestHeaders &headers);
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only, or (with widgetFilter set) to only the widgets it
 	// answers true for -- events.replay's per-type gate; the two selectors are never

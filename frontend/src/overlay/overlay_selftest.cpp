@@ -599,6 +599,40 @@ void ObsBootstrap::RunOverlaySelfTest()
 	}
 	HostLog(std::string("[selftest] overlay runtime version -> ") + (versionOk ? "OK" : "MISMATCH"));
 
+	// 1d) The bundled sound library: served with no token and a public cache policy, and
+	// nothing outside it however the path is spelled.
+	bool libraryOk = false;
+	{
+		const auto get = [&](const std::string &target) {
+			SOCKET c = DialLoopback(port);
+			if (c == INVALID_SOCKET) {
+				return std::string();
+			}
+			WriteAll(c, "GET " + target + " HTTP/1.1\r\nHost: x\r\n\r\n");
+			const std::string resp = RecvUntilClose(c);
+			closesocket(c);
+			return resp;
+		};
+		const std::string manifest = get("/lib/sounds.json");
+		const bool manifestOk = StatusOf(manifest) == 200 &&
+					manifest.find("Content-Type: application/json") != std::string::npos &&
+					manifest.find("Cache-Control: public, max-age=") != std::string::npos &&
+					manifest.find("\"chime-01\"") != std::string::npos;
+		const std::string sound = get("/lib/sounds/chime-01.ogg");
+		const bool soundOk = StatusOf(sound) == 200 &&
+				     sound.find("Content-Type: audio/ogg") != std::string::npos;
+		bool guardOk = true;
+		for (const char *escape : {"/lib/../runtime.js", "/lib/sounds/../../runtime.js",
+					   "/lib/%2e%2e/runtime.js", "/lib/sounds/..\\..\\runtime.js",
+					   "/lib/C:/Windows/win.ini", "/lib/.hidden", "/lib/", "/lib/a/b/c.ogg"}) {
+			guardOk = guardOk && StatusOf(get(escape)) == 404;
+		}
+		libraryOk = manifestOk && soundOk && guardOk;
+		HostLog(std::string("[selftest] overlay sound library -> ") + (libraryOk ? "OK" : "MISMATCH") +
+			" (manifest=" + (manifestOk ? "ok" : "bad") + " sound=" + (soundOk ? "ok" : "bad") +
+			" guard=" + (guardOk ? "ok" : "bad") + ")");
+	}
+
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then
 	// 4) push one frame through every named channel and assert each arrives under its own
 	// event name.
@@ -1134,9 +1168,10 @@ void ObsBootstrap::RunOverlaySelfTest()
 	Overlay::Store().RemoveForTest("selftest-widget");
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
-	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && tallyOk &&
-	    authOk && replayGateOk && stockOk && sizesOk && atomicWriteOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/tally/gate/auth/stock/sizes/atomic-write OK");
+	if (docOk && libraryOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk &&
+	    tallyOk && authOk && replayGateOk && stockOk && sizesOk && atomicWriteOk) {
+		HostLog("[selftest] overlay -> document/library/SSE/channels/replay/tally/gate/auth/stock/sizes/atomic-write "
+			"OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

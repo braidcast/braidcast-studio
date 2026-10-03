@@ -23,6 +23,7 @@
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "util/time_util.hpp"      // TimeUtil::NowMs
 #include "overlay_assets.hpp"      // Overlay::MaxAssetBytes
+#include "overlay_scopes.hpp"      // Overlay::LibraryRoot, IsSafeLibraryPath
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
 #include "overlay_template.hpp"    // Overlay::AcceptsReplay, Overlay::CountsEvents
 
@@ -56,6 +57,11 @@ constexpr size_t kMaxBackfillEvents = 200;     // ceiling on the connect-time ev
 // revalidation below is the backstop if a future writer ever appears that does not bump,
 // and `immutable` would tell the client not to check even on a reload.
 constexpr int kAssetMaxAgeSeconds = 86400;
+
+// The bundled library's route. Its URLs carry no version, so its freshness rests on the
+// ETag revalidation alone once a day is up; a library id never changes its sound, which is
+// what makes a day safe.
+constexpr char kLibraryRoutePrefix[] = "/lib/";
 
 // The fields.json `type` whose value is an audio file the page plays. The editor's half of
 // the same registry is `frontend/web/src/lib/overlays/fieldTypes.ts`; nothing links them,
@@ -268,6 +274,26 @@ void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std:
 	head += "\r\n";
 	const std::string out = suppressBody ? head : head + body;
 	SendAll(sock, out.data(), out.size());
+}
+
+// Send `body` as a cacheable representation: a strong ETag and `Cache-Control: <scope>,
+// max-age=<day>`, answered 304 when the client's validator already names these bytes. The
+// one implementation for every cacheable route, so they cannot drift apart on the parts a
+// naive 304 gets wrong.
+void WriteCacheable(SOCKET sock, const std::string &ctype, const std::string &body, const char *cacheScope,
+		    const RequestHeaders &request)
+{
+	const std::string etag = StrongETag(body);
+	const std::string cacheHeaders = "Cache-Control: " + std::string(cacheScope) +
+					 ", max-age=" + std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag +
+					 "\r\n";
+	if (ETagMatches(request.ifNoneMatch, etag)) {
+		// The representation is passed so Content-Length still names what a 200 would have
+		// sent (RFC 9110 SS8.6); only the body write is suppressed.
+		WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
+		return;
+	}
+	WriteResponse(sock, 200, ctype, body, cacheHeaders);
 }
 
 // Build the served widget document (spec shell): user CSS in <style>, user HTML in
@@ -991,9 +1017,8 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 
 	std::string path;
 	const std::string token = QueryToken(target, path);
-	// Read here rather than in the handler: this is the only scope that still holds the
-	// request's headers, and the asset route needs the client's validator to answer 304.
-	const std::string ifNoneMatch = HeaderValue(headerBlock, "if-none-match");
+	RequestHeaders headers;
+	headers.ifNoneMatch = HeaderValue(headerBlock, "if-none-match");
 
 	// Route table (order: most specific first). Data list, not a switch, so a new
 	// top-level widget-type route is a one-line add. The handler owns socket close;
@@ -1002,16 +1027,17 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 		const char *prefix;
 		bool exact;
 		void (OverlayServer::*handler)(uintptr_t, const std::string &, const std::string &,
-					       const std::string &);
+					       const RequestHeaders &);
 	};
-	static const std::array<Route, 2> kRoutes = {{
+	static const std::array<Route, 3> kRoutes = {{
 		{"/runtime.js", true, &OverlayServer::ServeRuntime},
 		{"/w/", false, &OverlayServer::ServeWidget},
+		{kLibraryRoutePrefix, false, &OverlayServer::ServeLibrary},
 	}};
 	for (const auto &r : kRoutes) {
 		const bool match = r.exact ? (path == r.prefix) : (path.rfind(r.prefix, 0) == 0);
 		if (match) {
-			(this->*r.handler)(clientSocket, path, token, ifNoneMatch);
+			(this->*r.handler)(clientSocket, path, token, headers);
 			return;
 		}
 	}
@@ -1020,7 +1046,7 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 }
 
 void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, const std::string &token,
-				 const std::string &ifNoneMatch)
+				 const RequestHeaders &headers)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	// runtime.js is non-sensitive, but keep the uniform token guard: accept if the
@@ -1049,20 +1075,12 @@ void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, co
 	// cannot cache this even heuristically, so every widget load and every editor preview
 	// rebuild refetched the whole runtime. The bytes only change on a rebuild, and the `v`
 	// AssembleDocument puts on this URL moves with them, so a fresh entry is never a stale one.
-	const std::string etag = StrongETag(body);
-	const std::string cacheHeaders =
-		"Cache-Control: private, max-age=" + std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag + "\r\n";
-	if (ETagMatches(ifNoneMatch, etag)) {
-		WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
-		CloseClient(clientSocket);
-		return;
-	}
-	WriteResponse(sock, 200, ctype, body, cacheHeaders);
+	WriteCacheable(sock, ctype, body, "private", headers);
 	CloseClient(clientSocket);
 }
 
 void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path, const std::string &token,
-				const std::string &ifNoneMatch)
+				const RequestHeaders &headers)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	const std::string rest = path.substr(3); // after "/w/"
@@ -1115,24 +1133,31 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 			CloseClient(clientSocket);
 			return;
 		}
-		// The only cacheable route. Without a validator Chromium cannot cache this even
-		// heuristically, so every play of an alert sound refetched, re-demuxed and
-		// re-decoded the clip -- which is what made alerts stutter.
-		const std::string etag = StrongETag(body);
-		const std::string cacheHeaders = "Cache-Control: private, max-age=" +
-						 std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag + "\r\n";
-		if (ETagMatches(ifNoneMatch, etag)) {
-			// The representation is passed so Content-Length still names what a 200
-			// would have sent (RFC 9110 SS8.6); only the body write is suppressed.
-			WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
-			CloseClient(clientSocket);
-			return;
-		}
-		WriteResponse(sock, 200, ctype, body, cacheHeaders);
+		// Without a validator Chromium cannot cache this even heuristically, so every play
+		// of an alert sound refetched, re-demuxed and re-decoded the clip -- which is what
+		// made alerts stutter.
+		WriteCacheable(sock, ctype, body, "private", headers);
 		CloseClient(clientSocket);
 		return;
 	}
 	WriteResponse(sock, 404, "text/plain", "not found");
+	CloseClient(clientSocket);
+}
+
+void OverlayServer::ServeLibrary(uintptr_t clientSocket, const std::string &path, const std::string &,
+				 const RequestHeaders &headers)
+{
+	const SOCKET sock = (SOCKET)clientSocket;
+	const std::string rel = path.substr(std::strlen(kLibraryRoutePrefix));
+	std::string body;
+	std::string ctype;
+	if (!IsSafeLibraryPath(rel) || !ReadFileGuarded(LibraryRoot(), rel, body, ctype)) {
+		WriteResponse(sock, 404, "text/plain", "not found");
+		CloseClient(clientSocket);
+		return;
+	}
+	// Public: the same bytes for every widget and every client, unlike an upload.
+	WriteCacheable(sock, ctype, body, "public", headers);
 	CloseClient(clientSocket);
 }
 

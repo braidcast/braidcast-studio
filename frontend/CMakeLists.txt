@@ -340,6 +340,10 @@ target_sources(
     # code its document is assembled from. Filesystem + json only, no obs.h.
     src/overlay/overlay_template.cpp
     src/overlay/overlay_template.hpp
+    # The bundled sound library (/lib/ root, path guard, manifest) and the per-scope data
+    # a widget document is assembled from. Filesystem + json only, no obs.h.
+    src/overlay/overlay_scopes.cpp
+    src/overlay/overlay_scopes.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
