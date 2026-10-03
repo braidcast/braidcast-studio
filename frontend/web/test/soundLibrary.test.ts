@@ -1,0 +1,49 @@
+import { describe, expect, test } from "bun:test";
+import { existsSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { SOUND_CATEGORIES, soundCapMs, type LibrarySound } from "../src/lib/overlays/soundLibrary";
+
+const LIBRARY = new URL("../public/overlay/library/", import.meta.url);
+const MANIFEST: LibrarySound[] = await Bun.file(new URL("sounds.json", LIBRARY)).json();
+const ID = /^(chime|coin|jingle|arcade|whoosh|impact)-\d{2}$/;
+/** The spec's ceiling for the whole pack. */
+const MAX_TOTAL_BYTES = 6 * 1024 * 1024;
+
+describe("bundled sound library", () => {
+  test("36 sounds, six in each of the six categories", () => {
+    expect(MANIFEST.length).toBe(36);
+    for (const category of SOUND_CATEGORIES) {
+      expect([category, MANIFEST.filter((s) => s.category === category).length]).toEqual([category, 6]);
+    }
+  });
+
+  test("ids are unique and stable-shaped, and each names its own file", () => {
+    expect(new Set(MANIFEST.map((s) => s.id)).size).toBe(MANIFEST.length);
+    for (const s of MANIFEST) {
+      expect([s.id, ID.test(s.id)]).toEqual([s.id, true]);
+      expect(s.file).toBe(`sounds/${s.id}.ogg`);
+      expect(s.name.length > 0 && s.source.startsWith("Kenney ")).toBe(true);
+    }
+  });
+
+  test("every file exists and the pack stays inside its size budget", () => {
+    let total = 0;
+    for (const s of MANIFEST) {
+      const path = fileURLToPath(new URL(s.file, LIBRARY));
+      expect([s.file, existsSync(path)]).toEqual([s.file, true]);
+      total += statSync(path).size;
+    }
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(MAX_TOTAL_BYTES);
+  });
+
+  test("durations are within their category's cap", () => {
+    for (const s of MANIFEST) {
+      expect([s.id, s.durationMs > 0 && s.durationMs <= soundCapMs(s.category)]).toEqual([s.id, true]);
+    }
+  });
+
+  test("the licence notes sit beside the manifest", () => {
+    expect(existsSync(fileURLToPath(new URL("LICENSES.md", LIBRARY)))).toBe(true);
+  });
+});
