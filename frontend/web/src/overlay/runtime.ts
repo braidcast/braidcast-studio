@@ -11,7 +11,6 @@ import type {
   ChannelStats,
   ChatMessage,
   ChatModeration,
-  EventType,
   NormalizedEvent,
   StreamState,
   ViewerCounts,
@@ -19,8 +18,10 @@ import type {
 // A value import, so it is bundled into runtime.js rather than erased: relative, because
 // the $lib alias is Vite's and this file is built by `bun build` on its own.
 import { cssForSlots } from "./textStyle";
-import { fmtCount, fmtMoney, fmtTally, isTally } from "../lib/utils/format";
+import { fmtCount, fmtMoney, fmtTally } from "../lib/utils/format";
 import { fillTemplate } from "./fillTemplate";
+import { amountOf, MONEY_TYPES } from "./eventAmount";
+import { logOnce } from "./logOnce";
 import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
 import {
   COUNTER_EVENT_SOURCES,
@@ -201,14 +202,6 @@ const kMaxSoundDecodeAttempts = 3;
  * still fires long before a broadcast could notice. A timeout is a transient failure. */
 const kSoundFetchTimeoutMs = 3000;
 const soundCache = new Map<string, SoundEntry>();
-/** Keyed "<stage>|<url>", so one durable condition reports once per stage instead of once
- * per alert -- an alert box fires hundreds of times a broadcast and this channel is the
- * session log. Bounded for the same reason kMaxSoundEntries is, and against the same
- * adversary: a widget minting sound URLs at runtime would otherwise grow this set without
- * limit and emit a line per URL per stage forever. Evicting a key only risks one repeated
- * line, long after the first. */
-const kMaxLoggedSoundNotices = 32;
-const loggedSoundNotices = new Set<string>();
 let audioCtx: AudioContext | null = null;
 
 /** The token in the query must never reach the log. */
@@ -220,24 +213,12 @@ function describeSoundError(e: unknown): string {
   return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 }
 
-/** One line per (stage, url). console.error rather than console.log because obs-browser
- * forwards nothing else to the session log -- including the lines that report a policy
- * decision rather than a fault, so `detail` has to carry that distinction in its wording. */
+/** One line per (stage, url), so one durable condition reports once per stage instead of once
+ * per alert -- an alert box fires hundreds of times a broadcast and this channel is the
+ * session log. `detail` carries whether the line reports a fault or a policy decision, since
+ * the channel itself cannot. */
 function logSoundOnce(url: string, stage: string, detail: string) {
-  const key = stage + "|" + url;
-  if (loggedSoundNotices.has(key)) {
-    return;
-  }
-  // Oldest-first; a Set iterates in insertion order, and deleting the key being visited is
-  // defined behaviour.
-  for (const old of loggedSoundNotices) {
-    if (loggedSoundNotices.size < kMaxLoggedSoundNotices) {
-      break;
-    }
-    loggedSoundNotices.delete(old);
-  }
-  loggedSoundNotices.add(key);
-  console.error(`OBSOverlay ${detail} ${soundLogPath(url)}`);
+  logOnce(stage + "|" + url, `${detail} ${soundLogPath(url)}`);
 }
 
 /** A suspended context is the external-browser case only: the app owns the CEF process and
@@ -528,26 +509,12 @@ function applyStyles(fields: Record<string, unknown>) {
   slotStyleEl.textContent = css;
 }
 
-// What an event's `amount` counts, per type: money in hundredths of `currency`, or a plain
-// tally (bits cheered, raiding viewers, Kicks sent). A type not listed reads as a plain count, so
-// nothing is ever dressed as currency unless it is listed here.
-const kMoneyTypes = new Set<EventType>(["superchat", "supersticker"]);
-
-// The host omits a zero amount from the wire, so for a tally (a 0-viewer raid) a missing
-// amount is zero. Anything else without one carries no amount at all.
-function amountOf(e: NormalizedEvent): number | null {
-  if (e.amount != null) {
-    return e.amount;
-  }
-  return isTally(e.type) ? 0 : null;
-}
-
 function formatAmount(e: NormalizedEvent): string {
   const n = amountOf(e);
   if (n == null) {
     return "";
   }
-  return kMoneyTypes.has(e.type) ? fmtMoney(n, e.currency) : fmtCount(n);
+  return MONEY_TYPES.has(e.type) ? fmtMoney(n, e.currency) : fmtCount(n);
 }
 
 function formatAmountText(e: NormalizedEvent): string {
@@ -555,7 +522,7 @@ function formatAmountText(e: NormalizedEvent): string {
   if (n == null) {
     return "";
   }
-  return kMoneyTypes.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
+  return MONEY_TYPES.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
 }
 
 const OBSOverlay = {
