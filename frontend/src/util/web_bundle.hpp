@@ -35,7 +35,7 @@ inline std::string ContentTypeForPath(const std::string &path)
 		{".mp3", "audio/mpeg"},        {".ogg", "audio/ogg"},        {".wav", "audio/wav"},
 		{".m4a", "audio/mp4"},         {".aac", "audio/aac"},        {".opus", "audio/ogg"},
 		{".flac", "audio/flac"},       {".weba", "audio/webm"},      {".webm", "video/webm"},
-		{".webp", "image/webp"},
+		{".webp", "image/webp"},       {".apng", "image/apng"},
 	};
 
 	size_t dot = path.find_last_of('.');

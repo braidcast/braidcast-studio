@@ -22,6 +22,7 @@
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "util/time_util.hpp"      // TimeUtil::NowMs
+#include "overlay_assets.hpp"      // Overlay::MaxAssetBytes
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
 #include "overlay_template.hpp"    // Overlay::AcceptsReplay, Overlay::CountsEvents
 
@@ -32,9 +33,8 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr size_t kMaxHeaderBytes = 16 * 1024;      // 16 KB header block (mirrors mcp)
-constexpr size_t kMaxAssetBytes = 8 * 1024 * 1024; // asset response cap (spec)
-constexpr int kPreferredPort = 43000;              // persisted default; tried first for stable URLs
+constexpr size_t kMaxHeaderBytes = 16 * 1024; // 16 KB header block (mirrors mcp)
+constexpr int kPreferredPort = 43000;         // persisted default; tried first for stable URLs
 // Scattered scan bands (base, +kBandSize each): a single OS-reserved block (Hyper-V/
 // WSL/Docker reserve large contiguous ranges) can't kill the feature. 5 x 50 = 250.
 constexpr int kBandSize = 50;
@@ -64,6 +64,19 @@ constexpr int kAssetMaxAgeSeconds = 86400;
 // decoding a fresh media element per alert -- and it covers a FORKED widget for free,
 // because a fork carries its own schema through the same Resolve().
 constexpr const char *kSoundFieldType = "sound-upload";
+
+// The cap a stored upload is served under: its record's kind, looked up by the served
+// basename. A file no record names -- one left behind by a failed replace -- gets the
+// default cap, which is what every file was held to before kinds had their own.
+size_t AssetCapFor(const Widget &w, const std::string &file)
+{
+	for (const json &a : w.assets) {
+		if (a.is_object() && a.value("file", std::string()) == file) {
+			return MaxAssetBytes(a.value("kind", std::string()));
+		}
+	}
+	return kDefaultAssetMaxBytes;
+}
 
 // Read one file under an absolute root, rejecting ".." (copy of scheme.cpp guard).
 bool ReadFileGuarded(const std::string &root, const std::string &rel, std::string &out, std::string &ctype)
@@ -1097,7 +1110,7 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 			CloseClient(clientSocket);
 			return;
 		}
-		if (body.size() > kMaxAssetBytes) {
+		if (body.size() > AssetCapFor(*w, file)) {
 			WriteResponse(sock, 413, "text/plain", "asset too large");
 			CloseClient(clientSocket);
 			return;

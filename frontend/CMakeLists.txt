@@ -333,6 +333,8 @@ target_sources(
     src/overlay/broadcast_tally.hpp
     src/overlay/overlay_store.cpp
     src/overlay/overlay_store.hpp
+    # The per-kind upload cap table the bridge, the server and overlays.assetLimits read.
+    src/overlay/overlay_assets.hpp
     # The shipped per-type templates (default-<type>/template.* + fields.json), read off
     # the rundir once and cached: the schema a stock widget's form is built from and the
     # code its document is assembled from. Filesystem + json only, no obs.h.

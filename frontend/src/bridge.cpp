@@ -54,6 +54,7 @@
 #include "fonts.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
+#include "overlay/overlay_assets.hpp"
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
@@ -14733,6 +14734,17 @@ bool MethodOverlaysRemoveAsset(const json &p, json &result, std::string &error)
 	return true;
 }
 
+// overlays.assetLimits {} -> {<kind>: maxBytes, ...}: the per-kind upload caps, so the editor
+// refuses an oversize file before transferring it, quoting the same number the host enforces.
+bool MethodOverlaysAssetLimits(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json::object();
+	for (const Overlay::AssetKindCap &cap : Overlay::kAssetKindCaps) {
+		result[std::string(cap.kind)] = cap.maxBytes;
+	}
+	return true;
+}
+
 bool MethodOverlaysUrl(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
@@ -15004,13 +15016,22 @@ bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 		error = "overlays.uploadAsset requires id, key, base64";
 		return false;
 	}
+	const size_t cap = Overlay::MaxAssetBytes(kind);
+	const std::string tooLarge = (kind.empty() ? std::string("asset") : kind) + " exceeds " +
+				     std::to_string(cap / Overlay::kAssetMiB) + " MB";
+	// Four base64 characters carry three bytes, so a payload this long decodes past the cap
+	// whatever its padding: refused before a 40 MB decode is spent on it.
+	if (b64.size() / 4 * 3 > cap + 2) {
+		error = tooLarge;
+		return false;
+	}
 	std::vector<unsigned char> bytes;
 	if (!DecodeBase64(b64, bytes)) {
 		error = "invalid base64";
 		return false;
 	}
-	if (bytes.size() > 8u * 1024 * 1024) {
-		error = "asset exceeds 8 MB";
+	if (bytes.size() > cap) {
+		error = tooLarge;
 		return false;
 	}
 	const std::string rel = Overlay::Store().AddAsset(id, key, kind, bytes);
@@ -15414,6 +15435,7 @@ void Init()
 		{"overlays.delete", MethodOverlaysDelete},
 		{"overlays.usage", MethodOverlaysUsage},
 		{"overlays.removeAsset", MethodOverlaysRemoveAsset},
+		{"overlays.assetLimits", MethodOverlaysAssetLimits},
 		{"overlays.url", MethodOverlaysUrl},
 		{"overlays.serverInfo", MethodOverlaysServerInfo},
 		{"overlays.addToScene", MethodOverlaysAddToScene},
