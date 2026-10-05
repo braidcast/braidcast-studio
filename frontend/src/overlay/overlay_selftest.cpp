@@ -259,6 +259,16 @@ bool BroadcastTallyRules()
 			     busySnap["recentIds"].back() == "tally-busy-" + std::to_string(kBusy - 1) &&
 			     sums(busySnap, "kick", "follow", "", (int64_t)kBusy, (int64_t)kBusy, 0);
 
+	// A busy start: far more events than a small memory holds arrive between an output starting
+	// and the frame that reports its start, and the window counts every one of them.
+	Overlay::BroadcastTally early;
+	const size_t kEarly = 200;
+	for (size_t i = 0; i < kEarly; ++i) {
+		early.Add(event("tally-early-" + std::to_string(i), "twitch", "follow", 5000 + (int64_t)i));
+	}
+	early.OnStreamState(true, 5000, 6000);
+	const bool earlyOk = sums(early.Snapshot(), "twitch", "follow", "", (int64_t)kEarly, (int64_t)kEarly, 0);
+
 	// The record a restart reads. One broadcast left open (a crash, or quitting mid-stream),
 	// closed on load at its last save; one ended long ago, whose YouTube rows are past that
 	// platform's storage limit while its Twitch rows stand.
@@ -337,11 +347,13 @@ bool BroadcastTallyRules()
 		fs::remove_all(blockerPath, ec);
 	}
 
-	const bool ok = emptyOk && refoldOk && latchOk && sumsOk && endOk && boundOk && reloadOk && agedOk && retryOk;
+	const bool ok = emptyOk && refoldOk && latchOk && sumsOk && endOk && boundOk && earlyOk && reloadOk && agedOk &&
+			retryOk;
 	HostLog(std::string("[selftest] overlay broadcast tally -> ") + (ok ? "OK" : "MISMATCH") +
-		" (empty=" + (emptyOk ? "ok" : "bad") + " refold=" + (refoldOk ? "ok" : "bad") + " latch=" +
-		(latchOk ? "ok" : "bad") + " sums=" + (sumsOk ? "ok" : "bad") + " end=" + (endOk ? "ok" : "bad") +
-		" bound=" + (boundOk ? "ok" : "bad") + " reload=" + (reloadOk ? "ok" : "bad") +
+		" (empty=" + (emptyOk ? "ok" : "bad") + " refold=" + (refoldOk ? "ok" : "bad") +
+		" latch=" + (latchOk ? "ok" : "bad") + " sums=" + (sumsOk ? "ok" : "bad") +
+		" end=" + (endOk ? "ok" : "bad") + " bound=" + (boundOk ? "ok" : "bad") +
+		" early=" + (earlyOk ? "ok" : "bad") + " reload=" + (reloadOk ? "ok" : "bad") +
 		" aged=" + (agedOk ? "ok" : "bad") + " retry=" + (retryOk ? "ok" : "bad") + ")");
 	return ok;
 }

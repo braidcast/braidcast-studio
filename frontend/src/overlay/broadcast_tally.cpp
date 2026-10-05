@@ -112,6 +112,7 @@ void BroadcastTally::Add(const Events::NormalizedEvent &ev)
 	r.ts = ev.ts;
 	r.units = ev.count > 0 ? ev.count : 1;
 	r.amount = ev.amount;
+	r.seenMs = TimeUtil::NowMs();
 
 	json record;
 	std::string path;
@@ -121,11 +122,14 @@ void BroadcastTally::Add(const Events::NormalizedEvent &ev)
 		if (OpenLocked() && r.ts >= since_) {
 			CountLocked(r);
 		}
+		const int64_t now = TimeUtil::NowMs();
 		recent_.push_back(std::move(r));
-		while (recent_.size() > kRecentEvents) {
+		// By the app's clock, not the events' own: platforms' clocks disagree, and an event
+		// stamped in the future must not outstay the window.
+		while (!recent_.empty() &&
+		       (recent_.size() > kRecentEvents || recent_.front().seenMs < now - kRecentWindowMs)) {
 			recent_.pop_front();
 		}
-		const int64_t now = TimeUtil::NowMs();
 		if (!SaveDueLocked(now)) {
 			return;
 		}

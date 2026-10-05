@@ -87,9 +87,12 @@ public:
 	// event path held back, or one that failed. Called on a timer.
 	void SaveIfDue(int64_t nowMs);
 
-	// How many recent broadcast events are remembered for a window that opens after them, and
-	// how many counted ids a snapshot names.
-	static constexpr size_t kRecentEvents = 64;
+	// How long recent broadcast events are remembered for a window that opens after them --
+	// the gap between an output starting and the stream frame that reports its start, which
+	// a busy channel can fill with more events than any small count -- and a cap on how many,
+	// so a flood still costs bounded memory. Then how many counted ids a snapshot names.
+	static constexpr int64_t kRecentWindowMs = 15 * 60 * 1000;
+	static constexpr size_t kRecentEvents = 5000;
 	static constexpr size_t kRecentIds = 64;
 	// The least time between two saves on the event path and SaveIfDue. A transition and Flush
 	// always save.
@@ -108,6 +111,7 @@ private:
 		int64_t ts = 0;
 		int64_t units = 0;
 		int64_t amount = 0;
+		int64_t seenMs = 0; // when the app broadcast it, by its own clock
 	};
 
 	bool OpenLocked() const { return since_ > 0 && until_ == 0; }
@@ -126,7 +130,7 @@ private:
 	int64_t since_ = 0;
 	int64_t until_ = 0;
 	std::map<Key, Sum> totals_;
-	std::deque<Recent> recent_;          // the last kRecentEvents broadcast, counted or not
+	std::deque<Recent> recent_; // broadcast in the last kRecentWindowMs (at most kRecentEvents), counted or not
 	std::deque<std::string> countedIds_; // the last kRecentIds counted
 	bool dirty_ = false;
 	int64_t lastSaveMs_ = 0;
