@@ -1,0 +1,10 @@
+[
+  { "key": "motion", "type": "dropdown", "label": "Motion", "group": "Motion", "default": "float", "options": [ { "value": "float", "label": "Float up" }, { "value": "rain", "label": "Rain down" }, { "value": "pop", "label": "Pop in place" } ], "help": "With reduced motion every emote fades in and out where it lands." },
+  { "key": "lifetime", "type": "slider", "label": "Time on screen (s)", "group": "Motion", "min": 2, "max": 15, "step": 0.5, "default": 6 },
+  { "key": "emoteSize", "type": "slider", "label": "Emote size (design px)", "group": "Content", "min": 24, "max": 192, "step": 4, "default": 72 },
+  { "key": "perMessage", "type": "slider", "label": "Most emotes per message", "group": "Content", "min": 1, "max": 20, "step": 1, "default": 5, "help": "A message that spams one emote fifty times sends this many." },
+  { "key": "maxOnScreen", "type": "slider", "label": "Most emotes on screen", "group": "Content", "min": 5, "max": 150, "step": 5, "default": 60, "help": "Past this, the oldest emotes leave early." },
+  { "key": "showTwitch", "type": "checkbox", "label": "Twitch chat", "group": "Platforms", "default": true },
+  { "key": "showYouTube", "type": "checkbox", "label": "YouTube chat", "group": "Platforms", "default": true },
+  { "key": "showKick", "type": "checkbox", "label": "Kick chat", "group": "Platforms", "default": true }
+]

@@ -39,6 +39,7 @@ export const WIDGET_TYPES: WidgetTypeSpec[] = [
   { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch", tests: ["stream"] },
   { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard", tests: ["chat", "clear"] },
   { type: "countdown", label: "Countdown", name: "New Countdown", tests: [] },
+  { type: "emotewall", label: "Emote Wall", name: "New Emote Wall", tests: ["chat"] },
   { type: "endcredits", label: "End Credits", name: "New End Credits", tests: ["alerts"] },
   { type: "eventlist", label: "Event List", name: "New Event List", tests: ["alerts"] },
   // `stream` rather than `clear`: Go live starts a fresh session count and End stream holds

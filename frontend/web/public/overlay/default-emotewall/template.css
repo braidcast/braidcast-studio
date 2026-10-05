@@ -1,0 +1,33 @@
+:root {
+  /* One design pixel. The size field arrives as a plain number so the root scale governs it. */
+  --ov-px: 0.0625rem;
+  --ov-emote: 72;
+}
+/* Scale knob: 1rem is 16 design px at a 1920 px wide source, the full-canvas size an emote
+   wall is normally drawn at, so an emote keeps its share of the frame at any size. */
+html { font-size: calc(100vw / 120); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.wall {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Placed and moved by template.js through transforms only, so a busy wall costs composites,
+   not layout. */
+.emote {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--ov-emote) * var(--ov-px));
+  height: calc(var(--ov-emote) * var(--ov-px));
+  object-fit: contain;
+  will-change: transform, opacity;
+}

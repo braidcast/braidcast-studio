@@ -14850,8 +14850,13 @@ static std::string TestStr(const json &overrides, const char *key, const char *f
 static json BuildTestChat(const json &overrides, uint64_t seq)
 {
 	const std::string platform = TestStr(overrides, "platform", kTestPlatform);
+	// One emote after the text, so the chat box draws an emote fragment and the emote wall has
+	// something to throw: Twitch's global Kappa, which every Twitch chat already serves.
 	const json fragments = json::array({
-		json{{"type", "text"}, {"text", TestStr(overrides, "text", "Hello from Braidcast!")}},
+		json{{"type", "text"}, {"text", TestStr(overrides, "text", "Hello from Braidcast! ")}},
+		json{{"type", "emote"},
+		     {"code", "Kappa"},
+		     {"url", "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0"}},
 	});
 	json msg = Chat::BuildChatMessage(platform.c_str(), "test-channel", "test-chat-" + std::to_string(seq),
 					  TimeUtil::NowMs(), TestStr(overrides, "author", kTestActorName),
