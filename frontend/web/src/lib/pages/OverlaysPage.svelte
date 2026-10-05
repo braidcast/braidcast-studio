@@ -85,9 +85,10 @@ import { EV } from "$lib/utils/eventNames";
   let forking = $state(false);
 
   const forked = $derived(!!widget?.custom);
-  // A stock widget whose type declares scopes edits in the scoped editor, which carries its
-  // own stage at every width -- so it never needs the narrow layout's Preview mode.
-  const scoped = $derived(!!widget && !widget.custom && !!widget.scopes);
+  // Every stock widget edits in the stage editor (ScopedEditor), which carries its own
+  // preview at every width -- so it never needs the narrow layout's Preview mode. A fork is
+  // edited as code and keeps the plain layout.
+  const scoped = $derived(!!widget && !widget.custom);
   const paneOptions = $derived(wide || scoped ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
 
   // A stock widget's code is on disk, not on the widget, so the read is keyed by TYPE.

@@ -1,6 +1,9 @@
 <script lang="ts">
-  // The Simple editor for a stock widget whose type declares scopes (the alert box): the
-  // scope rail, the live stage, and an inspector showing the selected scope's fields. Every
+  // The Simple editor for every stock widget (roadmap 9.4b): the live stage beside an inspector
+  // of the widget's fields in collapsible groups, so the preview never scrolls away from the
+  // setting being changed. A type that declares scopes (the alert box) also gets the scope
+  // rail, and the inspector shows the selected scope's fields; any other type has one scope,
+  // Defaults, and no rail. Every
   // edit is a new set of layers handed to onLayers, which the page saves like any other
   // edit; this component owns only which scope is selected and the undo window of a
   // deleted variation.
@@ -75,7 +78,9 @@
   const selectedEvent = $derived(
     events.find((e) => e.key === (selectedVariation ? selectedVariation.event : selected)) ?? null,
   );
-  const scopeName = $derived(scopeLabel(scopes, selected));
+  /** Whether this type declares scopes: the rail, Replay and per-scope wording exist only then. */
+  const hasScopes = $derived(events.length > 0);
+  const scopeName = $derived(hasScopes ? scopeLabel(scopes, selected) : "Settings");
 
   // A scope that stopped existing (a variation deleted here or by an external edit) falls
   // back to its event, or to Defaults.
@@ -158,17 +163,19 @@
   });
 </script>
 
-<div class="se" class:se--wide={wide}>
-  <div class="se__rail">
-    <ScopeRail
-      {scopes}
-      {selected}
-      variant={wide ? "rail" : "select"}
-      onSelect={(s) => (selected = s)}
-      onAdd={addVariation}
-      onDelete={deleteVariation}
-    />
-  </div>
+<div class="se" class:se--wide={wide} class:se--norail={!hasScopes}>
+  {#if hasScopes}
+    <div class="se__rail">
+      <ScopeRail
+        {scopes}
+        {selected}
+        variant={wide ? "rail" : "select"}
+        onSelect={(s) => (selected = s)}
+        onAdd={addVariation}
+        onDelete={deleteVariation}
+      />
+    </div>
+  {/if}
 
   <div class="se__stage">
     <PreviewStage {widget} {scopes} scope={selected} {scopeName} {reloadKey} {savedKey} />
@@ -187,7 +194,7 @@
       <p class="se__help">
         Changes here apply to every {selectedEvent.label.toLowerCase()} alert. Anything you leave alone follows Defaults.
       </p>
-    {:else}
+    {:else if hasScopes}
       <p class="se__help">The look every alert starts from. Events and variations change only what they set.</p>
     {/if}
     <FieldsPanel
@@ -232,6 +239,9 @@
     display: grid;
     grid-template-columns: 200px minmax(280px, 1fr) minmax(360px, 440px);
     overflow: hidden;
+  }
+  .se--wide.se--norail {
+    grid-template-columns: minmax(280px, 1fr) minmax(360px, 440px);
   }
   .se--wide .se__rail,
   .se--wide .se__stage,

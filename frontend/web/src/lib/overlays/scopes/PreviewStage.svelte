@@ -71,10 +71,14 @@
 
 <div class="stage">
   <div class="stage__bar">
-    <Button size="sm" variant="surface" onclick={replay} aria-label="Replay {scopeName}">
-      <Icon name="replay" size={12} /> Replay
-    </Button>
-    <span class="stage__scope" title={scopeName}>{scopeName}</span>
+    <!-- Replay fires a sample that resolves to the selected scope, so it exists only for a
+         type that declares scopes; every type keeps its test buttons in the pane below. -->
+    {#if scopes.events.length > 0}
+      <Button size="sm" variant="surface" onclick={replay} aria-label="Replay {scopeName}">
+        <Icon name="replay" size={12} /> Replay
+      </Button>
+      <span class="stage__scope" title={scopeName}>{scopeName}</span>
+    {/if}
     <span class="stage__spacer"></span>
     <Segmented
       ariaLabel="Preview background"
