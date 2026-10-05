@@ -8109,6 +8109,15 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	store.Remove(uuid);
 	const bool saved = store.Save();
 
+	// The destination's remembered stream metadata goes with it. Not written over a
+	// stream_meta.json that could not be used (see StreamMetaStore::HoldArmed); the next
+	// boot's prune drops it once the file is usable again.
+	StreamMetaStore &meta = ObsBootstrap::StreamMeta();
+	meta.RemoveStreamOverride(uuid);
+	if (!meta.HoldArmed()) {
+		meta.Save();
+	}
+
 	// Cascade: drop every output binding that routed this profile so no dangling
 	// (deleted) edge lingers for the user to unbind by hand. Only the active
 	// collection is pruned in memory; other collections keep the "(deleted)" label

@@ -78,6 +78,20 @@ void StreamMetaStore::RemoveStreamOverride(const std::string &profileUuid)
 	streams_.erase(profileUuid);
 }
 
+size_t StreamMetaStore::PruneStreamOverrides(const std::function<bool(const std::string &profileUuid)> &isProfile)
+{
+	size_t removed = 0;
+	for (auto it = streams_.begin(); it != streams_.end();) {
+		if (isProfile(it.key())) {
+			++it;
+		} else {
+			it = streams_.erase(it);
+			removed++;
+		}
+	}
+	return removed;
+}
+
 std::string StreamMetaStore::Serialize() const
 {
 	return channels_.dump() + streams_.dump();

@@ -789,6 +789,24 @@ size_t PruneBindingsWithoutCanvas(const CanvasStore &canvases, OutputBindings &m
 	return before - bindings.size();
 }
 
+// Drop the remembered stream metadata of destinations that no longer exist: a delete made
+// before profile removal cleared it left the bag behind for good. Skipped when either file
+// could not be used, since the profiles are then a fallback that would clear every bag, and
+// the meta is one that must not be written over the user's file.
+void PruneOrphanedStreamMeta()
+{
+	if (g_streamProfiles.LoadedUnusable() || g_streamMeta.LoadedUnusable()) {
+		return;
+	}
+	const size_t removed = g_streamMeta.PruneStreamOverrides(
+		[](const std::string &uuid) { return g_streamProfiles.Find(uuid) != nullptr; });
+	if (removed > 0) {
+		g_streamMeta.Save();
+		HostLog("[obs] multistream: dropped stream metadata for " + std::to_string(removed) +
+			" deleted destination(s)");
+	}
+}
+
 void LoadMultistreamModel()
 {
 	g_canvases.Load();
@@ -803,6 +821,7 @@ void LoadMultistreamModel()
 	}
 	g_streamProfiles.Load();
 	g_streamMeta.Load();
+	PruneOrphanedStreamMeta();
 	g_streamInfoPresets.Load();
 	g_pollTemplates.Load();
 	g_outputBindings.Load();

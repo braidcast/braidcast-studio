@@ -2,6 +2,8 @@
 
 #include "StorePaths.hpp"
 
+#include <cstddef>
+#include <functional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -38,6 +40,10 @@ public:
 	// Forget a stream's override so it inherits the channel default again. Used
 	// when a remembered override is toggled off on save; a no-op if none exists.
 	void RemoveStreamOverride(const std::string &profileUuid);
+
+	// Forget every stream override whose profile `isProfile` does not recognize, i.e. one
+	// left behind by a deleted destination. Returns how many went. Does NOT persist.
+	size_t PruneStreamOverrides(const std::function<bool(const std::string &profileUuid)> &isProfile);
 
 	// Persist both maps to stream_meta.json via SaveJsonAtomic. Returns false on write
 	// failure (already logged).
