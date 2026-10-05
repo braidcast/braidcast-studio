@@ -396,7 +396,19 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 		ev.message = Str(d, "userComment");
 		return true;
 	}
-	return false; // textMessageEvent / unhandled -> chat only
+	if (type == "membershipGiftingEvent") {
+		// One purchase of N gifted memberships, the same single subgift with a count the
+		// InnerTube read raises. Each recipient's giftMembershipReceivedEvent stays a chat
+		// line only: an event per recipient would fire fifty "new member" alerts for one
+		// fifty-gift purchase, as Twitch's recipient rows would.
+		const json &d = Obj(snippet, "membershipGiftingDetails");
+		ev.type = "subgift";
+		ev.id = "youtube:subgift:" + itemId;
+		ev.count = static_cast<int>(NumLoose(d, "giftMembershipsCount"));
+		ev.tier = Str(d, "giftMembershipsLevelName");
+		return true;
+	}
+	return false; // textMessageEvent / giftMembershipReceivedEvent / unhandled -> chat only
 }
 
 // Forward one chat-derived event into the events feed, attributed to the destination whose
