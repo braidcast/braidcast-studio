@@ -38,6 +38,7 @@ inline constexpr const char *kEventsCleared = "events.cleared";
 inline constexpr const char *kEventsRedacted = "events.redacted";
 // Exchange rates or the home currency changed (fx/fx_rates). Payload: Fx::RateStore::Snapshot.
 inline constexpr const char *kFxChanged = "fx.changed";
+inline constexpr const char *kUpdateAvailable = "update.available";
 inline constexpr const char *kVirtualCamChanged = "virtualCam.changed";
 inline constexpr const char *kUndoChanged = "undo.changed";
 inline constexpr const char *kStreamMetaChanged = "streamMeta.changed";

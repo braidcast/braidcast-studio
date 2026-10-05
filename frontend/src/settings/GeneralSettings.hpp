@@ -47,6 +47,9 @@ struct GeneralSettings {
 	// The streamer's currency as an ISO 4217 code, or "" for automatic: the YouTube
 	// channel's country, else the Windows region (Fx::ResolveHome).
 	std::string fxHomeCurrency;
+	// --- updates (read once at boot by Update::Checker) ---
+	// Whether a direct-download install asks GitHub for a newer release at launch.
+	bool checkForUpdates = true;
 	// --- persisted prefs consumed by later backlog items ---
 	bool startMinimized = false;                   // Item 11 (tray)
 	bool minimizeToTray = false;                   // Item 11
@@ -105,6 +108,7 @@ inline constexpr GeneralBoolField kGeneralBoolFields[] = {
 	{"multiviewDrawSafeAreas", "multiview_draw_safe_areas", &GeneralSettings::multiviewDrawSafeAreas},
 	{"importerPrompts", "importer_prompts", &GeneralSettings::importerPrompts},
 	{"scenesGridMode", "scenes_grid_mode", &GeneralSettings::scenesGridMode},
+	{"checkForUpdates", "check_for_updates", &GeneralSettings::checkForUpdates},
 };
 inline constexpr GeneralStringField kGeneralStringFields[] = {
 	{"multiviewLayout", "multiview_layout", &GeneralSettings::multiviewLayout},

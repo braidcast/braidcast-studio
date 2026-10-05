@@ -33,6 +33,7 @@ export const EV = {
   eventsCleared: "events.cleared",
   eventsRedacted: "events.redacted",
   fxChanged: "fx.changed",
+  updateAvailable: "update.available",
   virtualCamChanged: "virtualCam.changed",
   undoChanged: "undo.changed",
   streamMetaChanged: "streamMeta.changed",

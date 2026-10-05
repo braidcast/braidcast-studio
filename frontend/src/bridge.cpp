@@ -53,6 +53,7 @@
 #include "devtools_port.hpp"
 #include "fonts.hpp"
 #include "fx/fx_rates.hpp"
+#include "update/update_check.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_assets.hpp"
@@ -1023,6 +1024,26 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 bool MethodFxGet(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	result = Fx::Rates().Snapshot();
+	return true;
+}
+
+// update.status {} -> {version, url} | null: the newer release the launch check found and
+// the page has not shown yet (Update::UpdateChecker). update.ack {version}: the page showed
+// it, so it is never shown again.
+bool MethodUpdateStatus(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Update::Checker().Pending();
+	return true;
+}
+
+bool MethodUpdateAck(const json &params, json &result, std::string &error)
+{
+	std::string version;
+	if (!RequireStr(params, "update.ack", "version", version, error)) {
+		return false;
+	}
+	Update::Checker().Acknowledge(version);
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -15412,6 +15433,8 @@ void Init()
 		{"settings.getAudio", MethodSettingsGetAudio},
 		{"settings.setAudio", MethodSettingsSetAudio},
 		{"fx.get", MethodFxGet},
+		{"update.status", MethodUpdateStatus},
+		{"update.ack", MethodUpdateAck},
 		{"settings.getGeneral", MethodSettingsGetGeneral},
 		{"settings.setGeneral", MethodSettingsSetGeneral},
 		{"settings.getAdvanced", MethodSettingsGetAdvanced},
@@ -15673,6 +15696,7 @@ void Shutdown()
 	Chat::Viewers().Stop();
 	Chat::Channels().Stop();
 	Fx::Rates().Stop();
+	Update::Checker().Stop();
 	Events::Hub().StopAll();
 
 	// Now give the signaled workers a bounded window to actually unwind before the
@@ -15691,6 +15715,7 @@ void Shutdown()
 	Chat::Viewers().Stop();
 	Chat::Channels().Stop();
 	Fx::Rates().Stop();
+	Update::Checker().Stop();
 	Events::Hub().StopAll();
 	// Persist any debounced trailing event now that the workers are stopped and no
 	// further Add can race the write (the store coalesces writes; this is the flush).

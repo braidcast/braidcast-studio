@@ -345,6 +345,8 @@ export interface GeneralSettings {
   /** The streamer's currency for Super Chat amounts (ISO 4217), or "" for automatic: the
    * YouTube channel's country, else the Windows region. setGeneral refuses anything else. */
   fxHomeCurrency: string;
+  /** Whether a direct-download install asks for a newer release at launch (read at boot). */
+  checkForUpdates: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;
   alwaysShowTray: boolean;
@@ -1565,6 +1567,12 @@ export interface ChatPaid {
   color?: string;
 }
 
+/** A newer published release than the running build: its tag and the download page. */
+export interface UpdateNotice {
+  version: string;
+  url: string;
+}
+
 /** Exchange rates and the streamer's currency (fx.get, fx.changed, and each overlay's
  * bootstrap): Fx::RateStore::Snapshot. lib/utils/fx.ts reads it. */
 export interface FxSnapshot {
@@ -2574,6 +2582,10 @@ export interface ObsMethods {
   // Exchange rates and the streamer's currency for Super Chat amounts (roadmap 9.6). Every
   // change (a new day's rates, the currency setting) also emits fx.changed.
   "fx.get": FxSnapshot;
+  // The newer release the launch check found and the page has not shown yet (roadmap 10.6);
+  // update.ack marks it shown so it never shows again.
+  "update.status": UpdateNotice | null;
+  "update.ack": { ok: true };
   // Creator goals the destinations' chats are showing, in the order first seen. Read-only;
   // every change also emits goals.changed with the whole list.
   "goals.list": { goals: LiveGoal[] };
@@ -2736,6 +2748,7 @@ export interface ObsEvents {
   // General app settings changed (any setGeneral apply); the full state is pushed.
   "settings.generalChanged": GeneralSettings;
   "fx.changed": FxSnapshot;
+  "update.available": UpdateNotice;
   // Advanced app settings changed (any setAdvanced apply); the full state is pushed.
   "settings.advancedChanged": AdvancedSettings;
   "canvas.changed": Record<string, never>;

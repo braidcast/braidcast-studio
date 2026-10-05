@@ -38,6 +38,7 @@
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
+  import { startUpdateNotice } from "$lib/stores/updateNotice";
   import {
     obs,
     type SceneItem,
@@ -464,6 +465,8 @@ import { EV } from "$lib/utils/eventNames";
     pollStore.start();
     // Seed the DEBUG gate + log path early so log.dbg is gated correctly app-wide.
     diagnosticsStore.start();
+    // The launch update check's notice, shown once per version (main window only).
+    startUpdateNotice();
     const offChannels = channelsStore.init();
     // Kill browser spellcheck squiggles app-wide (inherited); real prose fields can
     // still opt back in with spellcheck="true".

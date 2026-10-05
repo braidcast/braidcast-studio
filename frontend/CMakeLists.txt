@@ -352,6 +352,10 @@ target_sources(
     src/fx/fx_rates.cpp
     src/fx/fx_rates.hpp
     src/fx/fx_selftest.cpp
+    src/update/update_check.cpp
+    src/update/update_check.hpp
+    src/update/update_version.cpp
+    src/update/update_version.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).

@@ -51,6 +51,7 @@ import { EV } from "$lib/utils/eventNames";
     scheduleRequireAllDestinations: false,
     chatHistoryRetention: "off",
     fxHomeCurrency: "",
+    checkForUpdates: true,
     startMinimized: false,
     minimizeToTray: false,
     alwaysShowTray: false,
@@ -429,6 +430,15 @@ import { EV } from "$lib/utils/eventNames";
       Require every destination before starting
     </label>
     <p class="dim note">A scheduled stream will not start unless every destination it lists can go live. When off, it starts with whichever ones can and leaves the rest out.</p>
+  </section>
+
+  <section class="group">
+    <h4>Updates</h4>
+    <label class="check">
+      <ToggleSwitch size="sm" checked={s.checkForUpdates} onchange={(v) => void apply({ checkForUpdates: v })} />
+      Check for updates at launch
+    </label>
+    <p class="dim note">Once per launch, Braidcast asks GitHub whether a newer release is out and says so once per version. Nothing downloads on its own. A Microsoft Store install is updated by the Store instead. Takes effect at the next launch.</p>
   </section>
 
   <section class="group">
