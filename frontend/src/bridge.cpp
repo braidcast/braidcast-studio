@@ -14461,6 +14461,13 @@ bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*er
 	return true;
 }
 
+// Why an overlay send was refused rather than answered with delivered:0: the loopback
+// server never bound a port, so no widget could have connected to anything, and the UI's
+// 0-delivered wording would send the user to look at their scene instead. Shared by
+// events.replay and overlays.test.
+constexpr const char *kOverlayServerDown = "the overlay server is not running \xe2\x80\x94 it could not bind a "
+					   "loopback port, so no overlay widget is connected to anything";
+
 // events.replay {id} -> {ok:true, delivered:<n>} (async lane -- the overlay server's
 // socket sends block): re-fire a STORED event through the same Broadcast() path a live
 // event takes, tagged `replay:true`. Broadcast() itself gates delivery to widget TYPES
@@ -14476,7 +14483,7 @@ bool MethodEventsReplay(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
 	if (id.empty()) {
-		error = "events.replay requires id";
+		error = "requires id";
 		return false;
 	}
 	// Refused rather than answered with delivered:0. Broadcast() cannot tell the two
@@ -14486,8 +14493,7 @@ bool MethodEventsReplay(const json &p, json &result, std::string &error)
 	// anything. Checked here so `delivered == 0` keeps one meaning: nothing eligible was
 	// listening on a server that is up.
 	if (!Overlay::Server().IsListening()) {
-		error = "the overlay server is not running \xe2\x80\x94 it could not bind a loopback port, "
-			"so no overlay widget is connected to anything";
+		error = kOverlayServerDown;
 		return false;
 	}
 	// Through the hub, so a replay cannot carry words a moderator's removal has already told
@@ -14499,7 +14505,8 @@ bool MethodEventsReplay(const json &p, json &result, std::string &error)
 	// The id is not embedded here: a Kick event id carries the viewer's username
 	// (kick_events.cpp) and so can a Twitch follow id, and this error reaches the
 	// always-on host log via RunAsyncMethod's FAIL line, not a debug-gated one.
-	error = "events.replay: unknown event id";
+	// No method prefix: the async lane adds "events.replay: " to every error it returns.
+	error = "unknown event id";
 	return false;
 }
 
@@ -14992,11 +14999,17 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 	if (!channel.empty() && channel != "event") {
 		const auto ch = kOverlayTestChannels.find(channel);
 		if (ch == kOverlayTestChannels.end()) {
-			error = "overlays.test: unknown channel '" + channel + "'";
+			error = "unknown channel '" + channel + "'";
 			return false;
 		}
 		if (id.empty()) {
-			error = "overlays.test requires id";
+			error = "requires id";
+			return false;
+		}
+		// As in events.replay: delivered:0 would send the user to their scene when no
+		// widget could have connected to anything.
+		if (!Overlay::Server().IsListening()) {
+			error = kOverlayServerDown;
 			return false;
 		}
 		const json body = ch->second.build(overrides, ++counter);
@@ -15007,7 +15020,11 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 
 	const std::string type = OptString(p, "type");
 	if (id.empty() || type.empty()) {
-		error = "overlays.test requires id and type";
+		error = "requires id and type";
+		return false;
+	}
+	if (!Overlay::Server().IsListening()) {
+		error = kOverlayServerDown;
 		return false;
 	}
 
