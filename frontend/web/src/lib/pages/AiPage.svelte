@@ -5,6 +5,7 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboardAvailable, copyText } from "$lib/utils/clipboard";
   import Button from "$lib/ui/Button.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
   // optimistic apply, copy-to-clipboard, token mask, regenerate confirm) laid out to
@@ -52,15 +53,26 @@ import { EV } from "$lib/utils/eventNames";
     busy = false;
   }
 
-  async function regenerate(): Promise<void> {
+  // The app's own confirm, not the browser's: a native confirm() ignores the theme, and
+  // CEF has no JS dialog handler here to give it one.
+  let dialog = $state<DialogSpec | null>(null);
+
+  function confirmRegenerate(): void {
     if (!cfg || busy) {
       return;
     }
-    if (
-      !confirm(
+    dialog = {
+      kind: "confirm",
+      title: "Regenerate Token",
+      message:
         "Regenerate the token? Any MCP client using the current token will stop working until you paste the new one.",
-      )
-    ) {
+      confirmLabel: "Regenerate",
+      onCommit: () => void regenerate(),
+    };
+  }
+
+  async function regenerate(): Promise<void> {
+    if (!cfg || busy) {
       return;
     }
     busy = true;
@@ -139,7 +151,7 @@ import { EV } from "$lib/utils/eventNames";
                     {copied === "token" ? "Copied" : "Copy"}
                   </Button>
                 {/if}
-                <Button size="sm" disabled={busy} onclick={() => void regenerate()}>Regenerate</Button>
+                <Button size="sm" disabled={busy} onclick={confirmRegenerate}>Regenerate</Button>
               </div>
             </div>
           </section>
@@ -206,6 +218,10 @@ import { EV } from "$lib/utils/eventNames";
     {/if}
   </div>
 </PageShell>
+
+{#if dialog}
+  <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
+{/if}
 
 <style>
   .server-toggle {
