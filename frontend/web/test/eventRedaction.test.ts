@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { NormalizedEvent } from "../src/lib/api/bridge";
+import { eventEmoji, eventSummary } from "../src/overlay/eventSummary";
 import { ALERTBOX_SOURCE, alertboxOverlay } from "./alertboxStub";
 
 // The default alert box and event ticker are bundler-free overlay scripts, run here as source
@@ -151,6 +153,8 @@ function ticker() {
     onEventRedaction: (fn: RedactionFn) => (onRedaction = fn),
     formatAmountText: () => "$5",
     formatMoney: () => "$5",
+    summarize: (e: NormalizedEvent) => eventSummary(e, { amount: () => "$5", amountText: () => "$5" }),
+    eventEmoji,
   };
   const run = new Function(
     "document",

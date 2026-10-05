@@ -24,6 +24,7 @@ import { fillTemplate, fillTemplateParts } from "./fillTemplate";
 import { amountOf, MONEY_TYPES } from "./eventAmount";
 import { normalizeScopes, resolveAlertSettings, type ResolvedAlert } from "./alertScopes";
 import { fmtMoneyDual, type FxSnapshot } from "../lib/utils/fx";
+import { eventEmoji, eventSummary } from "./eventSummary";
 import { logOnce } from "./logOnce";
 import { animate, applyTextFx, playMs } from "./animation/engine";
 import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
@@ -600,6 +601,11 @@ const OBSOverlay = {
    * exactly as formatAmount does. Empty when the event carries no amount; a tally type
    * with none reads as zero, since the host omits a zero amount. */
   formatAmountText,
+  /** An event's action phrase as the app's Events dock words it ("gifted 5 subs · Tier 1",
+   * "Super Chat ≈₹4,180 ($50.00)"), amounts read as formatAmount / formatAmountText do. */
+  summarize: (e: NormalizedEvent) => eventSummary(e, { amount: formatAmount, amountText: formatAmountText }),
+  /** An event type's leading glyph ("🎁" for a gift), "" for an unknown type. */
+  eventEmoji,
   /** Fill a user-typed template's `{key}` tokens from `values` in one pass. Unknown tokens
    * stay verbatim, empty values drop out with their leading spaces, and substituted text is
    * never re-expanded. Put the result in textContent, never innerHTML. */

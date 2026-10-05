@@ -10,39 +10,8 @@ const PLATFORM = {
   kick: { label: "Kick", color: "#53fc18" },
 };
 
-// Leading glyph per event type. Registry map, not a switch: a new type is one entry.
-const TYPE_EMOJI = {
-  follow: "🎉",
-  sub: "⭐",
-  resub: "🔄",
-  subgift: "🎁",
-  cheer: "💎",
-  raid: "🚀",
-  superchat: "💰",
-  supersticker: "🎨",
-  member: "🛡️",
-  kicks: "🪙",
-};
-
-// One-line action phrasing per type, ported from EventsDock.svelte's SUMMARY map so
-// the ticker matches the app; the per-platform follow verb mirrors FOLLOW_VERB in
-// src/lib/docks/events/eventWording.ts. Unknown types fall back to the raw type string.
-const SUMMARY = {
-  follow: (e) => (e.platform === "youtube" ? "subscribed" : "followed"),
-  sub: (e) => "subscribed" + (e.tier ? " · " + e.tier : ""),
-  resub: (e) => "resubscribed" + (e.months ? " · " + e.months + " months" : ""),
-  subgift: (e) => {
-    const n = e.count != null ? e.count : 1;
-    return "gifted " + n + " sub" + (n === 1 ? "" : "s") + (e.tier ? " · " + e.tier : "");
-  },
-  cheer: (e) => "cheered " + OBSOverlay.formatAmountText(e),
-  raid: (e) => "raided with " + OBSOverlay.formatAmountText(e),
-  superchat: (e) => "Super Chat" + (e.amount != null ? " " + OBSOverlay.formatMoney(e.amount, e.currency) : ""),
-  supersticker: (e) => "Super Sticker" + (e.amount != null ? " " + OBSOverlay.formatMoney(e.amount, e.currency) : ""),
-  member: (e) =>
-    e.months ? "member · " + e.months + " months" : e.tier ? "became a member · " + e.tier : "became a member",
-  kicks: (e) => "sent " + OBSOverlay.formatAmountText(e) + (e.tier ? " · " + e.tier : ""),
-};
+// The glyph and phrase per event type come from OBSOverlay.eventEmoji / summarize, the one
+// copy every stock widget that lists events shares, worded as the app's Events dock words them.
 
 // --- fields (live-applied) ---------------------------------------------------
 let fontSize = 20;
@@ -120,15 +89,14 @@ function applyFields(f) {
 function enqueue(e) {
   if (!e) return;
   const plat = PLATFORM[e.platform] || { label: String(e.platform || ""), color: "#888" };
-  const sumFn = SUMMARY[e.type];
   buffer.push({
     id: e.id,
     platformLabel: plat.label,
     platformColor: plat.color,
-    emoji: TYPE_EMOJI[e.type] || "",
+    emoji: OBSOverlay.eventEmoji(String(e.type || "")),
     actorName: e.actorName || "Someone",
     actorColor: e.actorColor || plat.color,
-    summary: sumFn ? sumFn(e) : String(e.type || ""),
+    summary: OBSOverlay.summarize(e),
     body: e.message || "",
   });
   if (buffer.length > maxItems) {
