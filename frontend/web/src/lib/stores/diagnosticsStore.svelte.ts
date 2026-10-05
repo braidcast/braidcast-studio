@@ -5,9 +5,9 @@
 // keeps `debug` live when the Settings toggle (or any other caller) flips it.
 //
 // log.ts reads `diagnosticsStore.debug` for its gate. start() seeds asynchronously
-// through diagnostics.get, so any reader running before that round-trip resolves sees
-// the unseeded `false` -- early web log.dbg lines are therefore NOT reliably gated.
-// Starting early (App.svelte onMount) narrows that window; it does not close it.
+// through diagnostics.get, so until that round-trip lands the gate is not known yet:
+// `gateKnown` says so, and onGateKnown lets log.ts hold its early log.dbg lines until
+// then rather than drop them against the unseeded `false`.
 
 import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
@@ -22,7 +22,11 @@ class DiagnosticsStore {
   loaded = $state(false);
   error = $state<string | null>(null);
 
+  /** Whether `debug` has been read (a seed landed, or debug.changed said it). */
+  gateKnown = false;
+
   #started = false;
+  #gateWaiters: (() => void)[] = [];
   #ready: Promise<void>;
   #resolveReady: () => void = () => {};
   // Per-refresh token: a slow earlier seed can't overwrite a newer one.
@@ -37,8 +41,30 @@ class DiagnosticsStore {
       return;
     }
     this.#started = true;
-    obs.on(EV.debugChanged, (p) => (this.debug = p.debug));
+    obs.on(EV.debugChanged, (p) => {
+      this.debug = p.debug;
+      this.#markGateKnown();
+    });
     void this.refresh();
+  }
+
+  /** Run `fn` once `debug` has been read: now when it has, else when it first is. */
+  onGateKnown(fn: () => void): void {
+    if (this.gateKnown) {
+      fn();
+    } else {
+      this.#gateWaiters.push(fn);
+    }
+  }
+
+  #markGateKnown(): void {
+    if (this.gateKnown) {
+      return;
+    }
+    this.gateKnown = true;
+    for (const fn of this.#gateWaiters.splice(0)) {
+      fn();
+    }
   }
 
   whenReady(): Promise<void> {
@@ -71,6 +97,8 @@ class DiagnosticsStore {
       // whenReady() callers must not hang because a superseded call lost the race.
       if (seq === this.#seq) {
         this.loaded = true;
+        // A failed seed settles the gate too: `debug` stays off, which is the default.
+        this.#markGateKnown();
       }
       this.#resolveReady();
     }

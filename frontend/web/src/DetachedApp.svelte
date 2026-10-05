@@ -8,6 +8,7 @@
   import BrowserDock from "$lib/docks/BrowserDock.svelte";
   import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
   import TitleBar from "$lib/ui/TitleBar.svelte";
   import Toast from "$lib/ui/Toast.svelte";
 
@@ -60,6 +61,9 @@
   }
 
   onMount(() => {
+    // A popped-out dock's log.dbg lines are held until this window's own copy of the gate
+    // is read, as in the main window.
+    diagnosticsStore.start();
     void resolveAndMount();
     return () => {
       if (mounted) void unmount(mounted);
