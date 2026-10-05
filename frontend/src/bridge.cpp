@@ -52,6 +52,7 @@
 #include "events/youtube_subscribers_seen.hpp"
 #include "devtools_port.hpp"
 #include "fonts.hpp"
+#include "fx/fx_rates.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_assets.hpp"
@@ -961,6 +962,11 @@ bool CommitGeneral(const GeneralSettings &next, json &result, std::string &error
 		error = "unknown chat history retention '" + next.chatHistoryRetention + "'";
 		return false;
 	}
+	const bool homeChanged = g.fxHomeCurrency != next.fxHomeCurrency;
+	if (homeChanged && !next.fxHomeCurrency.empty() && !Fx::IsCurrencyCode(next.fxHomeCurrency)) {
+		error = "fxHomeCurrency must be empty or a three-letter currency code";
+		return false;
+	}
 
 	g = next;
 	const bool saved = g.Save();
@@ -972,6 +978,9 @@ bool CommitGeneral(const GeneralSettings &next, json &result, std::string &error
 	// Only enqueues: the writer thread does the deleting, so a slow disk never holds TID_UI.
 	if (retention && retentionChanged) {
 		Chat::History().SetRetention(*retention);
+	}
+	if (homeChanged) {
+		Fx::Rates().SetHomeSetting(g.fxHomeCurrency);
 	}
 
 	result = GeneralToJson(g);
@@ -1007,6 +1016,14 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 		}
 	}
 	return CommitGeneral(next, result, error);
+}
+
+// fx.get {} -> Fx::RateStore::Snapshot: the exchange rates and the streamer's currency a
+// Super Chat is shown in beside the payer's (roadmap 9.6). fx.changed carries the same shape.
+bool MethodFxGet(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Fx::Rates().Snapshot();
+	return true;
 }
 
 // Build the full Advanced-settings wire object (camelCase keys) from the struct.
@@ -15322,6 +15339,7 @@ void Init()
 		{"settings.setVideo", MethodSettingsSetVideo},
 		{"settings.getAudio", MethodSettingsGetAudio},
 		{"settings.setAudio", MethodSettingsSetAudio},
+		{"fx.get", MethodFxGet},
 		{"settings.getGeneral", MethodSettingsGetGeneral},
 		{"settings.setGeneral", MethodSettingsSetGeneral},
 		{"settings.getAdvanced", MethodSettingsGetAdvanced},
@@ -15581,6 +15599,7 @@ void Shutdown()
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
 	Chat::Channels().Stop();
+	Fx::Rates().Stop();
 	Events::Hub().StopAll();
 
 	// Now give the signaled workers a bounded window to actually unwind before the
@@ -15598,6 +15617,7 @@ void Shutdown()
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
 	Chat::Channels().Stop();
+	Fx::Rates().Stop();
 	Events::Hub().StopAll();
 	// Persist any debounced trailing event now that the workers are stopped and no
 	// further Add can race the write (the store coalesces writes; this is the flush).

@@ -22,6 +22,7 @@
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "util/time_util.hpp"      // TimeUtil::NowMs
+#include "../fx/fx_rates.hpp"      // Fx::Rates
 #include "overlay_assets.hpp"      // Overlay::MaxAssetBytes
 #include "overlay_scopes.hpp"      // Overlay::BuildServedData, LibraryRoot, IsSafeLibraryPath
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
@@ -405,6 +406,10 @@ std::string AssembleDocument(const Widget &w, int port)
 	if (!served.scopes.is_null()) {
 		overlay["scopes"] = served.scopes;
 	}
+	// The exchange rates and the streamer's currency as of this load, so a Super Chat reads
+	// in both currencies on stream as it does in the app (roadmap 9.6). The rates move once a
+	// working day, and a page is reloaded far more often than that.
+	overlay["fx"] = Fx::Rates().Snapshot();
 	std::string doc = "<!doctype html><html><head><meta charset=\"utf-8\">\n<style>\n";
 	doc += resolved.css;
 	doc += "\n</style></head><body>\n";

@@ -104,6 +104,9 @@ struct OAuthAccount {
 	// shows cached avatar/count instantly on launch. audienceCount == -1 means
 	// "not yet known"; audienceHidden reflects YouTube's hiddenSubscriberCount.
 	std::string avatarUrl;
+	// The channel's country (ISO 3166-1 alpha-2) where the platform states one: YouTube's
+	// snippet.country. What the exchange-rate store defaults the streamer's currency from.
+	std::string country;
 	int64_t audienceCount = -1;
 	AudienceKind audienceKind = AudienceKind::Unknown;
 	bool audienceHidden = false;

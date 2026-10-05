@@ -344,6 +344,14 @@ target_sources(
     # a widget document is assembled from. Filesystem + json only, no obs.h.
     src/overlay/overlay_scopes.cpp
     src/overlay/overlay_scopes.hpp
+    # Exchange rates for Super Chat amounts in the streamer's currency (roadmap 9.6): the
+    # ECB feed parse and currency tables (std only), the cached refreshing store, and its
+    # self-test.
+    src/fx/fx_parse.cpp
+    src/fx/fx_parse.hpp
+    src/fx/fx_rates.cpp
+    src/fx/fx_rates.hpp
+    src/fx/fx_selftest.cpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).

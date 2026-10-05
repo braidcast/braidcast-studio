@@ -43,6 +43,10 @@ struct GeneralSettings {
 	// value outside them; one already in the file is kept as it is, and chat history then
 	// runs as 7 days without saving new chat (ChatArchive::Options::unknownSetting).
 	std::string chatHistoryRetention = Chat::RetentionToken(Chat::kDefaultRetention);
+	// --- Super Chat amounts (applied through Fx::Rates().SetHomeSetting) ---
+	// The streamer's currency as an ISO 4217 code, or "" for automatic: the YouTube
+	// channel's country, else the Windows region (Fx::ResolveHome).
+	std::string fxHomeCurrency;
 	// --- persisted prefs consumed by later backlog items ---
 	bool startMinimized = false;                   // Item 11 (tray)
 	bool minimizeToTray = false;                   // Item 11
@@ -106,6 +110,7 @@ inline constexpr GeneralStringField kGeneralStringFields[] = {
 	{"multiviewLayout", "multiview_layout", &GeneralSettings::multiviewLayout},
 	{"previewOverflow", "preview_overflow", &GeneralSettings::previewOverflow},
 	{"chatHistoryRetention", "chat_history_retention", &GeneralSettings::chatHistoryRetention},
+	{"fxHomeCurrency", "fx_home_currency", &GeneralSettings::fxHomeCurrency},
 };
 inline constexpr GeneralDoubleField kGeneralDoubleFields[] = {
 	{"snapDistance", "snap_distance", &GeneralSettings::snapDistance, 0.0, 100.0},

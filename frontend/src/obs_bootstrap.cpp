@@ -48,6 +48,7 @@
 #include "log.hpp"
 #include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
+#include "fx/fx_rates.hpp"
 #include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "chat/goal_registry.hpp"
@@ -1692,6 +1693,11 @@ bool ObsBootstrap::Start()
 	// not go-live-gated), so follower/subscriber totals refresh before/after
 	// streaming. Stopped in Bridge::Shutdown alongside the other always-on workers.
 	Chat::Channels().Start();
+
+	// Exchange rates for Super Chat amounts (roadmap 9.6): the cached table at once, then a
+	// background refresh. Always-on and network-only; stopped in Bridge::Shutdown with the
+	// pollers above.
+	Fx::Rates().Start(General().fxHomeCurrency);
 
 	// Boot reconcile: the global video pipeline was initialized to a fixed default
 	// above (before modules could load), but the persisted Default canvas def is the

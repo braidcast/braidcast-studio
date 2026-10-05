@@ -840,6 +840,8 @@ bool YouTubeProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	const json snippet = item.contains("snippet") ? item["snippet"] : json(nullptr);
 	acct.login = Str(snippet, "title");
 	acct.displayName = acct.login;
+	// Absent when the channel owner never set one.
+	acct.country = Str(snippet, "country");
 	if (snippet.is_object() && snippet.contains("thumbnails") && snippet["thumbnails"].is_object()) {
 		const json &thumbs = snippet["thumbnails"];
 		for (const char *size : {"high", "medium", "default"}) {

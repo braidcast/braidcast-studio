@@ -31,6 +31,7 @@ json AccountToJson(const OAuthAccount &a)
 		{"scopeVer", a.scopeVer},
 		{"refreshDead", a.refreshDead},
 		{"avatarUrl", a.avatarUrl},
+		{"country", a.country},
 		{"audienceCount", a.audienceCount},
 		{"audienceKind", AudienceKindName(a.audienceKind)},
 		{"audienceHidden", a.audienceHidden},
@@ -56,6 +57,7 @@ OAuthAccount AccountFromJson(const json &j)
 	a.scopeVer = j.value("scopeVer", 0);
 	a.refreshDead = j.value("refreshDead", false);
 	a.avatarUrl = j.value("avatarUrl", std::string());
+	a.country = j.value("country", std::string());
 	a.audienceCount = j.value("audienceCount", static_cast<int64_t>(-1));
 	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
 	a.audienceHidden = j.value("audienceHidden", false);

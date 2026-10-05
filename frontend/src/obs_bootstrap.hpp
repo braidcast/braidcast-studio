@@ -668,6 +668,9 @@ void RunOverlaySelfTest();
 // Touches neither the user's overlays.json nor the live server. Gated by the caller to the
 // smoke path.
 void RunOverlayScopeSelfTest();
+// The exchange-rate store's pure rules (fx/fx_selftest.cpp): the ECB feed parse, the
+// snapshot's EUR row and staleness, and the home-currency fallbacks. Network- and file-free.
+void RunFxSelfTest();
 // Headless proof that the host's residual native chrome was darkened at startup:
 // assert NativeTheme::AppliedCount() >= 1 (the host is the only owned window up at
 // smoke time). There is no headless pixel check, so this only confirms ApplyDark
