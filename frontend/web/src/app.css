@@ -631,8 +631,10 @@ input[type="color"] {
   cursor: row-resize;
 }
 .splitter:hover,
+.splitter:focus-visible,
 .splitter.dragging {
   background: var(--color-accent);
+  outline: none;
 }
 
 /* The row being carried by the shared pointer drag-to-reorder controller

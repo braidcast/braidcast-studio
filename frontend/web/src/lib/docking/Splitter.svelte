@@ -3,11 +3,21 @@
   // movement (px since the last pointermove) along its cross axis via `onDrag`; the
   // host clamps and applies it to a size var. Pointer capture keeps the drag alive
   // even when the cursor leaves the 5px hit area. No deps.
+  //
+  // Keyboard too, as SplitPane's divider is: focused, the arrow keys along its axis move
+  // it by STEP and Home/End send it to either end. Both go through the same `onDrag`, so
+  // the host's clamp is the only bound and a key never reaches past it.
   interface Props {
     orientation: "row" | "column";
     onDrag: (delta: number) => void;
+    /** What the divider resizes, for assistive tech ("Resize scenes and sources"). */
+    ariaLabel?: string;
   }
-  let { orientation, onDrag }: Props = $props();
+  let { orientation, onDrag, ariaLabel }: Props = $props();
+
+  const STEP = 16;
+  // Past any pane this app lays out; the host clamps it to the real end.
+  const FAR = 100000;
 
   let last = 0;
   let dragging = $state(false);
@@ -33,15 +43,29 @@
     dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
   }
+  function key(e: KeyboardEvent) {
+    const [back, fwd] = orientation === "row" ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
+    const delta = e.key === back ? -STEP : e.key === fwd ? STEP : e.key === "Home" ? -FAR : e.key === "End" ? FAR : 0;
+    if (delta === 0) {
+      return;
+    }
+    e.preventDefault();
+    onDrag(delta);
+  }
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
   class="splitter {orientation}"
   class:dragging
   role="separator"
   aria-orientation={orientation === "row" ? "vertical" : "horizontal"}
+  aria-label={ariaLabel}
+  tabindex="0"
   onpointerdown={down}
   onpointermove={move}
   onpointerup={up}
   onpointercancel={up}
+  onkeydown={key}
 ></div>

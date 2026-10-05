@@ -1197,7 +1197,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   {/if}
 
   <!-- Drag the divider to trade preview height for the mini-lists' height. -->
-  <Splitter orientation="column" onDrag={onEmbedDrag} />
+  <Splitter orientation="column" onDrag={onEmbedDrag} ariaLabel="Resize preview and lists" />
 
   <!-- Embedded mini-lists: Scenes (left) + Sources (right), both resizable. -->
   <div class="embed" bind:this={embedEl} style:--embed-h={embedH != null ? embedH + "px" : null}>
@@ -1267,7 +1267,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     </div>
 
     <!-- Drag to trade Scenes width for Sources width. -->
-    <Splitter orientation="row" onDrag={onScenesDrag} />
+    <Splitter orientation="row" onDrag={onScenesDrag} ariaLabel="Resize scenes and sources" />
 
     <div class="col sources-col">
       <div class="embed-head">Sources{#if currentScene}<span class="embed-head-name dot-sep">{currentScene}</span>{/if}</div>
