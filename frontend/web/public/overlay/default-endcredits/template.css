@@ -1,0 +1,78 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 28;
+  --ov-text: #ffffff;
+  --ov-heading: #bf94ff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
+}
+/* Scale knob. Every length below is rem, so this one value carries the whole roll; 1rem is
+   16 design px. Width binds: the roll is a centred column whose names must keep their
+   proportion to it, while a taller rectangle shows more of the roll at once. 40 is the
+   design width (a 1280 px wide source at 32 px per rem halves to 16). */
+html { font-size: calc(100vw / 40); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.credits {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: calc(var(--ov-size) * var(--ov-px));
+  line-height: 1.3;
+  text-align: center;
+  text-shadow: 0 0.0625rem 0.1875rem rgba(0, 0, 0, 0.7);
+}
+
+/* Moved by template.js with a transform, never by layout, so the roll costs a composite per
+   frame and nothing more. */
+.roll {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 0 1.5rem;
+  will-change: transform;
+}
+
+.title {
+  margin: 0 0 1.5em;
+  font-size: 1.6em;
+  font-weight: 800;
+}
+
+.section {
+  margin: 0 0 1.5em;
+}
+.section h2 {
+  margin: 0 0 0.4em;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ov-heading);
+}
+.section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.section li {
+  margin: 0.15em 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  margin: 0;
+  opacity: 0.8;
+}

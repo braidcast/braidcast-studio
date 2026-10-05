@@ -1,0 +1,18 @@
+[
+  { "key": "title", "type": "text", "label": "Title", "group": "Content", "default": "Thanks for watching!" },
+  { "key": "showFollows", "type": "checkbox", "label": "New followers", "group": "Sections", "default": true, "help": "YouTube subscribers are listed here too: on YouTube the free follow is called subscribe." },
+  { "key": "showSubs", "type": "checkbox", "label": "Subscribers and gifters", "group": "Sections", "default": true },
+  { "key": "showMembers", "type": "checkbox", "label": "Members", "group": "Sections", "default": true },
+  { "key": "showCheers", "type": "checkbox", "label": "Cheers", "group": "Sections", "default": true },
+  { "key": "showSuperChats", "type": "checkbox", "label": "Super Chats", "group": "Sections", "default": true },
+  { "key": "showKicks", "type": "checkbox", "label": "Kicks", "group": "Sections", "default": true },
+  { "key": "showRaids", "type": "checkbox", "label": "Raiders", "group": "Sections", "default": true },
+  { "key": "emptyText", "type": "text", "label": "Text when there is no one to thank", "group": "Content", "default": "" },
+  { "key": "scrollSpeed", "type": "slider", "label": "Scroll speed (design px per second)", "group": "Motion", "min": 10, "max": 200, "step": 5, "default": 50 },
+  { "key": "loop", "type": "checkbox", "label": "Loop", "group": "Motion", "default": true, "help": "Off rolls the credits once and holds on the end. With reduced motion the credits do not scroll; the start of the list stands still." },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font size (design px)", "group": "Style", "min": 12, "max": 64, "step": 1, "default": 28 },
+  { "key": "textColor", "type": "color", "label": "Text color", "group": "Style", "default": "#ffffff" },
+  { "key": "headingColor", "type": "color", "label": "Section heading color", "group": "Style", "default": "#bf94ff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background color", "group": "Style", "default": "rgba(0, 0, 0, 0)" }
+]
