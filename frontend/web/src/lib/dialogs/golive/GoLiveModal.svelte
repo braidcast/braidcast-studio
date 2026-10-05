@@ -20,6 +20,7 @@ import { EV } from "$lib/utils/eventNames";
     isListType,
     isPerDestination,
     normOpt,
+    providerDefaultsBlocks,
     resolveRequiredEnum,
     slotKey,
     valuesEqual,
@@ -738,6 +739,14 @@ import { EV } from "$lib/utils/eventNames";
     }
     return out;
   });
+
+  // "<Platform> defaults": with more than one channel of a platform connected, its own
+  // bucket gets a block of its own beside Shared defaults, so a value every one of those
+  // channels inherits (YouTube's category, tags, privacy) has one place to be set instead
+  // of being reachable only through whichever card seeded it. The bucket and the cards'
+  // ghosts are the ones inheritLayers already names; only where it can be edited is new.
+  // Never widened to "all": a YouTube category means nothing to Twitch.
+  const providerBlocks = $derived(providerDefaultsBlocks(connectedChannels));
 
   // What this modal's primary would do to the armed-but-not-out set: every armed binding
   // with nothing on the air is one it would bring onto the running broadcast. Decided in
@@ -2145,6 +2154,20 @@ import { EV } from "$lib/utils/eventNames";
           {/each}
         </div>
       {/if}
+      {#each providerBlocks as b (b.bucket)}
+        <div class="shared">
+          <p class="eh">
+            {b.provider.displayName} defaults
+            <span class="eh-note">— across your {b.channelCount} {b.provider.displayName} channels</span>
+          </p>
+          {#each b.fields as f (f.key)}
+            {@render fieldRow(f, layerValues[b.bucket]?.[f.key], (v) => setLayerField(b.bucket, f.key, v), {
+              providerId: b.provider.id,
+              accountId: b.accountId,
+            })}
+          {/each}
+        </div>
+      {/each}
 
       <!-- Keyed on channels.length too: disarming every channel from inside this
            modal zeroes armedProfileCount, and the cards must stay visible so the

@@ -172,3 +172,55 @@ export function resolveRequiredEnum(
   const dflt = typeof field.default === "string" ? field.default : "";
   return values.includes(dflt) ? dflt : (values[0] ?? "");
 }
+
+/** One platform's own defaults block: its bucket, the fields that inherit from it, and the
+ * connected account a field needing one (a category search) is looked up through. */
+export interface ProviderDefaultsBlock<P> {
+  provider: P;
+  bucket: string;
+  accountId: string;
+  channelCount: number;
+  fields: OAuthProviderField[];
+}
+
+/** The "<Platform> defaults" blocks: one per platform with MORE than one connected channel,
+ * in the order its first channel appears, holding the simple fields whose nearest layer is
+ * that platform's own bucket (inheritLayers), first channel's descriptor winning a key. With
+ * one channel the bucket is still there, but a block over a single card says nothing that
+ * card does not, so it is left out. Advanced and per-destination fields stay on the cards. */
+export function providerDefaultsBlocks<P extends { id: string; fields: OAuthProviderField[] }>(
+  connected: readonly { accountId: string; provider: P | null }[],
+): ProviderDefaultsBlock<P>[] {
+  const byProvider = new Map<string, { first: { accountId: string; provider: P | null }; count: number }>();
+  for (const c of connected) {
+    if (!c.provider) {
+      continue;
+    }
+    const seen = byProvider.get(c.provider.id);
+    if (seen) {
+      seen.count++;
+    } else {
+      byProvider.set(c.provider.id, { first: c, count: 1 });
+    }
+  }
+  const blocks: ProviderDefaultsBlock<P>[] = [];
+  for (const [providerId, { first, count }] of byProvider) {
+    const provider = first.provider;
+    if (count < 2 || !provider) {
+      continue;
+    }
+    const bucket = providerLayer(providerId);
+    const keys = new Set<string>();
+    const fields = provider.fields.filter((f) => {
+      if (f.tier === "advanced" || inheritLayers(f, providerId)[0] !== bucket || keys.has(f.key)) {
+        return false;
+      }
+      keys.add(f.key);
+      return true;
+    });
+    if (fields.length > 0) {
+      blocks.push({ provider, bucket, accountId: first.accountId, channelCount: count, fields });
+    }
+  }
+  return blocks;
+}
