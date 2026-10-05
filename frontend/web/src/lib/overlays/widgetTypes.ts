@@ -35,6 +35,7 @@ export const WIDGET_TYPES: WidgetTypeSpec[] = [
   { type: "labels", label: "Label", name: "New Label", tests: ["alerts"] },
   { type: "viewercount", label: "Viewer Count", name: "New Viewer Count", tests: ["viewers", "clear"] },
   { type: "followercount", label: "Follower Count", name: "New Follower Count", tests: ["channels"] },
+  { type: "streamboss", label: "Stream Boss", name: "New Stream Boss", tests: ["alerts"] },
   { type: "uptime", label: "Stream Uptime", name: "New Stream Uptime", tests: ["stream"] },
   { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch", tests: ["stream"] },
   { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard", tests: ["chat", "clear"] },

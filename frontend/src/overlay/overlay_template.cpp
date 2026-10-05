@@ -96,8 +96,8 @@ constexpr TypeRow kTypeRows[] = {
 	{"emotewall", 1920, 1080, false, kSilent},     {"eventlist", 400, 300, false, kSilent},
 	{"followercount", 640, 58, false, kSilent},    {"goalbar", 600, 76, false, kSilent},
 	{"labels", 600, 54, false, kSilent},           {"ticker", 640, 24, false, kSilent},
-	{"uptime", 300, 54, false, kSilent},           {"viewercount", 400, 58, false, kSilent},
-	{"wheretowatch", 320, 174, false, kSilent},
+	{"streamboss", 480, 136, false, kSilent},      {"uptime", 300, 54, false, kSilent},
+	{"viewercount", 400, 58, false, kSilent},      {"wheretowatch", 320, 174, false, kSilent},
 };
 
 // `type`'s row, or null when the table has none.

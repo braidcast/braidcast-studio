@@ -1,0 +1,103 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 22;
+  --ov-text: #ffffff;
+  --ov-bar: #e5484d;
+  --ov-track: rgba(255, 255, 255, 0.15);
+  --ov-bg: rgba(18, 18, 22, 0.72);
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
+}
+/* Scale knob: every length is rem, 1rem is 16 design px. 30 is the design width (a 480 px
+   card), 8.5 its height; min() takes whichever axis the drawn rectangle is short on. */
+html { font-size: min(100vw / 30, 100vh / 8.5); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.boss {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.4em;
+  padding: 0.75rem 1rem;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: calc(var(--ov-size) * var(--ov-px));
+  line-height: 1.2;
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
+}
+.head,
+.foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75em;
+  white-space: nowrap;
+}
+.label {
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+.name {
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track {
+  height: 0.9em;
+  background: var(--ov-track);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  width: 100%;
+  background: var(--ov-bar);
+  transition: width 400ms ease-out;
+}
+.hp {
+  font-size: 0.8em;
+  font-weight: 600;
+}
+.hit {
+  font-size: 0.8em;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A hit shakes the card; a new boss flashes it. */
+.boss.hit-shake {
+  animation: shake 360ms ease-out;
+}
+.boss.new-boss {
+  animation: flash 700ms ease-out;
+}
+@keyframes shake {
+  20% { transform: translateX(-0.25rem); }
+  40% { transform: translateX(0.25rem); }
+  60% { transform: translateX(-0.15rem); }
+  80% { transform: translateX(0.1rem); }
+}
+@keyframes flash {
+  from { filter: brightness(2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+  .boss.hit-shake,
+  .boss.new-boss {
+    animation: none;
+  }
+}

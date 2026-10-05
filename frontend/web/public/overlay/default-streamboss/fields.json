@@ -1,0 +1,18 @@
+[
+  { "key": "bossName", "type": "text", "label": "First boss", "group": "Boss", "default": "The Streamer", "help": "Who the bar starts as each broadcast. Whoever lands the final hit becomes the next boss." },
+  { "key": "startHp", "type": "number", "label": "First boss's HP", "group": "Boss", "min": 10, "max": 1000000, "step": 10, "default": 1000 },
+  { "key": "hpGrowth", "type": "number", "label": "HP added per new boss", "group": "Boss", "min": 0, "max": 1000000, "step": 10, "default": 500, "help": "Each boss is harder to take down than the last." },
+  { "key": "dmgFollow", "type": "number", "label": "Follow", "group": "Damage", "min": 0, "max": 100000, "step": 1, "default": 10 },
+  { "key": "dmgSub", "type": "number", "label": "Sub or resub (and each gifted sub)", "group": "Damage", "min": 0, "max": 100000, "step": 1, "default": 100 },
+  { "key": "dmgMember", "type": "number", "label": "Membership", "group": "Damage", "min": 0, "max": 100000, "step": 1, "default": 100 },
+  { "key": "dmgBit", "type": "number", "label": "Per bit", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
+  { "key": "dmgSuperChat", "type": "number", "label": "Super Chat or Sticker", "group": "Damage", "min": 0, "max": 100000, "step": 1, "default": 100, "help": "The same for any amount: with no exchange rate in this widget, one currency's figure is not another's." },
+  { "key": "dmgKick", "type": "number", "label": "Per Kick", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
+  { "key": "dmgRaider", "type": "number", "label": "Per raider", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font size (design px)", "group": "Style", "min": 12, "max": 48, "step": 1, "default": 22 },
+  { "key": "textColor", "type": "color", "label": "Text color", "group": "Style", "default": "#ffffff" },
+  { "key": "barColor", "type": "color", "label": "HP bar color", "group": "Style", "default": "#e5484d" },
+  { "key": "trackColor", "type": "color", "label": "Track color", "group": "Style", "default": "rgba(255, 255, 255, 0.15)" },
+  { "key": "backgroundColor", "type": "color", "label": "Background color", "group": "Style", "default": "rgba(18, 18, 22, 0.72)" }
+]
