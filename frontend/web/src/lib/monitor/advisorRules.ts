@@ -106,6 +106,17 @@ function unreadOffAirBrowsers(s: AdvisorSnapshot): string[] {
     .map(([name]) => name);
 }
 
+/** Every browser source whose settings never arrived, the shortfall a per-source settings
+ * rule reports. */
+function unreadBrowsers(s: AdvisorSnapshot): string[] {
+  return [...s.sources]
+    .filter(([name, typeId]) => typeId === SOURCE_TYPE.browser && !s.settings.has(name))
+    .map(([name]) => name);
+}
+
+/** A frame rate as read: whole numbers bare, the NTSC rates to two places. */
+const fmtFps = (fps: number): string => String(Number(fps.toFixed(2)));
+
 const OPEN_SESSION_LOG: AdvisorLink = { label: "View log", go: openLogViewer };
 const OPEN_STUDIO: AdvisorLink = { label: "Open Studio", go: () => setPage("studio") };
 
@@ -175,6 +186,60 @@ export const ADVISOR_RULES: readonly AdvisorRule[] = [
             "Not in any scene that is on air, but it holds a CEF renderer process anyway — " +
             "roughly 130 MB each, measured on this project's own collection.",
           detail: 'Ticking "Shutdown source when not visible" in its properties frees it while off air.',
+        });
+      }
+      return found;
+    },
+  },
+  {
+    id: "browser.fpsAboveCanvas",
+    severity: "waste",
+    title: "Browser source paints faster than its canvas",
+    needsSettings: [SOURCE_TYPE.browser],
+    link: OPEN_STUDIO,
+    // The bound is the fastest canvas that shows the source when the graph is whole, and
+    // the fastest canvas of all when it is not: no unread scene can put the source on a
+    // canvas faster than every canvas there is, so the fallback can miss a case but never
+    // accuse one. Only a missing canvas list leaves no bound at all.
+    skipWhen: (s) => (s.canvasFps.size === 0 ? "the canvas list could not be read" : null),
+    partialWhen: (s) => {
+      const unread = unreadBrowsers(s).length;
+      const reason = gapReason(s.settingsGaps);
+      return unread > 0 && reason !== null ? { unread, reason } : null;
+    },
+    detect: (s) => {
+      const found: AdvisorFinding[] = [];
+      const graphWhole = s.graphGaps.length === 0;
+      const allFps = [...s.canvasFps.values()];
+      for (const [name, typeId] of s.sources) {
+        const v = typeId === SOURCE_TYPE.browser ? s.settings.get(name) : undefined;
+        const fps = v?.fps_custom === true && typeof v.fps === "number" ? v.fps : 0;
+        if (fps <= 0) {
+          continue;
+        }
+        const showing = graphWhole ? [...(s.consumers.get(name) ?? [])] : null;
+        // In no scene at all: nothing paints it on any canvas, and source.unplaced says so.
+        if (showing !== null && showing.length === 0) {
+          continue;
+        }
+        const known = showing?.map((c) => s.canvasFps.get(c)).filter((f): f is number => f !== undefined);
+        const bound = known && known.length === showing?.length ? known : allFps;
+        const fastest = Math.max(...bound);
+        // Rounded up so 60 against a 59.94 canvas is not a finding.
+        if (fps <= Math.ceil(fastest)) {
+          continue;
+        }
+        const against =
+          bound !== allFps
+            ? bound.length === 1
+              ? `the canvas showing it runs at ${fmtFps(fastest)}`
+              : `the fastest canvas showing it runs at ${fmtFps(fastest)}`
+            : `no canvas runs faster than ${fmtFps(fastest)}`;
+        found.push({
+          key: name,
+          title: name,
+          cost: `Its page paints ${fps} times a second, but ${against}, so the extra paints are never shown.`,
+          detail: 'Turning off "Use custom frame rate" in its properties paints it at its canvas\'s rate.',
         });
       }
       return found;

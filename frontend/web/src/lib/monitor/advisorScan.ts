@@ -51,6 +51,12 @@ export interface AdvisorSnapshot {
   onAir: Set<string>;
   /** Names of sources reachable in ANY scanned scene. */
   placed: Set<string>;
+  /** Source name -> the canvases whose scanned scenes render it, keyed like
+   * ScannedScene.canvasUuid ("" for Default). Complete only when `graphGaps` is empty. */
+  consumers: Map<string, Set<string>>;
+  /** Canvas key (as above) -> the frame rate it renders at, with an inherited rate
+   * resolved to the Default canvas's. Empty when the canvas list could not be read. */
+  canvasFps: Map<string, number>;
   /** Why `onAir` is not provably the whole on-air set; empty when it is. Only
    * regions REACHED FROM a current scene count — an additional canvas's non-current
    * scenes cannot change what is showing, so they must not suppress an on-air claim. */
@@ -240,6 +246,25 @@ async function scanScenes(gaps: Gaps): Promise<ScannedScene[]> {
   return scenes;
 }
 
+/** Each canvas's effective frame rate, keyed the way scenes are ("" for Default). A
+ * canvas inheriting its resolution inherits its rate too (CanvasDefinition's
+ * useDefaultResolution, applied by ToVideoInfo), and canvas.list reports the stored one. */
+function scanCanvasFps(): Map<string, number> {
+  const fps = new Map<string, number>();
+  if (canvasStore.error !== null) {
+    return fps;
+  }
+  const rate = (c: { fpsNum: number; fpsDen: number }) => (c.fpsDen > 0 ? c.fpsNum / c.fpsDen : 0);
+  const def = canvasStore.canvases.find((c) => c.isDefault);
+  for (const c of canvasStore.canvases) {
+    const own = c.isDefault || !c.useDefaultResolution || !def ? rate(c) : rate(def);
+    if (own > 0) {
+      fps.set(c.isDefault ? "" : c.uuid, own);
+    }
+  }
+  return fps;
+}
+
 /** Name -> type id for every input/group source in the collection.
  * `sources.listExisting` reports all of them EXCEPT the target scene's own members,
  * so union it with that scene's members — whose type the sceneItems.list row now
@@ -396,6 +421,32 @@ export async function buildSnapshot(settingsTypeIds: ReadonlySet<string>): Promi
     }
   }
 
+  // Which canvases render each source: every scanned scene's members, following nesting
+  // within the canvas. Not gapped separately -- it reads exactly what `placed` reads, so
+  // graphGaps already says when it is short.
+  const consumers = new Map<string, Set<string>>();
+  const consume = (scene: ScannedScene, canvasKey: string, seen: Set<string>): void => {
+    for (const item of scene.items) {
+      if (!item.source) {
+        continue;
+      }
+      let set = consumers.get(item.source);
+      if (!set) {
+        set = new Set();
+        consumers.set(item.source, set);
+      }
+      set.add(canvasKey);
+      const nested = item.typeId === SOURCE_TYPE.scene ? byKey.get(sceneKey(scene.canvasUuid, item.source)) : undefined;
+      if (nested && !seen.has(sceneKey(nested.canvasUuid, nested.name))) {
+        seen.add(sceneKey(nested.canvasUuid, nested.name));
+        consume(nested, canvasKey, seen);
+      }
+    }
+  };
+  for (const scene of scenes) {
+    consume(scene, scene.canvasUuid, new Set([sceneKey(scene.canvasUuid, scene.name)]));
+  }
+
   return finish({
     scenes,
     sources,
@@ -403,6 +454,8 @@ export async function buildSnapshot(settingsTypeIds: ReadonlySet<string>): Promi
     pageErrors,
     onAir,
     placed,
+    consumers,
+    canvasFps: scanCanvasFps(),
     onAirGaps: [...gaps.onAir],
     graphGaps: [...gaps.graph],
     settingsGaps: [...gaps.settings],
