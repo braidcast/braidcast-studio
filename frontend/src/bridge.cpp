@@ -10200,23 +10200,39 @@ bool MethodLayoutLoad(const json & /*params*/, json &result, std::string & /*err
 // it beside the original as layout.failed-<local time>.json (KeepUnusableStoreFile).
 // layout.load has already moved any .bak over an unparseable layout.json
 // (obs_data_create_from_json_file_safe), so layout.json holds what the page tried.
-bool MethodLayoutQuarantine(const json & /*params*/, json &result, std::string &error)
+//
+// Shared by every page-owned store whose blob the page, not the host, finds unusable.
+bool QuarantinePageStore(const char *file, const char *method, json &result, std::string &error)
 {
-	const std::string path = MultistreamBasicPath("layout.json");
+	const std::string path = MultistreamBasicPath(file);
 	if (path.empty()) {
-		error = "failed to resolve layout.json";
+		error = std::string("failed to resolve ") + file;
 		return false;
 	}
 	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(path);
 	if (!kept) {
-		error = "failed to write a copy of layout.json";
+		error = std::string("failed to write a copy of ") + file;
 		return false;
 	}
 	if (kept->fresh) {
-		HostLog("[bridge] layout.quarantine: saved layout failed to restore, copied to " + kept->name);
+		HostLog(std::string("[bridge] ") + method + ": the page could not use " + file + ", copied to " +
+			kept->name);
 	}
 	result = json{{"file", kept->name}};
 	return true;
+}
+
+bool MethodLayoutQuarantine(const json & /*params*/, json &result, std::string &error)
+{
+	return QuarantinePageStore("layout.json", "layout.quarantine", result, error);
+}
+
+// The same for theme.json: the theme store found its saved state unreadable (or holding
+// custom themes it had to drop), so it runs on what it could read, and the next theme
+// change would save over the rest.
+bool MethodThemeQuarantine(const json & /*params*/, json &result, std::string &error)
+{
+	return QuarantinePageStore("theme.json", "theme.quarantine", result, error);
 }
 
 // Detached-window control surface — drives WindowManager and broadcasts the
@@ -15453,6 +15469,7 @@ void Init()
 		{"transitions.setDuration", MethodTransitionsSetDuration},
 		{"theme.save", MethodThemeSave},
 		{"theme.load", MethodThemeLoad},
+		{"theme.quarantine", MethodThemeQuarantine},
 		{"layout.save", MethodLayoutSave},
 		{"layout.load", MethodLayoutLoad},
 		{"layout.quarantine", MethodLayoutQuarantine},

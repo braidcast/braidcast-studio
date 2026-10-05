@@ -115,36 +115,72 @@ class ThemeStore {
   }
 
   async hydrate(): Promise<void> {
-    try {
-      const res = await obs.call("theme.load").catch(() => null);
-      if (res && typeof res.state === "string" && res.state !== "") {
-        const parsed = JSON.parse(res.state) as Partial<ThemeState>;
-        if (Array.isArray(parsed.customThemes)) {
-          this.customThemes = parsed.customThemes.filter(
-            (t): t is PresetEntry =>
-              !!t && typeof t.id === "string" && typeof t.name === "string" && !!t.tokens && typeof t.tokens === "object",
-          );
-        }
-        if (typeof parsed.activeId === "string") {
-          this.activeId = parsed.activeId;
-        }
-        // Spread over the default preset so a token added after this state was
-        // saved is never missing (old/partial blobs stay valid).
-        this.tokens = { ...defaultTokens(), ...(parsed.activeTokens ?? {}) };
-        // Keep the seq counter ahead of any restored custom ids so new saves don't collide.
-        this.seq = this.customThemes.reduce((m, t) => {
-          const n = Number(t.id.slice(t.id.lastIndexOf("-") + 1));
-          return Number.isFinite(n) ? Math.max(m, n + 1) : m;
-        }, 0);
+    const res = await obs.call("theme.load").catch(() => null);
+    const blob = res && typeof res.state === "string" ? res.state : "";
+    if (blob !== "") {
+      const read = readThemeState(blob);
+      if (read.lossy) {
+        // What could not be read would go with the next theme change, which saves the
+        // whole state: keep the file aside first. Best-effort, like every theme write.
+        await obs.call("theme.quarantine").catch(() => null);
       }
-    } catch {
-      // malformed/old/empty state -> defaults
-      this.tokens = defaultTokens();
-      this.activeId = DEFAULT_PRESET_ID;
-      this.customThemes = [];
+      this.customThemes = read.customThemes;
+      this.activeId = read.activeId;
+      this.tokens = read.tokens;
+      // Keep the seq counter ahead of any restored custom ids so new saves don't collide.
+      this.seq = this.customThemes.reduce((m, t) => {
+        const n = Number(t.id.slice(t.id.lastIndexOf("-") + 1));
+        return Number.isFinite(n) ? Math.max(m, n + 1) : m;
+      }, 0);
     }
     this.applyNow();
   }
+}
+
+const isPresetEntry = (t: unknown): t is PresetEntry => {
+  const e = t as Partial<PresetEntry> | null;
+  return !!e && typeof e.id === "string" && typeof e.name === "string" && !!e.tokens && typeof e.tokens === "object";
+};
+
+/** A saved theme state read as far as it can be: whatever is unreadable falls back to the
+ * default, and `lossy` says something was dropped (an unparseable blob, or a custom theme
+ * entry that is not one), which a save would then make permanent. */
+export function readThemeState(blob: string): {
+  activeId: string;
+  tokens: ThemeTokens;
+  customThemes: PresetEntry[];
+  lossy: boolean;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(blob);
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { activeId: DEFAULT_PRESET_ID, tokens: defaultTokens(), customThemes: [], lossy: true };
+  }
+  const state = parsed as Partial<Record<keyof ThemeState, unknown>>;
+  let lossy = false;
+  let customThemes: PresetEntry[] = [];
+  if (Array.isArray(state.customThemes)) {
+    customThemes = state.customThemes.filter(isPresetEntry);
+    lossy = customThemes.length !== state.customThemes.length;
+  } else if (state.customThemes !== undefined) {
+    lossy = true;
+  }
+  const tokens =
+    state.activeTokens && typeof state.activeTokens === "object" && !Array.isArray(state.activeTokens)
+      ? (state.activeTokens as Partial<ThemeTokens>)
+      : {};
+  return {
+    activeId: typeof state.activeId === "string" ? state.activeId : DEFAULT_PRESET_ID,
+    // Spread over the default preset so a token added after this state was saved is never
+    // missing (old/partial blobs stay valid).
+    tokens: { ...defaultTokens(), ...tokens },
+    customThemes,
+    lossy,
+  };
 }
 
 export const themeStore = new ThemeStore();

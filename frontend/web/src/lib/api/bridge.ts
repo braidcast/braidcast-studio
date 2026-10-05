@@ -2482,6 +2482,9 @@ export interface ObsMethods {
   // missing handler also resolves to null (treated as "nothing saved").
   "theme.save": { saved: boolean };
   "theme.load": { state: string };
+  // Copies a saved theme the store could not fully use to theme.failed-<time>.json beside
+  // it, before the next theme change saves over what it dropped; `file` is the copy's name.
+  "theme.quarantine": { file: string };
   "layout.save": { saved: boolean };
   // `present`: a layout file is on disk, even when `layout` is "" because it could not
   // be read.
