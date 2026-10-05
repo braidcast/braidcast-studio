@@ -95,8 +95,13 @@
     font-family: var(--font-mono);
     font-size: 12px;
   }
+  /* CodeMirror's own focus ring goes, so the frame takes the focus cue the global inputs
+     use: the accent border. */
   .code-host :global(.cm-editor.cm-focused) {
     outline: none;
+  }
+  .code-host:focus-within {
+    border-color: var(--color-accent);
   }
   .code-host :global(.cm-scroller) {
     font-family: var(--font-mono);

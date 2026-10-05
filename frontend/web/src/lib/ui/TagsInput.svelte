@@ -757,6 +757,12 @@
     background: var(--color-surface-2);
     color: var(--color-text);
   }
+  /* Its border is the accent at rest, so the global focus border changes nothing: the
+     same ring the draft field takes. */
+  .grow input:focus {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
   /* The sentence takes the width it needs and the actions hold the end of the line; with
      no sentence the actions still sit there rather than sliding under the box's left
      edge. `baseline` so a wrapped sentence keeps its first line level with them. */
