@@ -57,8 +57,13 @@ OBSOverlay.onChatModeration((op, removes) => {
 // broadcast's chat would still be sitting on screen when the next one goes live. Clearing
 // the column back to empty is the same state the widget starts in before any message has
 // arrived.
+// A frame the editor's Test button sent reaches this page on stream too. What it carries is
+// kept only in the editor preview: on stream it would stand as the real state until the next
+// real frame, which can be minutes away.
+const offStreamTest = (frame) => !!(frame && frame.test && !OBSOverlay.preview);
+
 OBSOverlay.onStream((s) => {
-  if (s && s.active !== true) {
+  if (s && s.active !== true && !offStreamTest(s)) {
     root.textContent = "";
   }
 });

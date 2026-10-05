@@ -24,8 +24,14 @@ let fields = {};
 // instead of assuming a cycle follows.
 let snapshot = null;
 
+// A frame the editor's Test button sent reaches this page on stream too. What it carries is
+// kept only in the editor preview: on stream it would stand as the real state until the next
+// real frame, which can be minutes away.
+const offStreamTest = (frame) => !!(frame && frame.test && !OBSOverlay.preview);
+
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onViewers((v) => {
+  if (offStreamTest(v)) return;
   snapshot = v;
   render();
 });
@@ -34,7 +40,7 @@ OBSOverlay.onViewers((v) => {
 // the same "nothing has reported" state the widget starts in and already draws as nothing;
 // a fabricated zero would put a false figure in front of an audience instead.
 OBSOverlay.onStream((s) => {
-  if (s && s.active !== true) {
+  if (s && s.active !== true && !offStreamTest(s)) {
     snapshot = null;
     render();
   }

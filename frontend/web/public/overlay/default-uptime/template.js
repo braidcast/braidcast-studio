@@ -24,7 +24,13 @@ let state = null;
 let timer = null;
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
+// A frame the editor's Test button sent reaches this page on stream too. What it carries is
+// kept only in the editor preview: on stream it would stand as the real state until the next
+// real frame, which can be minutes away.
+const offStreamTest = (frame) => !!(frame && frame.test && !OBSOverlay.preview);
+
 OBSOverlay.onStream((s) => {
+  if (offStreamTest(s)) return;
   state = s;
   sync();
 });
