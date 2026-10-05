@@ -627,39 +627,49 @@ size_t OverlayServer::LiveSseCount() const
 	return n;
 }
 
-size_t OverlayServer::Broadcast(const Events::NormalizedEvent &ev, bool replay)
+namespace {
+
+// What an event broadcast logs once it is sent. Ungated at 0: an alert that reached the
+// server and went nowhere is otherwise indistinguishable from one that fired, and events
+// are rare enough that saying so every time costs nothing.
+std::function<void(size_t)> LogEventDelivery(const Events::NormalizedEvent &ev, bool replay)
 {
-	// Counted before it is sent, so a page that registers in between and reads the tally
+	return [type = ev.type, platform = ev.platform, replay](size_t delivered) {
+		if (delivered == 0) {
+			HostLog("[overlay] event " + type + " (" + platform + ") delivered to 0 widgets" +
+				(replay ? " (replay)" : ""));
+		} else {
+			DBG(LogCat::Overlay, "event %s (%s) delivered to %zu widget(s)%s", type.c_str(),
+			    platform.c_str(), delivered, replay ? " (replay)" : "");
+		}
+	};
+}
+
+} // namespace
+
+void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
+{
+	// Counted as it is queued, so a page that registers before the send and reads the tally
 	// finds it either counted there or on its way to the page, never in neither (RunSse).
-	// A replay is a second showing of an event already counted.
-	if (!replay) {
-		tally_.Add(ev);
-	}
+	tally_.Add(ev);
+	Enqueue(FrameJob{DataFrame(ev.ToJson()), std::nullopt, nullptr, LogEventDelivery(ev, false), nullptr});
+}
+
+std::future<size_t> OverlayServer::Replay(const Events::NormalizedEvent &ev)
+{
+	// A replay is a second showing of an event already counted, so the tally is left alone.
 	json body = ev.ToJson();
-	if (replay) {
-		// Set here rather than on NormalizedEvent itself: the flag marks how THIS
-		// broadcast went out, not a property of the stored event, so it never persists
-		// and never reaches the UI event feed's own copy of the same JSON.
-		body["replay"] = true;
-	}
-	// A replay is gated to widget TYPES that accept one (AcceptsReplay) so `delivered`
-	// means "a widget that can show this got it", not "some socket got a frame it was
-	// always going to ignore" -- a live event has no such promise to keep and still
-	// reaches every open widget, same as before. Either way the count is of widgets, so
-	// the same alert box open in the editor preview and in a Browser Source is one.
-	const size_t delivered = replay ? BroadcastFrame(DataFrame(body), nullptr, WidgetAcceptsReplay)
-					: BroadcastFrame(DataFrame(body));
-	if (delivered == 0) {
-		// Ungated: an alert that reached the server and went nowhere is otherwise
-		// indistinguishable from one that fired, and events are rare enough that saying
-		// so every time costs nothing.
-		HostLog("[overlay] event " + ev.type + " (" + ev.platform + ") delivered to 0 widgets" +
-			(replay ? " (replay)" : ""));
-	} else {
-		DBG(LogCat::Overlay, "event %s (%s) delivered to %zu widget(s)%s", ev.type.c_str(), ev.platform.c_str(),
-		    delivered, replay ? " (replay)" : "");
-	}
-	return delivered;
+	// Set here rather than on NormalizedEvent itself: the flag marks how THIS broadcast went
+	// out, not a property of the stored event, so it never persists and never reaches the UI
+	// event feed's own copy of the same JSON.
+	body["replay"] = true;
+	// Gated to widget TYPES that accept one (AcceptsReplay) so `delivered` means "a widget
+	// that can show this got it", not "some socket got a frame it was always going to
+	// ignore". The count is of widgets, so the same alert box open in the editor preview and
+	// in a Browser Source is one.
+	return Enqueue(FrameJob{DataFrame(body), std::nullopt, WidgetAcceptsReplay, LogEventDelivery(ev, true),
+				nullptr},
+		       /*wantCount=*/true);
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`
@@ -667,7 +677,7 @@ size_t OverlayServer::Broadcast(const Events::NormalizedEvent &ev, bool replay)
 // stripped by the chat hub's emit). Called on the chat transport worker, never TID_UI.
 void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 {
-	BroadcastFrame(NamedFrame("chat", chatMsg));
+	Enqueue(FrameJob{NamedFrame("chat", chatMsg)});
 }
 
 // Called on the chat transport worker right after the op redacted the ring, so it lands
@@ -676,13 +686,13 @@ void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 // itself (no nonce, or too many sends in flight) goes out from the send worker, unordered.
 void OverlayServer::BroadcastChatModeration(const nlohmann::json &op)
 {
-	BroadcastFrame(NamedFrame("moderation", op));
+	Enqueue(FrameJob{NamedFrame("moderation", op)});
 }
 
 // Called on the chat transport worker, after the store dropped the messages it names.
 void OverlayServer::BroadcastEventRedaction(const nlohmann::json &ids)
 {
-	BroadcastFrame(NamedFrame("eventredaction", ids));
+	Enqueue(FrameJob{NamedFrame("eventredaction", ids)});
 }
 
 // Named `viewers` event for the same reason `chat` is named: an unnamed frame lands on every
@@ -692,20 +702,20 @@ void OverlayServer::BroadcastEventRedaction(const nlohmann::json &ids)
 // worker, never TID_UI.
 void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 {
-	BroadcastFrame(NamedFrame("viewers", viewers));
+	Enqueue(FrameJob{NamedFrame("viewers", viewers)});
 }
 
-// Build a named frame, keep it as this channel's replay copy, then send it. The keep is a
-// plain map write under sseMutex_; the send is BroadcastFrame's own snapshot-under-lock /
-// send-unlocked path, so the lock is still never held across a blocking send.
+// Build a named frame, keep it as this channel's replay copy, then queue it. The keep is a
+// plain map write under sseMutex_. A page that connects between the two gets the frame twice,
+// from its replay and from the queue; a state frame says the same thing both times.
 void OverlayServer::BroadcastStateFrame(const char *eventName, const nlohmann::json &body)
 {
-	const std::string frame = NamedFrame(eventName, body);
+	std::string frame = NamedFrame(eventName, body);
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		replayFrames_[eventName] = frame;
 	}
-	BroadcastFrame(frame);
+	Enqueue(FrameJob{std::move(frame)});
 }
 
 // Named `channels` event for the same reason `viewers` is named: an unnamed frame lands on
@@ -743,7 +753,7 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 	// on another thread can land either side of this frame; the page keeps one that lands
 	// before it and dedupes one the frame already counted by its recentIds.
 	if (moved) {
-		BroadcastFrame(NamedFrame("tally", *moved), nullptr, WidgetCountsEvents);
+		Enqueue(FrameJob{NamedFrame("tally", *moved), std::nullopt, WidgetCountsEvents});
 	}
 }
 
@@ -754,7 +764,7 @@ void OverlayServer::SaveTallyIfDue()
 
 size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
-	return BroadcastFrame(DataFrame(AsTest(ev.ToJson())), &widgetId);
+	return Enqueue(FrameJob{DataFrame(AsTest(ev.ToJson())), widgetId}, /*wantCount=*/true).get();
 }
 
 // Deliberately NOT BroadcastStateFrame: that keeps the frame for replay, and for `stream`
@@ -762,7 +772,118 @@ size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::Nor
 // would then be the state a real browser source picks up when it connects mid-broadcast.
 size_t OverlayServer::SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body)
 {
-	return BroadcastFrame(NamedFrame(eventName, AsTest(body)), &widgetId);
+	return Enqueue(FrameJob{NamedFrame(eventName, AsTest(body)), widgetId}, /*wantCount=*/true).get();
+}
+
+void OverlayServer::DrainForTest()
+{
+	// A frame for no widget: it sends nothing, and since the queue is FIFO it resolves only
+	// after everything queued before it.
+	Enqueue(FrameJob{std::string(), std::string()}, /*wantCount=*/true).get();
+}
+
+// ---- Fan-out queue ------------------------------------------------------------
+
+std::future<size_t> OverlayServer::Enqueue(FrameJob job, bool wantCount)
+{
+	std::future<size_t> result;
+	if (wantCount) {
+		job.delivered = std::make_shared<std::promise<size_t>>();
+		result = job.delivered->get_future();
+	}
+	bool dropped = false;
+	bool logOverflow = false;
+	{
+		std::lock_guard<std::mutex> lock(fanoutMutex_);
+		if (!fanoutRunning_) {
+			dropped = true; // no server, so no socket: what BroadcastFrame would answer
+		} else if (fanoutQueue_.size() >= kMaxQueuedFrames && !job.delivered) {
+			dropped = true;
+			logOverflow = !fanoutOverflowLogged_;
+			fanoutOverflowLogged_ = true;
+		} else {
+			fanoutQueue_.push_back(std::move(job));
+		}
+	}
+	if (dropped) {
+		if (logOverflow) {
+			HostLog("[overlay] fan-out queue full (" + std::to_string(kMaxQueuedFrames) +
+				" frames waiting); dropping frames until it drains");
+		}
+		if (job.delivered) {
+			job.delivered->set_value(0);
+		}
+		return result;
+	}
+	fanoutCv_.notify_one();
+	return result;
+}
+
+void OverlayServer::FanoutLoop()
+{
+	for (;;) {
+		FrameJob job;
+		{
+			std::unique_lock<std::mutex> lock(fanoutMutex_);
+			fanoutCv_.wait(lock, [this] { return !fanoutRunning_ || !fanoutQueue_.empty(); });
+			if (!fanoutRunning_) {
+				return; // StopFanout resolves what is left
+			}
+			job = std::move(fanoutQueue_.front());
+			fanoutQueue_.pop_front();
+			if (fanoutQueue_.size() < kMaxQueuedFrames / 2) {
+				fanoutOverflowLogged_ = false;
+			}
+		}
+		// Whatever happens to one frame, the next still goes out and a waiter still wakes.
+		size_t delivered = 0;
+		try {
+			delivered = BroadcastFrame(job.frame, job.onlyWidgetId ? &*job.onlyWidgetId : nullptr,
+						   job.widgetFilter);
+			if (job.onSent) {
+				job.onSent(delivered);
+			}
+		} catch (const std::exception &e) {
+			HostLog(std::string("[overlay] fan-out send failed: ") + e.what());
+		} catch (...) {
+			HostLog("[overlay] fan-out send failed");
+		}
+		if (job.delivered) {
+			job.delivered->set_value(delivered);
+		}
+	}
+}
+
+void OverlayServer::StartFanout()
+{
+	std::lock_guard<std::mutex> lock(fanoutMutex_);
+	if (fanoutRunning_) {
+		return;
+	}
+	fanoutRunning_ = true;
+	fanoutThread_ = std::thread(&OverlayServer::FanoutLoop, this);
+}
+
+void OverlayServer::StopFanout()
+{
+	std::deque<FrameJob> left;
+	{
+		std::lock_guard<std::mutex> lock(fanoutMutex_);
+		fanoutRunning_ = false;
+	}
+	fanoutCv_.notify_all();
+	if (fanoutThread_.joinable()) {
+		fanoutThread_.join();
+	}
+	{
+		std::lock_guard<std::mutex> lock(fanoutMutex_);
+		left.swap(fanoutQueue_);
+	}
+	for (FrameJob &job : left) {
+		if (job.delivered) {
+			job.delivered->set_value(0);
+		}
+	}
 }
 
 void OverlayServer::SetRegisteredObserverForTest(std::function<void(const std::string &widgetId)> observer)
@@ -856,6 +977,9 @@ bool OverlayServer::Start()
 	Store().SetPort(port_);
 	tally_.Open(BroadcastTally::FilePath());
 	running_.store(true);
+	// Before the first socket can register, so no frame queued for it waits on a thread
+	// that does not exist yet.
+	StartFanout();
 	acceptThread_ = std::thread(&OverlayServer::AcceptLoop, this);
 	HostLog("[overlay] server listening on 127.0.0.1:" + std::to_string(port_) +
 		(portChanged_ ? " (port changed)" : ""));
@@ -891,6 +1015,9 @@ bool OverlayServer::StartForTest(int port, int *boundPort)
 		*boundPort = port_;
 	}
 	running_.store(true);
+	// Before the first socket can register, so no frame queued for it waits on a thread
+	// that does not exist yet.
+	StartFanout();
 	acceptThread_ = std::thread(&OverlayServer::AcceptLoop, this);
 	return true;
 }
@@ -920,6 +1047,9 @@ void OverlayServer::Stop()
 		return;
 	}
 
+	// The fan-out first: once it is joined no send is in flight from it, and whatever is
+	// still queued resolves to 0 rather than racing the socket teardown below.
+	StopFanout();
 	// Close the listen socket to unblock accept().
 	if (listenSocket_ != ~uintptr_t(0)) {
 		closesocket((SOCKET)listenSocket_);

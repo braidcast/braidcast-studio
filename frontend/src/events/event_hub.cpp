@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <limits>
 #include <string>
 #include <utility>
@@ -377,21 +378,27 @@ void EventHub::Ingest(const NormalizedEvent &ev)
 	json payload = admitted.ToJson();
 	Observe(EventNames::kEventsNew, payload);
 	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent(EventNames::kEventsNew, payload); });
-	// Phase 9.3: fan the same event to every open overlay widget (SSE). Called off the
-	// event worker thread; Broadcast is mutex-guarded + thread-safe. Only reached for a
-	// newly-stored (non-duplicate) event, so widgets never double-fire.
+	// Phase 9.3: fan the same event to every open overlay widget (SSE). Only queued here --
+	// the overlay's fan-out thread sends it, in the order the hub queued it. Only reached for
+	// a newly-stored (non-duplicate) event, so widgets never double-fire.
 	Overlay::Server().Broadcast(admitted);
 }
 
 std::optional<size_t> EventHub::Replay(const std::string &id)
 {
-	std::lock_guard<std::mutex> admission(admitMutex_);
-	const std::vector<NormalizedEvent> stored =
-		Store().Select([&id](const NormalizedEvent &ev) { return ev.id == id; });
-	if (stored.empty()) {
-		return std::nullopt;
+	std::future<size_t> sent;
+	{
+		std::lock_guard<std::mutex> admission(admitMutex_);
+		const std::vector<NormalizedEvent> stored =
+			Store().Select([&id](const NormalizedEvent &ev) { return ev.id == id; });
+		if (stored.empty()) {
+			return std::nullopt;
+		}
+		sent = Overlay::Server().Replay(stored.front());
 	}
-	return Overlay::Server().Broadcast(stored.front(), /*replay=*/true);
+	// Waited on with the lock released: the frame is already queued in order, and holding
+	// the lock across its send would put every admission behind a widget socket again.
+	return sent.get();
 }
 
 namespace {

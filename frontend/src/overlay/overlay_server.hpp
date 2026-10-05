@@ -2,11 +2,15 @@
 #define OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_SERVER_HPP_
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -57,18 +61,27 @@ public:
 	bool PortChanged() const { return portChanged_; }
 	std::string LastError() const { return lastError_; }
 
-	// Push a NormalizedEvent to open widget sockets: EVERY one for a live event (the
-	// EventHub::Ingest sink), which the broadcast tally also counts, and for events.replay
-	// (`replay=true`, never counted) only those belonging to
-	// a widget whose TYPE accepts a replay (Overlay::AcceptsReplay). Returns how many
-	// WIDGETS took it -- not sockets, so one widget open in both the editor preview and a
-	// Browser Source counts once -- so a replay can report "nothing received it" instead of
-	// claiming a delivery it cannot see.
-	size_t Broadcast(const Events::NormalizedEvent &ev, bool replay = false);
+	// Every frame below goes out through ONE queue and ONE fan-out thread (FanoutLoop), in
+	// the order it was queued. A producer only queues, which is O(1) under its own locks, so
+	// neither the event hub's admission lock nor a chat read worker waits on a widget socket;
+	// and frames queued in an order on one thread (a removal's frames after the events they
+	// reach, a stream end before the event that fences it) reach every socket in that order.
+	// The calls that return a count wait for their own frame to be sent, so they must not be
+	// made under a lock a producer needs.
+
+	// Push a live NormalizedEvent (the EventHub::Ingest sink) to EVERY open widget socket.
+	// The broadcast tally counts it here, as it is queued.
+	void Broadcast(const Events::NormalizedEvent &ev);
+	// Push a stored event again (events.replay -- never counted) to the sockets of widgets
+	// whose TYPE accepts a replay (Overlay::AcceptsReplay). Resolves, once it is sent, to how
+	// many WIDGETS took it -- not sockets, so one widget open in both the editor preview and
+	// a Browser Source counts once -- so a replay can report "nothing received it" instead of
+	// claiming a delivery it cannot see. 0 when the server is not running.
+	std::future<size_t> Replay(const Events::NormalizedEvent &ev);
 	// Push to ONE widget's sockets (overlays.test -- never goes through the store or the
 	// tally), marked `"test": true` so a page can keep it out of anything it keeps.
 	// Returns how many widgets took it (0 or 1), so a test can report that nothing was
-	// listening rather than claim a delivery it cannot see.
+	// listening rather than claim a delivery it cannot see. Waits for the send.
 	size_t BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev);
 	// Push a chat message to EVERY open widget socket as a named `chat` SSE event
 	// (distinct from the default `message` event alert boxes consume). The chat-box
@@ -118,6 +131,9 @@ public:
 	// while it still holds the socket's send mutex and has read nothing it replays -- the
 	// moment a broadcast racing the connect is decided. Null clears it.
 	void SetRegisteredObserverForTest(std::function<void(const std::string &widgetId)> observer);
+	// Self-tests only: return once every frame queued before the call has been sent, for a
+	// step that needs a broadcast to be out before it connects.
+	void DrainForTest();
 
 private:
 	void AcceptLoop();
@@ -140,8 +156,39 @@ private:
 	// never held across the bounded-blocking sends -- nor across widgetFilter, which reads
 	// the widget store and would otherwise put every SSE channel behind an overlay save.
 	// Returns how many WIDGETS took the frame (a widget with two open sockets counts once).
+	// Runs on the fan-out thread only (FanoutLoop); everything else queues (Enqueue).
 	size_t BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr,
 			      bool (*widgetFilter)(const std::string &) = nullptr);
+
+	// One queued frame and who it goes to (BroadcastFrame's selectors). `onSent` runs on the
+	// fan-out thread with the count once it is sent; `delivered` is set then too, for a
+	// caller that waits on it.
+	struct FrameJob {
+		std::string frame;
+		std::optional<std::string> onlyWidgetId;
+		bool (*widgetFilter)(const std::string &) = nullptr;
+		std::function<void(size_t delivered)> onSent;
+		std::shared_ptr<std::promise<size_t>> delivered;
+	};
+	// Queue `job` for the fan-out thread. With `wantCount` the returned future resolves to
+	// the delivered count; without it the future is empty. A frame queued while the server
+	// is not running resolves to 0 at once, as BroadcastFrame would with no sockets.
+	std::future<size_t> Enqueue(FrameJob job, bool wantCount = false);
+	void FanoutLoop();
+	void StartFanout();
+	// Stops the fan-out thread after the frame it is sending; frames still queued resolve to 0.
+	void StopFanout();
+	// How many frames may wait at once. Far past anything a healthy server holds: a socket
+	// that stalls costs one SO_SNDTIMEO and is dropped, after which the queue drains. Past it
+	// a frame nobody waits on is dropped (logged once per backlog) rather than letting a
+	// wedged consumer grow memory without bound; a counted frame is never dropped.
+	static constexpr size_t kMaxQueuedFrames = 8192;
+	std::mutex fanoutMutex_; // guards the four below; a leaf, never held across a send
+	std::condition_variable fanoutCv_;
+	std::deque<FrameJob> fanoutQueue_;
+	bool fanoutRunning_ = false;
+	bool fanoutOverflowLogged_ = false;
+	std::thread fanoutThread_;
 	// BroadcastFrame for a channel whose latest frame is also KEPT for replay on
 	// connect, keyed by eventName. The one place a replayable frame is built and
 	// stored, so a second such channel cannot drift from the first.

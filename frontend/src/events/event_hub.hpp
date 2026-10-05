@@ -113,8 +113,8 @@ public:
 	void ApplyModeration(const OAuth::DestinationId &dest, const Chat::ModerationOp &op);
 
 	// Re-fire the stored event `id` to the overlay widgets that take a replay
-	// (OverlayServer::Broadcast with `replay`), as stored now. Returns how many widgets got
-	// it, or nullopt when no stored event has that id.
+	// (OverlayServer::Replay), as stored now. Returns how many widgets got it, once it is
+	// sent, or nullopt when no stored event has that id.
 	std::optional<size_t> Replay(const std::string &id);
 
 	// Self-tests only: called under admitMutex_ with each events.new and events.redacted
@@ -142,19 +142,18 @@ private:
 	// whose frames follow its own on each channel) or wholly after (scrubbed by
 	// RecentRemovals before it is stored or sent): once a removal's frames are out, none
 	// carrying the words it took follows them. The bridge posts are CEF tasks queued in that
-	// same order; the overlay sends complete before the lock is released.
+	// same order, and so are the overlay frames: the overlay server's one fan-out queue sends
+	// them in the order they were queued here (OverlayServer::Enqueue).
 	//
 	// Lock order: admitMutex_, then RecentRemovals::mutex_, EventStore::mutex_ or
 	// EventStore's writer (OrderedStoreSave) (one at a time; each is released before the next is taken), then
-	// the overlay's BroadcastTally mutex and its save, then OverlayServer::sseMutex_ and, for
-	// Replay's widget filter, the overlay widget store's mutex, then each SSE socket's send
-	// mutex in turn, then the log. Nothing reached under it calls back into EventHub: the event
-	// store, StorePaths, the overlay server and widget store take no Events::Hub(), and the
-	// bridge emit only queues script for the renderer. Every caller outside the self-tests is a
-	// worker thread, so the UI thread never waits on it. It is held across the store's disk
-	// write and the overlay's blocking sends (each bounded by SO_SNDTIMEO) -- including the wait
-	// for a connecting page's replay to finish on its socket -- so a slow disk or a stuck widget
-	// delays the next admission.
+	// the overlay's BroadcastTally mutex and its save, then the overlay's fan-out queue mutex,
+	// then the log. Nothing reached under it calls back into EventHub: the event store,
+	// StorePaths, the overlay server and widget store take no Events::Hub(), and the bridge emit
+	// only queues script for the renderer. Every caller outside the self-tests is a worker
+	// thread, so the UI thread never waits on it. It is held across the store's disk write, so
+	// a slow disk delays the next admission; never across an overlay send, which happens on
+	// the fan-out thread (Replay waits for its count after releasing it).
 	std::mutex admitMutex_;
 	RecentRemovals removals_; // written and read under admitMutex_ by the hub
 	std::function<void(const char *, const json &)> fanoutObserver_; // guarded by admitMutex_

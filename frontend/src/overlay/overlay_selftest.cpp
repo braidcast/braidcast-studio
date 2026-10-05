@@ -942,6 +942,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 		};
 
 		server.Broadcast(counted("selftest-tally-live"));
+		// Sent before the page connects, so its live frame is not one the page is owed.
+		server.DrainForTest();
 		const std::string live = ConnectSse(port, kPath, tallyArrived);
 		tallyLiveOk = NamedFrameArrived(live, "tally", since) &&
 			      NamedFrameArrived(live, "tally", "\"until\":null") &&
@@ -1165,7 +1167,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 			const bool warmTick = PumpUntil(tickSse, tickAcc, pushLive("selftest-gate-warm"),
 							arrived("selftest-gate-warm"));
 
-			const size_t delivered = server.Broadcast(eventNamed("selftest-gate-replay"), /*replay=*/true);
+			const size_t delivered = server.Replay(eventNamed("selftest-gate-replay")).get();
 
 			const bool fenceAlert = PumpUntil(alertSse, alertAcc, pushLive("selftest-gate-fence"),
 							  arrived("selftest-gate-fence"));
