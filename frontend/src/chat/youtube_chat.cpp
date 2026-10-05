@@ -251,10 +251,12 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	if (type == "superChatEvent") {
 		const json &d = Obj(snippet, "superChatDetails");
 		paid = BuildChatPaid("superchat", Str(d, "amountDisplayString"), std::string());
+		WithPaidValue(paid, NumLoose(d, "amountMicros") / 10000, Str(d, "currency"));
 		text = Str(d, "userComment");
 	} else if (type == "superStickerEvent") {
 		const json &d = Obj(snippet, "superStickerDetails");
 		paid = BuildChatPaid("supersticker", Str(d, "amountDisplayString"), std::string());
+		WithPaidValue(paid, NumLoose(d, "amountMicros") / 10000, Str(d, "currency"));
 		text = Str(Obj(d, "superStickerMetadata"), "altText");
 		stickerAltText = true;
 	} else {

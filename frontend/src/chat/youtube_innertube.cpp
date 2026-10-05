@@ -456,6 +456,7 @@ void BuildPaidMessage(const json &renderer, DecodedItem &out)
 	out.paid = BuildChatPaid("superchat", PlainText(Obj(renderer, "purchaseAmountText")),
 				 ArgbColor(renderer, "headerBackgroundColor"));
 	FillMoneyEvent("superchat", renderer, out);
+	WithPaidValue(out.paid, out.ev.amount, out.ev.currency);
 	out.ev.message = PlainText(Obj(renderer, "message"));
 }
 
@@ -473,6 +474,7 @@ void BuildPaidSticker(const json &renderer, DecodedItem &out)
 	}
 	out.paid = BuildChatPaid("supersticker", PlainText(Obj(renderer, "purchaseAmountText")), color);
 	FillMoneyEvent("supersticker", renderer, out);
+	WithPaidValue(out.paid, out.ev.amount, out.ev.currency);
 }
 
 // The membership tier out of headerSubtext. YouTube ships no tier field on this renderer, but

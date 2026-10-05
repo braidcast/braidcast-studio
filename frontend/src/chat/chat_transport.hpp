@@ -51,9 +51,14 @@ struct ModerationOp; // chat_archive.hpp
 //                 "badges": [ { "kind": <string>, "url": <string?> } ] },
 //     "fragments": [ { "type": "text",  "text": <string> }
 //                  | { "type": "emote", "code": <string>, "url": <string> } ],
-//     "paid": { "kind":   "superchat" | "supersticker" | "cheer",
-//               "amount": <string>,     // the platform's display string, "$5.00" / "100 bits"
-//               "color":  <string?> } } // "#RRGGBB" tier colour; OMITTED when unknown
+//     "paid": { "kind":     "superchat" | "supersticker" | "cheer",
+//               "amount":   <string>,   // the platform's display string, "$5.00" / "100 bits"
+//               "value":    <number?>,  // money only: hundredths of `currency`'s major unit
+//               "currency": <string?>,  // money only: ISO 4217 code
+//               "color":    <string?> } } // "#RRGGBB" tier colour; OMITTED when unknown
+//   `value` and `currency` come together or not at all, and only on a Super Chat or Super
+//   Sticker whose amount the transport could read as a number: they are what the chat dock
+//   converts to the streamer's currency (roadmap 9.6), while `amount` stays what was paid.
 //   `paid` is OMITTED on an ordinary line. A paid line may carry NO fragments: a Super
 //   Chat without a comment is its amount alone.
 //
@@ -105,6 +110,23 @@ inline json BuildChatAuthor(const std::string &name, const std::string &id, cons
 		author["id"] = id;
 	}
 	return author;
+}
+
+// Add the money figure to a `paid` object: `hundredths` of `currency`'s major unit. A no-op
+// for a null `paid`, a non-positive figure or a malformed code, so a caller passes whatever it
+// read and a line it could not read keeps its display string alone.
+inline void WithPaidValue(json &paid, int64_t hundredths, const std::string &currency)
+{
+	if (!paid.is_object() || hundredths <= 0 || currency.size() != 3) {
+		return;
+	}
+	for (const char c : currency) {
+		if (c < 'A' || c > 'Z') {
+			return;
+		}
+	}
+	paid["value"] = hundredths;
+	paid["currency"] = currency;
 }
 
 // The `paid` object of a chat line that is itself a purchase, shaped as documented above.
