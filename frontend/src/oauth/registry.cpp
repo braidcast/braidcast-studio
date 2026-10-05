@@ -107,6 +107,11 @@ void BootProviders()
 {
 	if (TwitchConfigured()) {
 		Registry().Register(std::make_unique<TwitchProvider>());
+	} else {
+		// Otherwise Twitch just goes missing from every connect list, and the count below
+		// is the only trace of why.
+		HostLog("[oauth] Twitch is unavailable: this build has no Twitch client id "
+			"(TWITCH_CLIENTID was empty at configure time)");
 	}
 	// Kick, YouTube and Facebook carry no baked credentials -- their OAuth runs entirely
 	// through the broker -- so they always register.
