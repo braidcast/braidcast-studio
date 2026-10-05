@@ -4291,10 +4291,10 @@ bool PreviewSurface::FinishDrag()
 			obs_source_t *itemSource = item ? obs_sceneitem_get_source(item) : nullptr;
 			if (Overlay::IsOverlaySource(itemSource)) {
 				// Saves unconditionally, including on an additional-canvas
-				// surface, unlike the Default-only save in OnLeftUp: the pin and
-				// the page size are collection state, and one scene-collection
-				// file holds every canvas's scenes, so skipping it there would
-				// simply lose them.
+				// surface, as OnLeftUp's drag-end save does: the pin and the page
+				// size are collection state, and one scene-collection file holds
+				// every canvas's scenes, so skipping it there would simply lose
+				// them.
 				Overlay::CommitForSource(itemSource);
 			}
 			obs_source_release(sceneSource);
@@ -4371,11 +4371,12 @@ void PreviewSurface::OnLeftUp()
 	const bool moved = FinishDrag();
 	ReleaseCapture();
 
-	// A move/resize on the Default surface mutates the global scene's layout;
-	// persist it once at drag-end (never per-mousemove, and only when the drag
-	// actually changed geometry — a bare select-click moves nothing). Additional-
-	// canvas surfaces are persisted per-canvas later.
-	if (moved && targetCanvas_ == nullptr) {
+	// A move/resize mutates the surface's scene layout; persist it once at drag-end
+	// (never per-mousemove, and only when the drag actually changed geometry -- a bare
+	// select-click moves nothing). Every surface, additional canvases included: one
+	// scene-collection file holds every canvas's scenes, as FinishDrag's overlay commit
+	// notes, so skipping the save there would lose the drag on a crash.
+	if (moved) {
 		SceneCollection::Save();
 	}
 }

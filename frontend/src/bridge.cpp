@@ -1614,6 +1614,9 @@ bool MethodScenesCreate(const json &params, json &result, std::string &error)
 		}
 		obs_source_release(created); // the canvas owns the scene; drop our ref
 		EmitScenesChanged(target.uuid);
+		// Saved as the Default canvas's create is: the collection file holds every canvas's
+		// scenes, so a crash before the next unrelated save would otherwise lose this one.
+		SceneCollection::Save();
 		result = json{{"name", name}};
 		return true;
 	}
@@ -1785,6 +1788,7 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 		}
 		EmitScenesChanged(canvasTarget.uuid);
 		ObsBootstrap::PruneSceneLinksForCanvasScene(canvasTarget.uuid, goneSceneUuid);
+		SceneCollection::Save();
 		result = json{{"removed", name}};
 		return true;
 	}
@@ -1876,6 +1880,7 @@ bool MethodScenesSetCurrent(const json &params, json &result, std::string &error
 			return false;
 		}
 		EmitScenesChanged(target.uuid);
+		SceneCollection::Save(); // canvas_current, as current_scene is for the Default canvas
 		result = json{{"name", name}};
 		return true;
 	}
@@ -1914,6 +1919,7 @@ bool MethodScenesRename(const json &params, json &result, std::string &error)
 			return false;
 		}
 		EmitScenesChanged(target.uuid);
+		SceneCollection::Save();
 		result = json{{"name", to}};
 		return true;
 	}
