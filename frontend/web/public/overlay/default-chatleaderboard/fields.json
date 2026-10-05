@@ -1,46 +1,21 @@
 [
-  {
-    "key": "metric",
-    "type": "dropdown",
-    "label": "Metric",
-    "default": "messages",
-    "options": [{ "value": "messages", "label": "Messages" }]
-  },
-  { "key": "topN", "type": "slider", "label": "Top N", "min": 1, "max": 10, "step": 1, "default": 5 },
-  { "key": "windowMinutes", "type": "number", "label": "Window (minutes, 0 = whole session)", "default": 0 },
-  { "key": "minMessages", "type": "number", "label": "Minimum Messages", "default": 1 },
-  { "key": "showRank", "type": "checkbox", "label": "Show Rank", "default": true },
-  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Dots", "default": true },
-  { "key": "showCount", "type": "checkbox", "label": "Show Message Count", "default": true },
-  { "key": "emptyText", "type": "text", "label": "Empty Text", "default": "" },
-  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "default": "#a970ff" },
-  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "default": "#ff4e45" },
-  { "key": "colorKick", "type": "color", "label": "Kick Color", "default": "#53fc18" },
-  { "key": "colorOther", "type": "color", "label": "Other Platform Color", "default": "#9aa0a6" },
-  {
-    "key": "orientation",
-    "type": "dropdown",
-    "label": "Orientation",
-    "default": "column",
-    "options": [
-      { "value": "column", "label": "Column" },
-      { "value": "row", "label": "Row" }
-    ]
-  },
-  { "key": "gap", "type": "slider", "label": "Gap (design px)", "min": 0, "max": 64, "step": 1, "default": 6 },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 72, "step": 1, "default": 22 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  }
+  { "key": "metric", "type": "dropdown", "label": "Metric", "group": "Ranking", "default": "messages", "options": [ { "value": "messages", "label": "Messages" } ] },
+  { "key": "topN", "type": "slider", "label": "Top N", "group": "Ranking", "min": 1, "max": 10, "step": 1, "default": 5 },
+  { "key": "windowMinutes", "type": "number", "label": "Window (minutes, 0 = whole session)", "group": "Ranking", "default": 0 },
+  { "key": "minMessages", "type": "number", "label": "Minimum Messages", "group": "Ranking", "default": 1 },
+  { "key": "showRank", "type": "checkbox", "label": "Show Rank", "group": "Content", "default": true },
+  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Dots", "group": "Content", "default": true },
+  { "key": "showCount", "type": "checkbox", "label": "Show Message Count", "group": "Content", "default": true },
+  { "key": "emptyText", "type": "text", "label": "Empty Text", "group": "Content", "default": "" },
+  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "group": "Platform colors", "default": "#a970ff" },
+  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "group": "Platform colors", "default": "#ff4e45" },
+  { "key": "colorKick", "type": "color", "label": "Kick Color", "group": "Platform colors", "default": "#53fc18" },
+  { "key": "colorOther", "type": "color", "label": "Other Platform Color", "group": "Platform colors", "default": "#9aa0a6" },
+  { "key": "orientation", "type": "dropdown", "label": "Orientation", "group": "Layout", "default": "column", "options": [ { "value": "column", "label": "Column" }, { "value": "row", "label": "Row" } ] },
+  { "key": "gap", "type": "slider", "label": "Gap (design px)", "group": "Layout", "min": 0, "max": 64, "step": 1, "default": 6 },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Layout", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 72, "step": 1, "default": 22 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" }
 ]

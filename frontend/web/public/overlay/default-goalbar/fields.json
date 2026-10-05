@@ -1,27 +1,14 @@
 [
-  {
-    "key": "goalType",
-    "type": "dropdown",
-    "label": "Goal Type",
-    "default": "followers",
-    "options": [
-      { "value": "followers", "label": "Followers" },
-      { "value": "subscribers", "label": "Subscribers" },
-      { "value": "giftedsubs", "label": "Gifted Subs" },
-      { "value": "bits", "label": "Bits" },
-      { "value": "kicks", "label": "Kicks" },
-      { "value": "donations", "label": "Donations" }
-    ]
-  },
-  { "key": "target", "type": "number", "label": "Target", "min": 1, "max": 1000000, "step": 1, "default": 50 },
-  { "key": "startCurrent", "type": "number", "label": "Starting Amount", "min": 0, "max": 1000000, "step": 1, "default": 0 },
-  { "key": "currency", "type": "text", "label": "Donation Currency", "help": "Used only when Goal Type is Donations. A currency code such as USD, EUR or JPY; Target and Starting Amount are in whole units of it. Only donations in this currency count, since there is no exchange rate to convert the others with.", "default": "USD" },
-  { "key": "title", "type": "text", "label": "Title", "default": "Goal" },
-  { "key": "barColor", "type": "color", "label": "Bar Color", "default": "#9147ff" },
-  { "key": "trackColor", "type": "color", "label": "Track Color", "default": "rgba(255,255,255,0.15)" },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 64, "step": 1, "default": 22 },
-  { "key": "showPercent", "type": "checkbox", "label": "Show Percentage", "default": true }
+  { "key": "goalType", "type": "dropdown", "label": "Goal Type", "group": "Goal", "default": "followers", "options": [ { "value": "followers", "label": "Followers" }, { "value": "subscribers", "label": "Subscribers" }, { "value": "giftedsubs", "label": "Gifted Subs" }, { "value": "bits", "label": "Bits" }, { "value": "kicks", "label": "Kicks" }, { "value": "donations", "label": "Donations" } ] },
+  { "key": "target", "type": "number", "label": "Target", "group": "Goal", "min": 1, "max": 1000000, "step": 1, "default": 50 },
+  { "key": "startCurrent", "type": "number", "label": "Starting Amount", "group": "Goal", "min": 0, "max": 1000000, "step": 1, "default": 0 },
+  { "key": "currency", "type": "text", "label": "Donation Currency", "group": "Goal", "help": "Used only when Goal Type is Donations. A currency code such as USD, EUR or JPY; Target and Starting Amount are in whole units of it. Only donations in this currency count, since there is no exchange rate to convert the others with.", "default": "USD" },
+  { "key": "title", "type": "text", "label": "Title", "group": "Content", "default": "Goal" },
+  { "key": "showPercent", "type": "checkbox", "label": "Show Percentage", "group": "Content", "default": true },
+  { "key": "barColor", "type": "color", "label": "Bar Color", "group": "Style", "default": "#9147ff" },
+  { "key": "trackColor", "type": "color", "label": "Track Color", "group": "Style", "default": "rgba(255,255,255,0.15)" },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 64, "step": 1, "default": 22 }
 ]

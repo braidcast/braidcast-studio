@@ -1,45 +1,12 @@
 [
-  {
-    "key": "mode",
-    "type": "dropdown",
-    "label": "Mode",
-    "default": "latest",
-    "options": [
-      { "value": "latest", "label": "Latest" },
-      { "value": "count", "label": "Count" }
-    ]
-  },
-  {
-    "key": "eventType",
-    "type": "dropdown",
-    "label": "Event Type",
-    "default": "follower",
-    "options": [
-      { "value": "follower", "label": "Follower / YouTube subscriber" },
-      { "value": "subscriber", "label": "Subscriber" },
-      { "value": "giftedsub", "label": "Gifted Sub" },
-      { "value": "cheer", "label": "Cheer" },
-      { "value": "kicks", "label": "Kicks" },
-      { "value": "raid", "label": "Raid" },
-      { "value": "superchat", "label": "Super Chat" }
-    ]
-  },
-  { "key": "format", "type": "text", "label": "Format", "default": "Latest follower: {name}" },
-  { "key": "emptyText", "type": "text", "label": "Empty Text", "default": "—" },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 72, "step": 1, "default": 24 },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  },
+  { "key": "mode", "type": "dropdown", "label": "Mode", "group": "Content", "default": "latest", "options": [ { "value": "latest", "label": "Latest" }, { "value": "count", "label": "Count" } ] },
+  { "key": "eventType", "type": "dropdown", "label": "Event Type", "group": "Content", "default": "follower", "options": [ { "value": "follower", "label": "Follower / YouTube subscriber" }, { "value": "subscriber", "label": "Subscriber" }, { "value": "giftedsub", "label": "Gifted Sub" }, { "value": "cheer", "label": "Cheer" }, { "value": "kicks", "label": "Kicks" }, { "value": "raid", "label": "Raid" }, { "value": "superchat", "label": "Super Chat" } ] },
+  { "key": "format", "type": "text", "label": "Format", "group": "Content", "default": "Latest follower: {name}" },
+  { "key": "emptyText", "type": "text", "label": "Empty Text", "group": "Content", "default": "—" },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 72, "step": 1, "default": 24 },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Style", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] },
   { "key": "style_text", "type": "textstyle", "label": "Text", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} }
 ]

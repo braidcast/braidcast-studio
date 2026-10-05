@@ -1,50 +1,21 @@
 [
-  {
-    "key": "mode",
-    "type": "dropdown",
-    "label": "Mode",
-    "default": "separated",
-    "options": [
-      { "value": "separated", "label": "Separated" },
-      { "value": "aggregate", "label": "Aggregate" },
-      { "value": "both", "label": "Both" }
-    ]
-  },
-  { "key": "showTwitch", "type": "checkbox", "label": "Show Twitch", "default": true },
-  { "key": "showYouTube", "type": "checkbox", "label": "Show YouTube", "default": true },
-  { "key": "showKick", "type": "checkbox", "label": "Show Kick", "default": true },
-  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "default": "#a970ff" },
-  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "default": "#ff4e45" },
-  { "key": "colorKick", "type": "color", "label": "Kick Color", "default": "#53fc18" },
-  { "key": "showIdle", "type": "checkbox", "label": "Show Non-Reporting Platforms", "default": false },
-  { "key": "idleText", "type": "text", "label": "Idle Text", "default": "—" },
-  { "key": "showPlatformLabels", "type": "checkbox", "label": "Show Platform Labels", "default": false },
-  { "key": "showIcons", "type": "checkbox", "label": "Show Platform Dots", "default": true },
-  {
-    "key": "orientation",
-    "type": "dropdown",
-    "label": "Orientation",
-    "default": "row",
-    "options": [
-      { "value": "row", "label": "Row" },
-      { "value": "column", "label": "Column" }
-    ]
-  },
-  { "key": "gap", "type": "slider", "label": "Gap (design px)", "min": 0, "max": 64, "step": 1, "default": 14 },
-  { "key": "totalFormat", "type": "text", "label": "Total Format", "default": "{count} viewers" },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 72, "step": 1, "default": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  }
+  { "key": "mode", "type": "dropdown", "label": "Mode", "group": "Content", "default": "separated", "options": [ { "value": "separated", "label": "Separated" }, { "value": "aggregate", "label": "Aggregate" }, { "value": "both", "label": "Both" } ] },
+  { "key": "totalFormat", "type": "text", "label": "Total Format", "group": "Content", "default": "{count} viewers" },
+  { "key": "showIdle", "type": "checkbox", "label": "Show Non-Reporting Platforms", "group": "Content", "default": false },
+  { "key": "idleText", "type": "text", "label": "Idle Text", "group": "Content", "default": "—" },
+  { "key": "showPlatformLabels", "type": "checkbox", "label": "Show Platform Labels", "group": "Content", "default": false },
+  { "key": "showIcons", "type": "checkbox", "label": "Show Platform Dots", "group": "Content", "default": true },
+  { "key": "showTwitch", "type": "checkbox", "label": "Show Twitch", "group": "Platforms", "default": true },
+  { "key": "showYouTube", "type": "checkbox", "label": "Show YouTube", "group": "Platforms", "default": true },
+  { "key": "showKick", "type": "checkbox", "label": "Show Kick", "group": "Platforms", "default": true },
+  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "group": "Platforms", "default": "#a970ff" },
+  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "group": "Platforms", "default": "#ff4e45" },
+  { "key": "colorKick", "type": "color", "label": "Kick Color", "group": "Platforms", "default": "#53fc18" },
+  { "key": "orientation", "type": "dropdown", "label": "Orientation", "group": "Layout", "default": "row", "options": [ { "value": "row", "label": "Row" }, { "value": "column", "label": "Column" } ] },
+  { "key": "gap", "type": "slider", "label": "Gap (design px)", "group": "Layout", "min": 0, "max": 64, "step": 1, "default": 14 },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Layout", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 72, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" }
 ]

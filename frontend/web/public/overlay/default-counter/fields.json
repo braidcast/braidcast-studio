@@ -1,82 +1,17 @@
 [
-  {
-    "key": "source",
-    "type": "dropdown",
-    "label": "Count",
-    "default": "follow",
-    "options": [
-      { "value": "follow", "label": "Follows / YouTube subscribers this stream" },
-      { "value": "sub", "label": "Subs incl. resubs this stream" },
-      { "value": "subgift", "label": "Gifted subs this stream" },
-      { "value": "cheer", "label": "Bits cheered this stream" },
-      { "value": "raid", "label": "Raids this stream" },
-      { "value": "superchat", "label": "Super Chats this stream" },
-      { "value": "member", "label": "New members this stream" },
-      { "value": "kicks", "label": "Kicks this stream" },
-      { "value": "followers", "label": "Follower / subscriber total" },
-      { "value": "viewers", "label": "Current viewers" }
-    ],
-    "help": "A \"this stream\" count starts at 0 when a broadcast goes live. The app keeps the running totals of the current or most recent broadcast (totals only, never who sent what), so the count survives the source reloading, and after the broadcast ends it keeps showing that broadcast's count, across app restarts, until the next broadcast starts. YouTube's share of a finished broadcast's count is dropped 30 days after it ended, as YouTube's data rules require. Before any broadcast has been recorded it counts from when the source loaded. New members are first-time YouTube members, not milestones. The editor's Test button bumps the count in the preview only."
-  },
+  { "key": "source", "type": "dropdown", "label": "Count", "group": "Content", "default": "follow", "options": [ { "value": "follow", "label": "Follows / YouTube subscribers this stream" }, { "value": "sub", "label": "Subs incl. resubs this stream" }, { "value": "subgift", "label": "Gifted subs this stream" }, { "value": "cheer", "label": "Bits cheered this stream" }, { "value": "raid", "label": "Raids this stream" }, { "value": "superchat", "label": "Super Chats this stream" }, { "value": "member", "label": "New members this stream" }, { "value": "kicks", "label": "Kicks this stream" }, { "value": "followers", "label": "Follower / subscriber total" }, { "value": "viewers", "label": "Current viewers" } ], "help": "A \"this stream\" count starts at 0 when a broadcast goes live. The app keeps the running totals of the current or most recent broadcast (totals only, never who sent what), so the count survives the source reloading, and after the broadcast ends it keeps showing that broadcast's count, across app restarts, until the next broadcast starts. YouTube's share of a finished broadcast's count is dropped 30 days after it ended, as YouTube's data rules require. Before any broadcast has been recorded it counts from when the source loaded. New members are first-time YouTube members, not milestones. The editor's Test button bumps the count in the preview only." },
+  { "key": "format", "type": "text", "label": "Format", "group": "Content", "default": "{n}", "help": "{n} is the number, e.g. \"YouTube subs today: {n}\". Left blank, or without {n}, it shows the number alone." },
+  { "key": "offset", "type": "number", "label": "Start Offset", "group": "Content", "default": 0, "help": "Added to a \"this stream\" count before it is shown, e.g. to carry on from an earlier stream. A total or viewer count is shown as reported." },
+  { "key": "idleText", "type": "text", "label": "Idle Text", "group": "Content", "default": "—", "help": "Shown in place of a total or viewer count while none of the ticked platforms reports one. Never shown as 0." },
   { "key": "showTwitch", "type": "checkbox", "label": "Twitch", "group": "Platforms", "default": true },
   { "key": "showYouTube", "type": "checkbox", "label": "YouTube", "group": "Platforms", "default": true },
   { "key": "showKick", "type": "checkbox", "label": "Kick", "group": "Platforms", "default": true },
-  {
-    "key": "showFacebook",
-    "type": "checkbox",
-    "label": "Facebook",
-    "group": "Platforms",
-    "default": true,
-    "help": "Ticked platforms are counted or summed. Follows come from Twitch, Kick and YouTube (as subscribers); subs and raids from Twitch and Kick; gifted subs from Twitch, Kick and YouTube; bits from Twitch; Super Chats and members from YouTube; Kicks from Kick. Facebook reports totals and viewers only."
-  },
-  {
-    "key": "format",
-    "type": "text",
-    "label": "Format",
-    "default": "{n}",
-    "help": "{n} is the number, e.g. \"YouTube subs today: {n}\". Left blank, or without {n}, it shows the number alone."
-  },
-  {
-    "key": "offset",
-    "type": "number",
-    "label": "Start Offset",
-    "default": 0,
-    "help": "Added to a \"this stream\" count before it is shown, e.g. to carry on from an earlier stream. A total or viewer count is shown as reported."
-  },
-  {
-    "key": "idleText",
-    "type": "text",
-    "label": "Idle Text",
-    "default": "—",
-    "help": "Shown in place of a total or viewer count while none of the ticked platforms reports one. Never shown as 0."
-  },
-  {
-    "key": "animation",
-    "type": "dropdown",
-    "label": "Number Animation",
-    "default": "countup",
-    "options": [
-      { "value": "none", "label": "None" },
-      { "value": "countup", "label": "Count Up" },
-      { "value": "odometer", "label": "Rolling Digits" },
-      { "value": "pop", "label": "Pop" }
-    ],
-    "help": "Plays when a new event or reading changes the number. With the system's reduce-motion setting on, every change is instant."
-  },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 72, "step": 1, "default": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  },
+  { "key": "showFacebook", "type": "checkbox", "label": "Facebook", "group": "Platforms", "default": true, "help": "Ticked platforms are counted or summed. Follows come from Twitch, Kick and YouTube (as subscribers); subs and raids from Twitch and Kick; gifted subs from Twitch, Kick and YouTube; bits from Twitch; Super Chats and members from YouTube; Kicks from Kick. Facebook reports totals and viewers only." },
+  { "key": "animation", "type": "dropdown", "label": "Number Animation", "group": "Animation", "default": "countup", "options": [ { "value": "none", "label": "None" }, { "value": "countup", "label": "Count Up" }, { "value": "odometer", "label": "Rolling Digits" }, { "value": "pop", "label": "Pop" } ], "help": "Plays when a new event or reading changes the number. With the system's reduce-motion setting on, every change is instant." },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 72, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Style", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] },
   { "key": "style_text", "type": "textstyle", "label": "Text", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} }
 ]

@@ -1,31 +1,11 @@
 [
-  {
-    "key": "format",
-    "type": "dropdown",
-    "label": "Format",
-    "default": "auto",
-    "options": [
-      { "value": "auto", "label": "Auto (hide hours until 1:00:00)" },
-      { "value": "hms", "label": "Hours:Minutes:Seconds" },
-      { "value": "compact", "label": "Compact (1h 04m)" }
-    ]
-  },
-  { "key": "prefix", "type": "text", "label": "Prefix", "default": "" },
-  { "key": "showWhenOffline", "type": "checkbox", "label": "Show When Offline", "default": false },
-  { "key": "offlineText", "type": "text", "label": "Offline Text", "default": "—" },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 96, "step": 1, "default": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  }
+  { "key": "format", "type": "dropdown", "label": "Format", "group": "Content", "default": "auto", "options": [ { "value": "auto", "label": "Auto (hide hours until 1:00:00)" }, { "value": "hms", "label": "Hours:Minutes:Seconds" }, { "value": "compact", "label": "Compact (1h 04m)" } ] },
+  { "key": "prefix", "type": "text", "label": "Prefix", "group": "Content", "default": "" },
+  { "key": "showWhenOffline", "type": "checkbox", "label": "Show When Offline", "group": "Content", "default": false },
+  { "key": "offlineText", "type": "text", "label": "Offline Text", "group": "Content", "default": "—" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 96, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Style", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] }
 ]

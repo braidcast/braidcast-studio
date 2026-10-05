@@ -1,22 +1,12 @@
 [
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 10, "max": 48, "step": 1, "default": 20 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "authorDefaultColor", "type": "color", "label": "Default Name Color", "default": "#a970ff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "default": false },
-  { "key": "showBadges", "type": "checkbox", "label": "Show Badges", "default": true },
-  { "key": "messageLifetimeSec", "type": "number", "label": "Message Lifetime (s, 0 = never)", "min": 0, "max": 600, "step": 1, "default": 0 },
-  { "key": "maxMessages", "type": "number", "label": "Max Messages", "min": 1, "max": 200, "step": 1, "default": 50 },
-  {
-    "key": "animation",
-    "type": "dropdown",
-    "label": "Entry Animation",
-    "default": "fade",
-    "options": [
-      { "value": "none", "label": "None" },
-      { "value": "fade", "label": "Fade" },
-      { "value": "slide", "label": "Slide" }
-    ]
-  }
+  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "group": "Content", "default": false },
+  { "key": "showBadges", "type": "checkbox", "label": "Show Badges", "group": "Content", "default": true },
+  { "key": "messageLifetimeSec", "type": "number", "label": "Message Lifetime (s, 0 = never)", "group": "Timing", "min": 0, "max": 600, "step": 1, "default": 0 },
+  { "key": "maxMessages", "type": "number", "label": "Max Messages", "group": "Timing", "min": 1, "max": 200, "step": 1, "default": 50 },
+  { "key": "animation", "type": "dropdown", "label": "Entry Animation", "group": "Timing", "default": "fade", "options": [ { "value": "none", "label": "None" }, { "value": "fade", "label": "Fade" }, { "value": "slide", "label": "Slide" } ] },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 10, "max": 48, "step": 1, "default": 20 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "authorDefaultColor", "type": "color", "label": "Default Name Color", "group": "Style", "default": "#a970ff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" }
 ]

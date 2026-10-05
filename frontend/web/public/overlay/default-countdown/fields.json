@@ -1,35 +1,15 @@
 [
-  { "key": "prefix", "type": "text", "label": "Prefix", "default": "" },
-  { "key": "payoffText", "type": "text", "label": "Payoff Text", "default": "Let's go!" },
-  { "key": "cycleMinutes", "type": "number", "label": "Cycle Length (minutes, restarts on edit if Loop is off)", "min": 0.1, "max": 1440, "step": 0.1, "default": 10 },
-  { "key": "loop", "type": "checkbox", "label": "Loop (clock-anchored, opens mid-cycle)", "default": true },
-  { "key": "payoffSeconds", "type": "number", "label": "Payoff Dwell (seconds, only used when Loop is on)", "min": 1, "max": 300, "step": 1, "default": 10 },
-  {
-    "key": "format",
-    "type": "dropdown",
-    "label": "Format",
-    "default": "auto",
-    "options": [
-      { "value": "auto", "label": "Auto (hide hours until 1:00:00)" },
-      { "value": "hms", "label": "Hours:Minutes:Seconds" },
-      { "value": "compact", "label": "Compact (1h 04m)" }
-    ]
-  },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 96, "step": 1, "default": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  {
-    "key": "align",
-    "type": "dropdown",
-    "label": "Align",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "center", "label": "Center" },
-      { "value": "right", "label": "Right" }
-    ]
-  },
+  { "key": "prefix", "type": "text", "label": "Prefix", "group": "Content", "default": "" },
+  { "key": "payoffText", "type": "text", "label": "Payoff Text", "group": "Content", "default": "Let's go!" },
+  { "key": "format", "type": "dropdown", "label": "Format", "group": "Content", "default": "auto", "options": [ { "value": "auto", "label": "Auto (hide hours until 1:00:00)" }, { "value": "hms", "label": "Hours:Minutes:Seconds" }, { "value": "compact", "label": "Compact (1h 04m)" } ] },
+  { "key": "cycleMinutes", "type": "number", "label": "Cycle Length (minutes, restarts on edit if Loop is off)", "group": "Timing", "min": 0.1, "max": 1440, "step": 0.1, "default": 10 },
+  { "key": "loop", "type": "checkbox", "label": "Loop (clock-anchored, opens mid-cycle)", "group": "Timing", "default": true },
+  { "key": "payoffSeconds", "type": "number", "label": "Payoff Dwell (seconds, only used when Loop is on)", "group": "Timing", "min": 1, "max": 300, "step": 1, "default": 10 },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 12, "max": 96, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Style", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] },
   { "key": "style_prefix", "type": "textstyle", "label": "Prefix", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} },
   { "key": "style_value", "type": "textstyle", "label": "Countdown", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} }
 ]

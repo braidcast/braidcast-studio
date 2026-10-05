@@ -1,21 +1,12 @@
 [
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 10, "max": 48, "step": 1, "default": 20 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (design px/sec)", "min": 10, "max": 240, "step": 5, "default": 60 },
-  {
-    "key": "direction",
-    "type": "dropdown",
-    "label": "Scroll Direction",
-    "default": "left",
-    "options": [
-      { "value": "left", "label": "Left" },
-      { "value": "right", "label": "Right" }
-    ]
-  },
-  { "key": "separator", "type": "text", "label": "Separator", "default": "  •  " },
-  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "default": true },
-  { "key": "maxItems", "type": "number", "label": "Max Items", "min": 1, "max": 200, "step": 1, "default": 30 },
-  { "key": "idleText", "type": "text", "label": "Idle Text", "default": "" }
+  { "key": "separator", "type": "text", "label": "Separator", "group": "Content", "default": "  •  " },
+  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "group": "Content", "default": true },
+  { "key": "maxItems", "type": "number", "label": "Max Items", "group": "Content", "min": 1, "max": 200, "step": 1, "default": 30 },
+  { "key": "idleText", "type": "text", "label": "Idle Text", "group": "Content", "default": "" },
+  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (design px/sec)", "group": "Motion", "min": 10, "max": 240, "step": 5, "default": 60 },
+  { "key": "direction", "type": "dropdown", "label": "Scroll Direction", "group": "Motion", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "right", "label": "Right" } ] },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "group": "Style", "min": 10, "max": 48, "step": 1, "default": 20 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "group": "Style", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "group": "Style", "default": "rgba(0,0,0,0)" }
 ]
