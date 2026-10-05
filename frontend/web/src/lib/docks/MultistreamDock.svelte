@@ -15,7 +15,7 @@
   } from "$lib/stores/multistreamStatusStore.svelte";
   import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
-  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { STATE_COLOR_EXT, STATE_TEXT_COLOR } from "$lib/theme/stateColors";
   import { isRetrying, retryDestination, setDestinationsEnabled } from "$lib/ui/destinationArming.svelte";
   import { fmtCompact } from "$lib/utils/format";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
@@ -259,7 +259,7 @@
                 <!-- The dock is the compact mirror; the sentence behind the tag stays on
                      the title here and is rendered in full on the Canvases tab, where a
                      row has the width for it. -->
-                <span class="dtag" style:color={STATE_COLOR_EXT[st.state]} title={st.detail || undefined}>
+                <span class="dtag" style:color={STATE_TEXT_COLOR[st.state]} title={st.detail || undefined}>
                   {st.label.toUpperCase()}
                 </span>
                 {#if st.retryable}

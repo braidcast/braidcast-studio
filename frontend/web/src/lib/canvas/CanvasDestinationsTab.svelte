@@ -13,7 +13,7 @@
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
-  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { STATE_COLOR_EXT, STATE_TEXT_COLOR } from "$lib/theme/stateColors";
   import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
   import { anyOutputLive, bindingRowStatus } from "$lib/stores/multistreamStatusStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
@@ -178,7 +178,7 @@
                  introduces also take a visible line. -->
             <span
               class="card-state"
-              style:color={STATE_COLOR_EXT[st.state]}
+              style:color={STATE_TEXT_COLOR[st.state]}
               style:background={STATE_TAG_BG[st.state]}
               title={st.detail || undefined}
             >

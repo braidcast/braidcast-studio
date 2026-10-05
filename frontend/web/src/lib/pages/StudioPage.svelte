@@ -22,7 +22,7 @@ import { EV } from "$lib/utils/eventNames";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
-  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { STATE_COLOR, textTone } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { grade, DROP_GRADE, CONG_GRADE, summarizeOutputs } from "$lib/utils/statsMeter";
@@ -1051,7 +1051,7 @@ import { EV } from "$lib/utils/eventNames";
           </span>
         {/if}
         {#each perfRow as e (e.k)}
-          <span class="cell"><span class="k">{e.k}</span><span class="v" style:color={e.c}>{e.v}</span></span>
+          <span class="cell"><span class="k">{e.k}</span><span class="v" style:color={e.c && textTone(e.c)}>{e.v}</span></span>
         {/each}
       </div>
       <button
@@ -1448,11 +1448,11 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-text);
   }
   .vcam.active {
-    color: var(--meter-green);
+    color: var(--meter-green-text);
     border-left-color: var(--meter-green);
   }
   .vcam.active:hover:not(:disabled) {
-    color: var(--meter-green);
+    color: var(--meter-green-text);
   }
   .editinfo:disabled {
     opacity: 0.5;

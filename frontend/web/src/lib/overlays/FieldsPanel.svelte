@@ -636,6 +636,6 @@
     white-space: nowrap;
   }
   .fnote.ok {
-    color: var(--meter-green);
+    color: var(--meter-green-text);
   }
 </style>

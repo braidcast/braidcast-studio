@@ -2,6 +2,7 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import { ADVISOR_RULES, SEVERITY, SEVERITY_ORDER, type AdvisorSeverity } from "$lib/monitor/advisorRules";
   import { advisorStore } from "$lib/monitor/advisorStore.svelte";
+  import { textTone } from "$lib/theme/stateColors";
 
   // Read-only insights over the loaded scene collection. The store owns the sweep and
   // its cadence (mount + scene-graph events + Rescan, never the 1 Hz stats tick); this
@@ -55,7 +56,7 @@
       {:else}
         {#each tally as t, i (t.band)}
           {#if i > 0}<span class="idim">·</span>{/if}
-          <span style:color={t.color}>{t.n} {t.label}</span>
+          <span style:color={textTone(t.color)}>{t.n} {t.label}</span>
         {/each}
       {/if}
       {#if coverage}
@@ -106,7 +107,7 @@
           {#if row.rule.link}
             <span class="igo">{row.rule.link.label}</span>
           {/if}
-          <span class="cv-ci__badge" style:color={sev.color} style:border-color={sev.color}>{sev.label}</span>
+          <span class="cv-ci__badge" style:color={textTone(sev.color)} style:border-color={sev.color}>{sev.label}</span>
         </button>
       {/each}
     {/if}

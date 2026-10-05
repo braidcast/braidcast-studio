@@ -7,7 +7,7 @@
   import InsightsPanel from "$lib/monitor/InsightsPanel.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
-  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { STATE_COLOR, STATE_TEXT_COLOR, textTone } from "$lib/theme/stateColors";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,
@@ -174,7 +174,7 @@
         {@const pts = sparkPoints(c.series, c.domain, SW, SH)}
         <div class="metric" style:--sev={c.c}>
           <span class="metric-k">{c.k}</span>
-          <span class="metric-v" style:color={c.c}>{c.v}</span>
+          <span class="metric-v" style:color={textTone(c.c)}>{c.v}</span>
           <span class="metric-u">{c.u}</span>
           {#if c.sub}
             <span class="metric-sub">{c.sub}</span>
@@ -231,7 +231,7 @@
               <span class="out-dot" style:background={STATE_COLOR[o.state]}></span>
               <span class="out-name">{o.profileLabel} &nbsp;→&nbsp; {o.canvasName}</span>
             </span>
-            <span style:color={STATE_COLOR[o.state]}>{titleState(o.state)}</span>
+            <span style:color={STATE_TEXT_COLOR[o.state]}>{titleState(o.state)}</span>
             <span>{live ? fmtBitrate(o.bitrateKbps) : "—"}</span>
             <span>{live ? String(o.droppedFrames) : "—"}</span>
             <span>{live ? o.congestionPct.toFixed(1) + "%" : "—"}</span>

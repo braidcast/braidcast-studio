@@ -458,7 +458,7 @@
   .over {
     font-family: var(--font-mono);
     font-size: 9px;
-    color: var(--meter-yellow);
+    color: var(--meter-yellow-text);
     white-space: nowrap;
   }
   .warn {

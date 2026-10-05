@@ -938,7 +938,7 @@ import { EV } from "$lib/utils/eventNames";
     border-color: var(--color-accent);
   }
   .mini-btn.copied {
-    color: var(--meter-green);
+    color: var(--meter-green-text);
     border-color: var(--meter-green);
   }
   .addwrap {

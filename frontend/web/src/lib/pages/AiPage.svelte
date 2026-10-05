@@ -224,7 +224,7 @@ import { EV } from "$lib/utils/eventNames";
   .server-toggle.on {
     border-color: var(--meter-green);
     background: color-mix(in srgb, var(--meter-green) 12%, transparent);
-    color: var(--meter-green);
+    color: var(--meter-green-text);
   }
   .server-toggle:hover {
     border-color: var(--color-border);

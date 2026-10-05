@@ -4,7 +4,7 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import Modal from "$lib/ui/Modal.svelte";
-  import { STATE_COLOR, TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
+  import { STATE_COLOR, TRANSPORT_STATE_TEXT_COLOR, textTone } from "$lib/theme/stateColors";
   import { CHAT_STATE_NOTE, chatTransportFor } from "$lib/ui/destinationHealth";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
@@ -233,7 +233,7 @@
     const settled = t.row.state === "connected" || t.row.state === "unavailable" || t.row.updatedAt <= 0;
     return {
       note,
-      color: TRANSPORT_STATE_COLOR[t.row.state],
+      color: TRANSPORT_STATE_TEXT_COLOR[t.row.state],
       sinceMs: settled ? null : Math.max(0, nowMs - t.row.updatedAt),
       title: t.row.lastError ? note + " — " + t.row.lastError : note,
     };
@@ -291,7 +291,7 @@
               {#if m.sub}<span class="frac">{m.sub}</span>{/if}
             </div>
             <div class="v-row">
-              <span class="v" style:color={m.color}>{m.v}</span>
+              <span class="v" style:color={textTone(m.color)}>{m.v}</span>
               <span class="u">{m.u}</span>
             </div>
             <svg class="spark" viewBox="0 0 {SW} {SH}" preserveAspectRatio="none" aria-hidden="true">
@@ -395,7 +395,7 @@
           {/if}
           <span class="sm">
             <span class="sm-k">Drop</span>
-            <span class="sm-v" style:color={grade(summary.worstDropPct, DROP_GRADE[0], DROP_GRADE[1])}>
+            <span class="sm-v" style:color={textTone(grade(summary.worstDropPct, DROP_GRADE[0], DROP_GRADE[1]))}>
               {summary.droppedFrames} · {summary.worstDropPct.toFixed(1)}%
             </span>
           </span>
@@ -405,7 +405,7 @@
           </span>
           <span class="sm">
             <span class="sm-k">Cong</span>
-            <span class="sm-v" style:color={grade(summary.maxCongestionPct, CONG_GRADE[0], CONG_GRADE[1])}>
+            <span class="sm-v" style:color={textTone(grade(summary.maxCongestionPct, CONG_GRADE[0], CONG_GRADE[1]))}>
               {summary.maxCongestionPct.toFixed(1)}%
             </span>
           </span>
@@ -432,15 +432,15 @@
                   <span class="name">{o.profileLabel}</span>
                   <span class="arrow"><Icon name="caret-right" size={10} /></span>
                   <span class="canvas">{o.canvasName}</span>
-                  <span class="state" style:color>{titleState(o.state)}</span>
+                  <span class="state" style:color={textTone(color)}>{titleState(o.state)}</span>
                 </div>
                 <div class="line2">
                   <span class="stat">{fmtBitrate(o.bitrateKbps)}</span>
-                  <span class="stat" style:color={elevated(o.dropPct, DROP_GRADE[0], DROP_GRADE[1])}>
+                  <span class="stat" style:color={textTone(elevated(o.dropPct, DROP_GRADE[0], DROP_GRADE[1]))}>
                     drop {o.droppedFrames}
                     <span class="q">({o.dropPct.toFixed(1)}%)</span>
                   </span>
-                  <span class="stat" style:color={elevated(o.congestionPct, CONG_GRADE[0], CONG_GRADE[1])}>
+                  <span class="stat" style:color={textTone(elevated(o.congestionPct, CONG_GRADE[0], CONG_GRADE[1]))}>
                     cong {o.congestionPct.toFixed(1)}%
                   </span>
                   <span class="stat">{fmtDuration(o.durationMs)}</span>
@@ -793,7 +793,7 @@
     color: var(--color-dim);
   }
   .sm.err .sm-v {
-    color: var(--meter-red);
+    color: var(--meter-red-text);
   }
 
   .cap-msg {

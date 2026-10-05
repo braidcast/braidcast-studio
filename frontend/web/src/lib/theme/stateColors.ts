@@ -16,6 +16,22 @@ export const STATE_COLOR: Record<MultistreamState, string> = {
   reconnecting: "color-mix(in srgb, var(--meter-red) 50%, var(--meter-yellow))",
 };
 
+/** Each fill tone -> its text twin (app.css). The fills are for dots, edges and tints,
+ * where 3:1 is enough; as text they fall under 4.5:1 on the light palette. A tone with
+ * no twin (the muted grey, the text color itself) is already a text color. */
+const TEXT_TWIN: Readonly<Record<string, string>> = {
+  "var(--meter-green)": "var(--meter-green-text)",
+  "var(--meter-yellow)": "var(--meter-yellow-text)",
+  "var(--meter-red)": "var(--meter-red-text)",
+  "var(--color-live)": "var(--color-live-text)",
+  [STATE_COLOR.reconnecting]: "var(--meter-orange-text)",
+};
+
+/** The color to draw `fill`'s tone as text in. */
+export function textTone(fill: string): string {
+  return Object.hasOwn(TEXT_TWIN, fill) ? TEXT_TWIN[fill] : fill;
+}
+
 /** MultistreamState plus the "off"/"disabled" aliases (an absent or disabled
  * binding renders like idle). Superset of STATE_COLOR for consumers that need it. */
 export const STATE_COLOR_EXT: Record<MultistreamState | "off" | "disabled", string> = {
@@ -23,6 +39,11 @@ export const STATE_COLOR_EXT: Record<MultistreamState | "off" | "disabled", stri
   off: "var(--color-muted)",
   disabled: "var(--color-muted)",
 };
+
+/** STATE_COLOR_EXT for text: a state's label or tag, never its dot. */
+export const STATE_TEXT_COLOR: Record<MultistreamState | "off" | "disabled", string> = Object.fromEntries(
+  Object.entries(STATE_COLOR_EXT).map(([k, v]) => [k, textTone(v)]),
+) as Record<MultistreamState | "off" | "disabled", string>;
 
 /** Keys of STATE_COLOR_EXT: the one vocabulary an edge color is allowed to speak. */
 export type EdgeState = keyof typeof STATE_COLOR_EXT;
@@ -83,3 +104,8 @@ export const TRANSPORT_STATE_COLOR: Record<TransportHealthState, string> = {
   unavailable: STATE_COLOR.idle,
   disconnected: STATE_COLOR.idle,
 };
+
+/** TRANSPORT_STATE_COLOR for text, as STATE_TEXT_COLOR is for STATE_COLOR. */
+export const TRANSPORT_STATE_TEXT_COLOR: Record<TransportHealthState, string> = Object.fromEntries(
+  Object.entries(TRANSPORT_STATE_COLOR).map(([k, v]) => [k, textTone(v)]),
+) as Record<TransportHealthState, string>;

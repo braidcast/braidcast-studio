@@ -104,6 +104,20 @@
   --meter-green: #46b85e;
   --meter-yellow: #e6b03e;
   --meter-red: #f04444;
+  /* The meter tones are fills (dots, edges, gradients), where 3:1 is enough. As text
+     they fall under 4.5:1, worst on the light palette's rail. Text takes these twins,
+     the same move as --color-live-text with the fill at 45% (yellow is the one that
+     needs it): lighter in dark mode, darker in light. Ratios and grounds are pinned by
+     test/stateTextContrast.test.ts. --meter-orange-text is the reconnecting state's
+     tone, mixed from red and yellow the way STATE_COLOR.reconnecting is. */
+  --meter-green-text: color-mix(in oklab, var(--meter-green) 45%, var(--color-text));
+  --meter-yellow-text: color-mix(in oklab, var(--meter-yellow) 45%, var(--color-text));
+  --meter-red-text: color-mix(in oklab, var(--meter-red) 45%, var(--color-text));
+  --meter-orange-text: color-mix(
+    in oklab,
+    color-mix(in srgb, var(--meter-red) 50%, var(--meter-yellow)) 45%,
+    var(--color-text)
+  );
 
   --font-ui: "Geist", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
