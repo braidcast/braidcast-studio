@@ -117,6 +117,21 @@ function contribution(e: TallyEvent, measure: Measure): number {
   return 1;
 }
 
+/** What `e` adds to `source`'s count: nothing when it is not one of the source's events (by
+ * type, and kind where the source names kinds), else one, the subs it gave, or its amount.
+ * The rule the host's tally files its totals by, for a widget that sums events itself (the
+ * goal bar), so it cannot count a gift or a cheer differently from the Counter. */
+export function sourceContribution(source: string, e: TallyEvent): number {
+  const spec = sourceSpec(source);
+  if (!spec || !(spec.types as readonly string[]).includes(e.type)) {
+    return 0;
+  }
+  if (spec.kinds && !(spec.kinds as readonly string[]).includes(eventKind(e))) {
+    return 0;
+  }
+  return contribution(e, spec.measure);
+}
+
 /** Whether `ts` falls inside `w`. */
 export function inWindow(ts: number, w: CountWindow): boolean {
   return (w.since === null || ts >= w.since) && (w.until === null || ts <= w.until);

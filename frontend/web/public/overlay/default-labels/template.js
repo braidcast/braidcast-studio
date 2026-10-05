@@ -1,19 +1,22 @@
 const textEl = document.getElementById("label-text");
 
-// Map the user-facing event choice to the real NormalizedEvent `type` strings
-// (verbatim from EventsDock/alert-box). Registry map, not a switch. "subscriber"
-// counts resubs too so a running total reflects every sub event.
+// The stored eventType -> the Counter source whose event types it shows, so which events a
+// label, a goal bar and a Counter count is decided in one place (OBSOverlay.counter). The
+// stored keys stay as they are; only the lookup moved. "subscriber" counts resubs too, so a
+// running total reflects every sub event.
 const EVENTS = {
-  follower: ["follow"],
-  subscriber: ["sub", "resub"],
-  giftedsub: ["subgift"],
-  cheer: ["cheer"],
-  kicks: ["kicks"],
-  raid: ["raid"],
-  superchat: ["superchat"],
+  follower: "follow",
+  subscriber: "sub",
+  giftedsub: "subgift",
+  cheer: "cheer",
+  kicks: "kicks",
+  raid: "raid",
+  superchat: "superchat",
 };
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const typesOf = (eventType) => OBSOverlay.counter.sources[own(EVENTS, eventType) ? EVENTS[eventType] : EVENTS.follower].types;
 
-let types = EVENTS.follower;
+let types = typesOf("follower");
 let mode = "latest";
 let format = "Latest follower: {name}";
 let emptyText = "—";
@@ -42,7 +45,7 @@ function applyFields(f) {
   set("--ov-align", f.align === "center" ? "center" : f.align === "right" ? "right" : "left");
 
   mode = f.mode === "count" ? "count" : "latest";
-  types = EVENTS[String(f.eventType || "follower")] || EVENTS.follower;
+  types = typesOf(String(f.eventType || "follower"));
   format = OBSOverlay.textField(f, "format", "Latest follower: {name}");
   emptyText = OBSOverlay.textField(f, "emptyText", "—");
   render();

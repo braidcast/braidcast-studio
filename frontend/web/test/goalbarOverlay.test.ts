@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { COUNTER_EVENT_SOURCES, sourceContribution } from "../src/overlay/counter";
 
 // The default goal bar, loaded as source against stand-ins for the globals it touches, the
 // way eventRedaction.test.ts loads the ticker.
@@ -21,6 +22,7 @@ function goalbar(fields: Record<string, unknown> = {}, preview = false) {
     onLoad: (fn: typeof onLoad) => (onLoad = fn),
     onEvent: (fn: typeof onEvent) => (onEvent = fn),
     onBackfill: (fn: typeof onBackfill) => (onBackfill = fn),
+    counter: { sources: COUNTER_EVENT_SOURCES, contribution: sourceContribution },
     formatCount: (n: number) => String(n),
     formatMoney: (n: number, c: string) => `${(n / 100).toFixed(2)} ${c}`,
   };
@@ -77,6 +79,23 @@ describe("goal bar progress", () => {
     expect(preview.count()).toBe("2 / 10");
     preview.backfill([follow("a")]);
     expect(preview.count()).toBe("1 / 10");
+  });
+
+  test("gifted subs and bits count by the Counter's rule", () => {
+    const gifts = goalbar({ goalType: "giftedsubs" });
+    gifts.fire({ id: "a", type: "subgift", count: 5 });
+    gifts.fire({ id: "b", type: "subgift" }); // count unreported: still at least one sub
+    expect(gifts.count()).toBe("6 / 10");
+    const bits = goalbar({ goalType: "bits", target: 1000 });
+    bits.fire({ id: "a", type: "cheer", amount: 250 });
+    bits.fire({ id: "b", type: "follow" });
+    expect(bits.count()).toBe("250 / 1000");
+  });
+
+  test("an unknown or inherited goal type falls back to followers", () => {
+    const g = goalbar({ goalType: "toString" });
+    g.fire({ id: "a", type: "follow" });
+    expect(g.count()).toBe("1 / 10");
   });
 
   test("a donations goal counts only its own currency, from the backfill too", () => {

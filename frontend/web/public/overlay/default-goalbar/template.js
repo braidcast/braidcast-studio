@@ -2,26 +2,30 @@ const titleEl = document.getElementById("goal-title");
 const countEl = document.getElementById("goal-count");
 const fillEl = document.getElementById("goal-fill");
 
-// Each goal preset maps a user-facing goal to the real NormalizedEvent `type`
-// strings (verbatim from EventsDock/alert-box) and how much a matching event adds.
-// Registry map, not a switch: a new goal is one entry.
+// Each goal preset maps a stored goalType to what a matching event adds. Registry map, not
+// a switch: a new goal is one entry. Every count goal is one of the Counter's sources
+// (OBSOverlay.counter), so which events count and by how much is decided in one place:
 //   followers   -> +1 per follow
 //   subscribers -> +1 per sub or resub
-//   gifted subs -> + e.count (a community gift of N subs counts as N)
-//   bits        -> + e.amount (bits cheered)
-//   kicks       -> + e.amount (Kicks sent; a count of Kick's gift currency, not money)
-//   donations   -> + e.amount, counting only events in the goal's currency. Amounts
-//                  arrive in hundredths of the major unit, so a money goal is kept in
-//                  hundredths too and its configured target/start are scaled to match.
-//                  With no exchange rates to convert by, a donation in another currency
-//                  is skipped rather than summed as though it were the same money.
+//   gifted subs -> + the subs a gift gave (at least 1)
+//   bits        -> + bits cheered
+//   kicks       -> + Kicks sent (a count of Kick's gift currency, not money)
+// Donations are money, which no Counter source sums: + e.amount, counting only events in
+// the goal's currency. Amounts arrive in hundredths of the major unit, so a money goal is
+// kept in hundredths too and its configured target/start are scaled to match. With no
+// exchange rates to convert by, a donation in another currency is skipped rather than
+// summed as though it were the same money.
+const sourceGoal = (source) => ({ inc: (e) => OBSOverlay.counter.contribution(source, e) });
 const GOALS = {
-  followers: { types: ["follow"], inc: () => 1 },
-  subscribers: { types: ["sub", "resub"], inc: () => 1 },
-  giftedsubs: { types: ["subgift"], inc: (e) => (e.count != null ? e.count : 1) },
-  bits: { types: ["cheer"], inc: (e) => (e.amount != null ? e.amount : 0) },
-  kicks: { types: ["kicks"], inc: (e) => (e.amount != null ? e.amount : 0) },
-  donations: { types: ["superchat", "supersticker"], inc: (e) => (e.amount != null ? e.amount : 0), money: true },
+  followers: sourceGoal("follow"),
+  subscribers: sourceGoal("sub"),
+  giftedsubs: sourceGoal("subgift"),
+  bits: sourceGoal("cheer"),
+  kicks: sourceGoal("kicks"),
+  donations: {
+    inc: (e) => (["superchat", "supersticker"].indexOf(e.type) !== -1 && e.amount != null ? e.amount : 0),
+    money: true,
+  },
 };
 
 const normCurrency = (v) => String(v || "").trim().toUpperCase();
@@ -63,7 +67,7 @@ OBSOverlay.onEvent((e) => {
 });
 
 function counts(e) {
-  if (goal.types.indexOf(e.type) === -1) return false;
+  if (goal.inc(e) === 0) return false;
   return !goal.money || normCurrency(e.currency) === currency;
 }
 
@@ -83,7 +87,8 @@ function applyFields(f) {
   if (f.barColor) set("--ov-bar", String(f.barColor));
   if (f.trackColor) set("--ov-track", String(f.trackColor));
 
-  goal = GOALS[String(f.goalType || "followers")] || GOALS.followers;
+  const goalType = String(f.goalType || "followers");
+  goal = Object.prototype.hasOwnProperty.call(GOALS, goalType) ? GOALS[goalType] : GOALS.followers;
   currency = normCurrency(f.currency) || "USD";
   // Target and start are typed in whole units; a money goal counts in hundredths.
   const scale = goal.money ? 100 : 1;

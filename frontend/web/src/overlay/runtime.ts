@@ -31,6 +31,7 @@ import {
   SessionTally,
   audienceTotal,
   effectiveAnimation,
+  sourceContribution,
   templateParts,
   tweenValue,
   viewerTotal,
@@ -674,12 +675,14 @@ const OBSOverlay = {
    * `test: true`; a widget that keeps state from a channel should keep a test's only here. */
   preview: isPreview,
   /** The Counter's rules, shared so a fork counts exactly as the stock widget does: the
-   * session sources (`sources`), absent-is-not-zero totals over a set of platforms
+   * session sources (`sources`) and what one event adds to one (`contribution`, which the
+   * goal bar sums by too), absent-is-not-zero totals over a set of platforms
    * (`viewerTotal`, `audienceTotal`, null when no selected platform reported), the start
    * offset, the animation a change gets under reduced motion, the count-up curve, and a
    * format split around its `{n}` tokens. */
   counter: {
     sources: COUNTER_EVENT_SOURCES,
+    contribution: sourceContribution,
     viewerTotal,
     audienceTotal,
     withOffset,
