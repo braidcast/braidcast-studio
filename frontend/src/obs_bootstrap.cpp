@@ -10932,6 +10932,38 @@ void ObsBootstrap::RunEventSelfTest()
 			"; waited " + (admitWaited ? "1" : "0") + (removalWaited ? "1" : "0") + ")");
 	}
 
+	// A removed account's late events: the purge drops what the account stored and refuses
+	// what its stopped transport still sends afterwards. Synthetic ids on a synthetic account,
+	// cleared below with the rest; the account stays marked for this process, as a removed
+	// account does until it reconnects.
+	{
+		const std::string account = "twitch:selftest-purged";
+		const auto late = [&account](const std::string &id) {
+			Events::NormalizedEvent ev;
+			ev.id = id;
+			ev.platform = "twitch";
+			ev.type = "follow";
+			ev.ts = TimeUtil::NowMs();
+			ev.accountId = account;
+			ev.actorName = "selftest-follower";
+			return ev;
+		};
+		const auto stored = [](const std::string &id) {
+			return !Events::Store()
+					.Select([&id](const Events::NormalizedEvent &e) { return e.id == id; })
+					.empty();
+		};
+		Events::Hub().Ingest(late("selftest-purge-before"));
+		const bool before = stored("selftest-purge-before");
+		const size_t purged = Events::Hub().PurgeAccount(account);
+		Events::Hub().Ingest(late("selftest-purge-after"));
+		const bool ok = before && purged == 1 && !stored("selftest-purge-before") &&
+				!stored("selftest-purge-after");
+		HostLog(std::string("[selftest] events late after purge -> ") + (ok ? "OK" : "FAIL") +
+			" (stored before " + (before ? "1" : "0") + ", purged " + std::to_string(purged) + ", after " +
+			(stored("selftest-purge-after") ? "kept" : "refused") + ")");
+	}
+
 	// YouTube subscribers are reported once each. A first read seeds the account silently;
 	// a subscriber already seen never comes back, however long they stay among the newest;
 	// an account bounds what it keeps by count and by age; what is kept survives a reload

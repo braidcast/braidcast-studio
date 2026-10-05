@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "event_store.hpp"
@@ -81,6 +82,13 @@ public:
 	// Stop + disconnect the transport for one accountId. Idempotent.
 	void StopAccount(const std::string &accountId);
 
+	// Drop every stored event of a removed account, and refuse any it still sends: StopAccount
+	// only signals its worker, so a poll or a connect already under way can emit after this.
+	// Call after the account left the account store. Never waits on admitMutex_ (see Admit),
+	// so the UI thread can call it. Returns how many stored events went. A StartAccount for
+	// the same account (a reconnect) admits its events again.
+	size_t PurgeAccount(const std::string &accountId);
+
 	// One-time startup sweep: StartAccount every connected, scope-current account in
 	// the account store. Enforces the always-on/account-lifecycle model (spec §2/§11) so
 	// accounts connected in a PRIOR session resume events at boot without a manual
@@ -116,8 +124,13 @@ public:
 private:
 	// Store `ev` (stamped with `accountId` when it names none) without the words a removal
 	// already took (RecentRemovals::Scrub). On success `ev` is what was stored. False for a
-	// duplicate or an event with no id. Caller holds admitMutex_.
+	// duplicate, an event with no id, or one of a purged account. The purge mark is read before
+	// the store pass and again after it: a purge that marked the account in between may have
+	// purged before this event was stored, so the event takes its account's rows out itself.
+	// Caller holds admitMutex_.
 	bool Admit(NormalizedEvent &ev, const std::string &accountId);
+	// Whether PurgeAccount marked `accountId` since its last StartAccount.
+	bool Purged(const std::string &accountId) const;
 	// The fan-out observer, when one is set. Caller holds admitMutex_.
 	void Observe(const char *name, const json &payload) const;
 
@@ -145,6 +158,9 @@ private:
 	std::mutex admitMutex_;
 	RecentRemovals removals_; // written and read under admitMutex_ by the hub
 	std::function<void(const char *, const json &)> fanoutObserver_; // guarded by admitMutex_
+	// Accounts purged and not reconnected since. A leaf lock: taken alone, never with another.
+	mutable std::mutex purgedMutex_;
+	std::unordered_set<std::string> purged_; // guarded by purgedMutex_
 
 	struct Active {
 		std::shared_ptr<EventTransport> transport; // hub-owned, shared with the worker

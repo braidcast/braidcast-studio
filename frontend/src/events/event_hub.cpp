@@ -33,6 +33,10 @@ constexpr std::chrono::milliseconds kReconnectDelay(1000);
 
 void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAccount &acct)
 {
+	{
+		std::lock_guard<std::mutex> lock(purgedMutex_);
+		purged_.erase(accountId);
+	}
 	// The provider is resolved off the account (providerId), not the key -- the key is
 	// now the accountId. Log lines keep using providerId for readability.
 	const std::string providerId = acct.providerId;
@@ -309,12 +313,38 @@ bool EventHub::Admit(NormalizedEvent &ev, const std::string &accountId)
 	if (ev.accountId.empty()) {
 		ev.accountId = accountId;
 	}
+	if (Purged(ev.accountId)) {
+		return false;
+	}
 	// A duplicate is not stored (Add only fills in the stored copy's ids), so it is not
 	// scrubbed either.
 	if (!ev.id.empty() && !Store().Contains(ev.id)) {
 		removals_.Scrub(ev, Store(), TimeUtil::NowMs());
 	}
-	return Store().Add(ev);
+	if (!Store().Add(ev)) {
+		return false;
+	}
+	// Marked after the check above: the purge may already have run, before this Add.
+	if (Purged(ev.accountId)) {
+		Store().PurgeAccount(ev.accountId);
+		return false;
+	}
+	return true;
+}
+
+bool EventHub::Purged(const std::string &accountId) const
+{
+	std::lock_guard<std::mutex> lock(purgedMutex_);
+	return purged_.count(accountId) > 0;
+}
+
+size_t EventHub::PurgeAccount(const std::string &accountId)
+{
+	{
+		std::lock_guard<std::mutex> lock(purgedMutex_);
+		purged_.insert(accountId);
+	}
+	return Store().PurgeAccount(accountId);
 }
 
 void EventHub::Observe(const char *name, const json &payload) const
