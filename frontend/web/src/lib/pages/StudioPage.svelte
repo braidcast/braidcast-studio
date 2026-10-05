@@ -451,6 +451,14 @@ import { EV } from "$lib/utils/eventNames";
     };
   });
 
+  // A control on this page failed. These are the primary control bar's own actions, so the
+  // failure is shown, not only logged: a click that silently does nothing reads as a bug.
+  function failed(what: string, e: unknown): void {
+    const msg = (e as Error).message;
+    console.log(`OBSSHELL: could not ${what}: ${msg}`);
+    showToast(`Could not ${what}: ${msg}`, msg);
+  }
+
   // Tear-out seam (P3a). The ⧉ affordance asks the host to open a real OS window
   // owning this dock, then drops the panel from this (main) window. The dock comes
   // back via the window.closed subscription wired in onReady.
@@ -462,7 +470,7 @@ import { EV } from "$lib/utils/eventNames";
       const p = api?.getPanel(panelId);
       if (p) api?.removePanel(p);
     } catch (e) {
-      console.log("OBSSHELL: detach failed for " + panelId + ": " + (e as Error).message);
+      failed(`pop out ${api?.getPanel(panelId)?.title ?? panelId}`, e);
     }
   }
 
@@ -648,12 +656,12 @@ import { EV } from "$lib/utils/eventNames";
   function openProgramWindowed(): void {
     obs
       .call("projector.open", { target: { kind: "program" }, mode: "windowed" })
-      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+      .catch((e) => failed("open the projector", e));
   }
   function openProgramFullscreen(monitor: number): void {
     obs
       .call("projector.open", { target: { kind: "program" }, mode: "fullscreen", monitor })
-      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+      .catch((e) => failed("open the projector", e));
   }
 
   // Multiview projector for the focused canvas (empty canvas = the Default canvas's
@@ -664,12 +672,12 @@ import { EV } from "$lib/utils/eventNames";
   function openMultiviewWindowed(): void {
     obs
       .call("projector.open", { target: { kind: "multiview", canvas: multiviewCanvas() }, mode: "windowed" })
-      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+      .catch((e) => failed("open the projector", e));
   }
   function openMultiviewFullscreen(monitor: number): void {
     obs
       .call("projector.open", { target: { kind: "multiview", canvas: multiviewCanvas() }, mode: "fullscreen", monitor })
-      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+      .catch((e) => failed("open the projector", e));
   }
 
   // CANVASES-bar overflow contents. The program/multiview projector entries are
@@ -744,7 +752,7 @@ import { EV } from "$lib/utils/eventNames";
       // back via streaming.changed.
       await obs.call(action);
     } catch (e) {
-      console.log("streaming toggle failed: " + (e as Error).message);
+      failed(action === "streaming.stop" ? "stop streaming" : "start streaming", e);
     } finally {
       busy = false;
     }
@@ -833,17 +841,18 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("screenshot.takeProgram", { canvas: activeCanvasUuid ?? "" });
     } catch (e) {
-      console.log("screenshot failed: " + (e as Error).message);
+      failed("take a screenshot", e);
     }
   }
 
   // Virtual camera start/stop. Authoritative state arrives via virtualCam.changed,
   // so don't optimistically flip here.
   async function toggleVcam(): Promise<void> {
+    const stopping = vcamActive;
     try {
-      await obs.call(vcamActive ? "virtualCam.stop" : "virtualCam.start");
+      await obs.call(stopping ? "virtualCam.stop" : "virtualCam.start");
     } catch (e) {
-      console.log("virtualCam toggle failed: " + (e as Error).message);
+      failed(stopping ? "stop the virtual camera" : "start the virtual camera", e);
     }
   }
 
