@@ -28,18 +28,50 @@ const normCurrency = (v) => String(v || "").trim().toUpperCase();
 
 let goal = GOALS.followers;
 let target = 50;
-let current = 0;
+let seed = 0;
 let title = "Goal";
 let showPercent = true;
 let currency = "USD";
 
+// The progress is the seed plus this broadcast's matching events, so a source that reloads
+// rebuilds it from the host's backfill instead of falling back to the seed. `events` holds the
+// broadcast's real events by id: one can arrive both in the backfill and live, and is counted
+// once. A test frame counts only in the editor preview, on top, until the next backfill.
+const events = new Map();
+let testExtra = 0;
+
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
-OBSOverlay.onEvent((e) => {
-  if (!e || goal.types.indexOf(e.type) === -1) return;
-  if (goal.money && normCurrency(e.currency) !== currency) return;
-  current += goal.inc(e);
+OBSOverlay.onBackfill((list) => {
+  events.clear();
+  for (const e of list) if (e && e.id) events.set(e.id, e);
+  testExtra = 0;
   render();
 });
+OBSOverlay.onEvent((e) => {
+  // A replay is a second showing of an event already counted.
+  if (!e || e.replay) return;
+  if (e.test) {
+    if (OBSOverlay.preview && counts(e)) {
+      testExtra += goal.inc(e);
+      render();
+    }
+    return;
+  }
+  if (!e.id || events.has(e.id)) return;
+  events.set(e.id, e);
+  if (counts(e)) render();
+});
+
+function counts(e) {
+  if (goal.types.indexOf(e.type) === -1) return false;
+  return !goal.money || normCurrency(e.currency) === currency;
+}
+
+function current() {
+  let n = seed + testExtra;
+  for (const e of events.values()) if (counts(e)) n += goal.inc(e);
+  return n;
+}
 
 function applyFields(f) {
   const set = (k, v) => document.documentElement.style.setProperty(k, v);
@@ -57,7 +89,7 @@ function applyFields(f) {
   const scale = goal.money ? 100 : 1;
   target = Math.round(Math.max(1, Number(f.target) || 50) * scale);
   // Seed from the configured offset so a streamer can start "already at 12".
-  current = Math.round((Number(f.startCurrent) || 0) * scale);
+  seed = Math.round((Number(f.startCurrent) || 0) * scale);
   title = f.title != null ? String(f.title) : "Goal";
   showPercent = f.showPercent !== false;
   render();
@@ -69,11 +101,12 @@ function fmt(n) {
 }
 
 function render() {
-  const pct = Math.max(0, Math.min(100, (current / target) * 100));
+  const now = current();
+  const pct = Math.max(0, Math.min(100, (now / target) * 100));
   fillEl.style.width = pct.toFixed(2) + "%";
   // All text via textContent -- user-supplied title can't inject markup.
   titleEl.textContent = title;
-  let label = fmt(current) + " / " + fmt(target);
+  let label = fmt(now) + " / " + fmt(target);
   if (showPercent) label += "  ·  " + Math.round(pct) + "%";
   countEl.textContent = label;
 }

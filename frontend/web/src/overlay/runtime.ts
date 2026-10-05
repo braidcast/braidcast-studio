@@ -112,6 +112,8 @@ type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
 // the platform key, so there is no per-account split for a widget to re-derive.
 type StreamHandler = (s: StreamState) => void;
 type SessionTallyHandler = (t: SessionTally, cause: TallyCause) => void;
+/** The current broadcast's events so far, oldest first. See onBackfill. */
+type BackfillHandler = (events: NormalizedEvent[]) => void;
 /** A frame the editor's Test button sent (the host's BroadcastTo / SendTestFrame mark it). */
 type MaybeTest<T> = T & { test?: boolean };
 
@@ -131,6 +133,7 @@ const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
 const streamHandlers: StreamHandler[] = [];
 const sessionTallyHandlers: SessionTallyHandler[] = [];
+const backfillHandlers: BackfillHandler[] = [];
 // The current broadcast's events as this page knows them, for a widget that counts them.
 // Created by the host's `tally` frame -- which only a counting type is sent -- or by the
 // first onSessionTally, so every other widget carries none and holds no events.
@@ -618,6 +621,15 @@ const OBSOverlay = {
   onEvent(fn: EventHandler) {
     eventHandlers.push(fn);
   },
+  /** The current broadcast's events so far (off air, the most recent broadcast's), oldest
+   * first and capped by the host, sent on every connect before any live event on that
+   * connection. A widget that keeps a running total rebuilds it from here instead of
+   * restarting from its seed when its source reloads, and replaces what it had on a
+   * reconnect. One event can arrive both here and live, so dedupe by id. It never carries a
+   * test frame or a replay. Not sent before any broadcast was recorded. */
+  onBackfill(fn: BackfillHandler) {
+    backfillHandlers.push(fn);
+  },
   onChat(fn: ChatHandler) {
     chatHandlers.push(fn);
   },
@@ -742,6 +754,17 @@ function fireEvent(e: MaybeTest<NormalizedEvent>) {
     }
   }
   window.dispatchEvent(new CustomEvent("obs:event", { detail: e }));
+}
+
+function fireBackfill(body: { events?: unknown }) {
+  const events = Array.isArray(body.events) ? (body.events as NormalizedEvent[]) : [];
+  for (const fn of backfillHandlers) {
+    try {
+      fn(events);
+    } catch (err) {
+      console.log("OBSOverlay onBackfill threw: " + (err as Error).message);
+    }
+  }
 }
 
 function fireChat(m: ChatMessage) {
@@ -875,6 +898,14 @@ src.onmessage = (msg) => {
     /* ignore a malformed frame */
   }
 };
+// The current broadcast's events, sent once per connection ahead of any live one.
+src.addEventListener("backfill", (msg) => {
+  try {
+    fireBackfill(JSON.parse((msg as MessageEvent).data) as { events?: unknown });
+  } catch {
+    /* ignore a malformed frame */
+  }
+});
 // Chat rides a NAMED SSE event, so it bypasses onmessage entirely -- alert-box
 // widgets that never call onChat are unaffected.
 src.addEventListener("chat", (msg) => {
