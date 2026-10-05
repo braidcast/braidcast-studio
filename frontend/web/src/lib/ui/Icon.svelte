@@ -2,77 +2,459 @@
   // Shared inline-SVG icon set for the Studio dock chrome (toolbars, row toggles,
   // filter reveal). One <Icon name=…/> keeps every dock visually identical and
   // 0-radius; the eye/lock pairs use a constant viewBox so a toggle never shifts.
-  export type IconName =
+  //
+  // A registry, not a branch per icon: IconName is this map's keys, so a name exists
+  // exactly when its drawing does. (It used to be a hand-kept union beside a matching
+  // {#if} chain, where a name added to one and not the other type-checked and drew
+  // nothing.) Every icon shares the 24x24 viewBox; `svg` is the root's own attributes and
+  // `parts` its child shapes, in paint order.
+  type IconPart = ["path" | "circle" | "rect" | "line", Record<string, string>];
+  interface IconDef {
+    svg: Record<string, string>;
+    parts: IconPart[];
+  }
+
+  const ICONS = {
     // toolbar / row chrome
-    | "plus"
-    | "trash"
-    | "gear"
-    | "edit"
-    | "copy"
-    | "up"
-    | "down"
-    | "eye"
-    | "eye-off"
-    | "lock"
-    | "lock-open"
-    | "search"
-    | "grid"
-    | "list"
-    | "grip"
+    plus: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round" },
+      parts: [
+        ["line", { x1: "12", y1: "5", x2: "12", y2: "19" }],
+        ["line", { x1: "5", y1: "12", x2: "19", y2: "12" }],
+      ],
+    },
+    trash: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" }],
+      ],
+    },
+    gear: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["circle", { cx: "12", cy: "12", r: "3" }],
+        ["path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }],
+      ],
+    },
+    edit: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M4 20h4L18.5 9.5a2 2 0 0 0-2.8-2.8L5 17.2z" }],
+        ["path", { d: "M13.7 6.3l4 4" }],
+      ],
+    },
+    copy: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "9", y: "9", width: "11", height: "11", rx: "1" }],
+        ["path", { d: "M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" }],
+      ],
+    },
+    up: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M6 14l6-6 6 6" }],
+      ],
+    },
+    down: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M6 10l6 6 6-6" }],
+      ],
+    },
+    eye: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7" },
+      parts: [
+        ["path", { d: "M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" }],
+        ["circle", { cx: "12", cy: "12", r: "2.4" }],
+      ],
+    },
+    "eye-off": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7" },
+      parts: [
+        ["path", { d: "M4 4 L20 20" }],
+        ["path", { d: "M9.5 5.7A10 10 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-2.7 3.4M6.2 7.6A17 17 0 0 0 2 12s3.6 6.5 10 6.5a10 10 0 0 0 3-.45" }],
+      ],
+    },
+    lock: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.8" },
+      parts: [
+        ["rect", { x: "5", y: "11", width: "14", height: "9" }],
+        ["path", { d: "M8 11V8a4 4 0 0 1 8 0v3" }],
+      ],
+    },
+    "lock-open": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.8" },
+      parts: [
+        ["rect", { x: "5", y: "11", width: "14", height: "9" }],
+        ["path", { d: "M8 11V7a4 4 0 0 1 7.6-1.7" }],
+      ],
+    },
+    search: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round" },
+      parts: [
+        ["circle", { cx: "11", cy: "11", r: "7" }],
+        ["path", { d: "M21 21l-4.3-4.3" }],
+      ],
+    },
+    grid: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7" },
+      parts: [
+        ["rect", { x: "4", y: "4", width: "7", height: "7" }],
+        ["rect", { x: "13", y: "4", width: "7", height: "7" }],
+        ["rect", { x: "4", y: "13", width: "7", height: "7" }],
+        ["rect", { x: "13", y: "13", width: "7", height: "7" }],
+      ],
+    },
+    list: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" }],
+      ],
+    },
+    grip: {
+      svg: { fill: "currentColor", stroke: "none" },
+      parts: [
+        ["circle", { cx: "9", cy: "6", r: "1.6" }],
+        ["circle", { cx: "15", cy: "6", r: "1.6" }],
+        ["circle", { cx: "9", cy: "12", r: "1.6" }],
+        ["circle", { cx: "15", cy: "12", r: "1.6" }],
+        ["circle", { cx: "9", cy: "18", r: "1.6" }],
+        ["circle", { cx: "15", cy: "18", r: "1.6" }],
+      ],
+    },
     // chrome / navigation
-    | "x"
-    | "check"
-    | "caret-left"
-    | "caret-right"
-    | "caret-down"
-    | "submenu"
-    | "jump-down"
-    | "redock"
-    | "undo"
-    | "redo"
-    | "replay"
-    | "more"
+    x: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M6 6l12 12M18 6 6 18" }],
+      ],
+    },
+    check: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M5 12.5l4.5 4.5L19 7" }],
+      ],
+    },
+    "caret-left": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M15 6l-6 6 6 6" }],
+      ],
+    },
+    "caret-right": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M9 6l6 6-6 6" }],
+      ],
+    },
+    "caret-down": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M7 10l5 5 5-5" }],
+      ],
+    },
+    submenu: {
+      svg: { fill: "currentColor", stroke: "none" },
+      parts: [
+        ["path", { d: "M10 7l7 5-7 5z" }],
+      ],
+    },
+    "jump-down": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M12 4v11M6 10l6 6 6-6" }],
+        ["path", { d: "M5 20h14" }],
+      ],
+    },
+    redock: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M8 4H4v16h16v-4" }],
+        ["path", { d: "M21 3l-10 10" }],
+        ["path", { d: "M11 7v6h6" }],
+      ],
+    },
+    undo: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M3 8h11a6 6 0 0 1 0 12H8" }],
+        ["path", { d: "M7 4 3 8l4 4" }],
+      ],
+    },
+    redo: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M21 8H10a6 6 0 0 0 0 12h6" }],
+        ["path", { d: "M17 4l4 4-4 4" }],
+      ],
+    },
+    replay: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M1 4v6h6" }],
+        ["path", { d: "M3.51 15a9 9 0 1 0 2.13-9.36L1 10" }],
+      ],
+    },
+    more: {
+      svg: { fill: "currentColor", stroke: "none" },
+      parts: [
+        ["circle", { cx: "5", cy: "12", r: "1.7" }],
+        ["circle", { cx: "12", cy: "12", r: "1.7" }],
+        ["circle", { cx: "19", cy: "12", r: "1.7" }],
+      ],
+    },
     // window controls (custom title bar)
-    | "window-min"
-    | "window-max"
-    | "window-restore"
-    | "window-close"
+    "window-min": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" },
+      parts: [
+        ["line", { x1: "5", y1: "12", x2: "19", y2: "12" }],
+      ],
+    },
+    "window-max": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "5", y: "5", width: "14", height: "14" }],
+      ],
+    },
+    "window-restore": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "5", y: "8", width: "11", height: "11" }],
+        ["path", { d: "M8 8V5h11v11h-3" }],
+      ],
+    },
+    "window-close": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M6 6l12 12M18 6 6 18" }],
+      ],
+    },
     // status / affordances
-    | "star"
-    | "star-filled"
-    | "link"
-    | "warn"
-    | "dot"
+    star: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M12 3l2.7 5.9 6.3.7-4.7 4.3 1.3 6.1-5.6-3.2-5.6 3.2 1.3-6.1L2.9 9.6l6.4-.7z" }],
+      ],
+    },
+    "star-filled": {
+      svg: { fill: "currentColor", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M12 3l2.7 5.9 6.3.7-4.7 4.3 1.3 6.1-5.6-3.2-5.6 3.2 1.3-6.1L2.9 9.6l6.4-.7z" }],
+      ],
+    },
+    link: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" }],
+        ["path", { d: "M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" }],
+      ],
+    },
+    warn: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M12 3 22 20H2Z" }],
+        ["path", { d: "M12 9.5V14" }],
+        ["path", { d: "M12 17h.01" }],
+      ],
+    },
+    dot: {
+      svg: { fill: "currentColor", stroke: "none" },
+      parts: [
+        ["circle", { cx: "12", cy: "12", r: "4.5" }],
+      ],
+    },
     // audio / transport
-    | "mute"
-    | "volume"
-    | "monitor"
-    | "play"
-    | "stop"
+    mute: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M11 5 6 9H2v6h4l5 4z" }],
+        ["path", { d: "M22 9l-6 6M16 9l6 6" }],
+      ],
+    },
+    volume: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M11 5 6 9H2v6h4l5 4z" }],
+        ["path", { d: "M15.5 8.5a5 5 0 0 1 0 7" }],
+        ["path", { d: "M18.5 5.5a9 9 0 0 1 0 13" }],
+      ],
+    },
+    monitor: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M3 18v-6a9 9 0 0 1 18 0v6" }],
+        ["path", { d: "M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" }],
+      ],
+    },
+    play: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M7 5.5v13l11-6.5z" }],
+      ],
+    },
+    stop: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "6.5", y: "6.5", width: "11", height: "11" }],
+      ],
+    },
     // source types / misc
-    | "sliders"
-    | "camera"
-    | "film"
-    | "image"
-    | "audio-wave"
-    | "puzzle"
+    sliders: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" }],
+        ["path", { d: "M1.5 14h5M9.5 8h5M17.5 16h5" }],
+      ],
+    },
+    camera: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "2", y: "7", width: "13", height: "10" }],
+        ["path", { d: "M15 10.5 21 7v10l-6-3.5" }],
+      ],
+    },
+    film: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.5" },
+      parts: [
+        ["rect", { x: "3", y: "4", width: "18", height: "16" }],
+        ["path", { d: "M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" }],
+      ],
+    },
+    image: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["rect", { x: "3", y: "4", width: "18", height: "16" }],
+        ["circle", { cx: "9", cy: "9", r: "1.6" }],
+        ["path", { d: "M21 15l-5-5-9 9" }],
+      ],
+    },
+    "audio-wave": {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" }],
+      ],
+    },
+    puzzle: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M4 8h4a2.5 2.5 0 1 1 5 0h4v4a2.5 2.5 0 1 1 0 5v3H4Z" }],
+      ],
+    },
     // canvas config sub-tabs (canvases-redesign mock)
-    | "canvas"
-    | "video"
-    | "cpu"
-    | "audio"
-    | "advanced"
-    | "destinations"
+    canvas: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["rect", { x: "3", y: "5", width: "18", height: "14" }],
+        ["path", { d: "M3 9h18" }],
+      ],
+    },
+    video: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["rect", { x: "3", y: "6", width: "13", height: "12" }],
+        ["path", { d: "M16 10l5-3v10l-5-3" }],
+      ],
+    },
+    cpu: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["rect", { x: "7", y: "7", width: "10", height: "10" }],
+        ["path", { d: "M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" }],
+      ],
+    },
+    audio: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M4 9v6h4l5 5V4L8 9H4Z" }],
+        ["path", { d: "M17 8a5 5 0 0 1 0 8" }],
+      ],
+    },
+    advanced: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["circle", { cx: "12", cy: "12", r: "8" }],
+        ["path", { d: "M12 4a8 8 0 0 0 0 16" }],
+        ["circle", { cx: "9", cy: "9", r: "1.4" }],
+        ["circle", { cx: "15", cy: "14", r: "1.4" }],
+      ],
+    },
+    destinations: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["circle", { cx: "12", cy: "12", r: "3" }],
+        ["path", { d: "M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" }],
+      ],
+    },
     // dock identities (the studio bar's reopen buttons carry no label)
-    | "transition"
-    | "chat"
-    | "bell"
-    | "users"
-    | "chart"
+    transition: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round" },
+      parts: [
+        ["rect", { x: "2", y: "6", width: "7", height: "12" }],
+        ["rect", { x: "15", y: "6", width: "7", height: "12" }],
+        ["path", { d: "M9.8 12h4M12.6 10.2 14.4 12l-1.8 1.8" }],
+      ],
+    },
+    chat: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M3 4h18v13H9l-6 4z" }],
+      ],
+    },
+    bell: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M6 16v-5a6 6 0 0 1 12 0v5l2 3H4z" }],
+        ["path", { d: "M10 19a2 2 0 0 0 4 0" }],
+      ],
+    },
+    users: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["circle", { cx: "9", cy: "8", r: "3.5" }],
+        ["path", { d: "M2.5 20a6.5 6.5 0 0 1 13 0" }],
+        ["path", { d: "M16 5.4a3.5 3.5 0 0 1 0 5.2" }],
+        ["path", { d: "M17.6 14.4A6.5 6.5 0 0 1 21.5 20" }],
+      ],
+    },
+    chart: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round" },
+      parts: [
+        ["path", { d: "M3.5 3.5v17h17" }],
+        ["path", { d: "M8 17.5v-5M13 17.5v-9M18 17.5v-12", "stroke-width": "2.4" }],
+      ],
+    },
     // chat tools
-    | "poll"
-    | "trophy"
-    | "target";
+    poll: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6" },
+      parts: [
+        ["rect", { x: "3.5", y: "4", width: "17", height: "4.5" }],
+        ["rect", { x: "3.5", y: "10", width: "17", height: "4.5" }],
+        ["rect", { x: "3.5", y: "16", width: "17", height: "4.5" }],
+        ["path", { d: "M3.5 6.25h11M3.5 12.25h6M3.5 18.25h3", "stroke-width": "4.5" }],
+      ],
+    },
+    trophy: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      parts: [
+        ["path", { d: "M7 4h10v5a5 5 0 0 1-10 0z" }],
+        ["path", { d: "M7 5.5H4.5a3 3 0 0 0 3 4.7" }],
+        ["path", { d: "M17 5.5h2.5a3 3 0 0 1-3 4.7" }],
+        ["path", { d: "M12 14v3.2" }],
+        ["path", { d: "M9.3 20.5h5.4l-.6-3.3H9.9z" }],
+      ],
+    },
+    target: {
+      svg: { fill: "none", stroke: "currentColor", "stroke-width": "1.7" },
+      parts: [
+        ["circle", { cx: "12", cy: "12", r: "8.5" }],
+        ["circle", { cx: "12", cy: "12", r: "4.5" }],
+        ["circle", { cx: "12", cy: "12", r: "1", fill: "currentColor" }],
+      ],
+    },
+  } satisfies Record<string, IconDef>;
+
+  export type IconName = keyof typeof ICONS;
 </script>
 
 <script lang="ts">
@@ -81,128 +463,14 @@
     size?: number;
   }
   let { name, size = 14 }: Props = $props();
+
+  const def: IconDef | undefined = $derived(Object.hasOwn(ICONS, name) ? ICONS[name] : undefined);
 </script>
 
-{#if name === "plus"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-{:else if name === "trash"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" /></svg>
-{:else if name === "gear"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-{:else if name === "edit"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2 2 0 0 0-2.8-2.8L5 17.2z" /><path d="M13.7 6.3l4 4" /></svg>
-{:else if name === "copy"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></svg>
-{:else if name === "up"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l6-6 6 6" /></svg>
-{:else if name === "down"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l6 6 6-6" /></svg>
-{:else if name === "eye"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" /><circle cx="12" cy="12" r="2.4" /></svg>
-{:else if name === "eye-off"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4 L20 20" /><path d="M9.5 5.7A10 10 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-2.7 3.4M6.2 7.6A17 17 0 0 0 2 12s3.6 6.5 10 6.5a10 10 0 0 0 3-.45" /></svg>
-{:else if name === "lock"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
-{:else if name === "lock-open"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" /><path d="M8 11V7a4 4 0 0 1 7.6-1.7" /></svg>
-{:else if name === "search"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>
-{:else if name === "grid"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="7" height="7" /><rect x="13" y="4" width="7" height="7" /><rect x="4" y="13" width="7" height="7" /><rect x="13" y="13" width="7" height="7" /></svg>
-{:else if name === "list"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" /></svg>
-{:else if name === "grip"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
-{:else if name === "x"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
-{:else if name === "check"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
-{:else if name === "caret-left"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
-{:else if name === "caret-right"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
-{:else if name === "caret-down"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5" /></svg>
-{:else if name === "submenu"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M10 7l7 5-7 5z" /></svg>
-{:else if name === "jump-down"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6" /><path d="M5 20h14" /></svg>
-{:else if name === "redock"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H4v16h16v-4" /><path d="M21 3l-10 10" /><path d="M11 7v6h6" /></svg>
-{:else if name === "undo"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a6 6 0 0 1 0 12H8" /><path d="M7 4 3 8l4 4" /></svg>
-{:else if name === "redo"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a6 6 0 0 0 0 12h6" /><path d="M17 4l4 4-4 4" /></svg>
-{:else if name === "replay"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
-{:else if name === "more"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
-{:else if name === "window-min"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
-{:else if name === "window-max"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" /></svg>
-{:else if name === "window-restore"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5" y="8" width="11" height="11" /><path d="M8 8V5h11v11h-3" /></svg>
-{:else if name === "window-close"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
-{:else if name === "star"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.7 5.9 6.3.7-4.7 4.3 1.3 6.1-5.6-3.2-5.6 3.2 1.3-6.1L2.9 9.6l6.4-.7z" /></svg>
-{:else if name === "star-filled"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.7 5.9 6.3.7-4.7 4.3 1.3 6.1-5.6-3.2-5.6 3.2 1.3-6.1L2.9 9.6l6.4-.7z" /></svg>
-{:else if name === "link"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></svg>
-{:else if name === "warn"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 22 20H2Z" /><path d="M12 9.5V14" /><path d="M12 17h.01" /></svg>
-{:else if name === "dot"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="4.5" /></svg>
-{:else if name === "mute"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M22 9l-6 6M16 9l6 6" /></svg>
-{:else if name === "volume"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg>
-{:else if name === "monitor"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg>
-{:else if name === "play"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5.5v13l11-6.5z" /></svg>
-{:else if name === "stop"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" /></svg>
-{:else if name === "sliders"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" /><path d="M1.5 14h5M9.5 8h5M17.5 16h5" /></svg>
-{:else if name === "camera"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="13" height="10" /><path d="M15 10.5 21 7v10l-6-3.5" /></svg>
-{:else if name === "film"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" /></svg>
-{:else if name === "image"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" /><circle cx="9" cy="9" r="1.6" /><path d="M21 15l-5-5-9 9" /></svg>
-{:else if name === "audio-wave"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
-{:else if name === "puzzle"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 8h4a2.5 2.5 0 1 1 5 0h4v4a2.5 2.5 0 1 1 0 5v3H4Z" /></svg>
-{:else if name === "canvas"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" /><path d="M3 9h18" /></svg>
-{:else if name === "video"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="13" height="12" /><path d="M16 10l5-3v10l-5-3" /></svg>
-{:else if name === "cpu"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="7" y="7" width="10" height="10" /><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" /></svg>
-{:else if name === "audio"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 9v6h4l5 5V4L8 9H4Z" /><path d="M17 8a5 5 0 0 1 0 8" /></svg>
-{:else if name === "advanced"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 0 0 16" /><circle cx="9" cy="9" r="1.4" /><circle cx="15" cy="14" r="1.4" /></svg>
-{:else if name === "destinations"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></svg>
-{:else if name === "transition"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="6" width="7" height="12" /><rect x="15" y="6" width="7" height="12" /><path d="M9.8 12h4M12.6 10.2 14.4 12l-1.8 1.8" /></svg>
-{:else if name === "chat"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h18v13H9l-6 4z" /></svg>
-{:else if name === "bell"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 3H4z" /><path d="M10 19a2 2 0 0 0 4 0" /></svg>
-{:else if name === "users"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.4a3.5 3.5 0 0 1 0 5.2" /><path d="M17.6 14.4A6.5 6.5 0 0 1 21.5 20" /></svg>
-{:else if name === "chart"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5v17h17" /><path d="M8 17.5v-5M13 17.5v-9M18 17.5v-12" stroke-width="2.4" /></svg>
-{:else if name === "poll"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="4" width="17" height="4.5" /><rect x="3.5" y="10" width="17" height="4.5" /><rect x="3.5" y="16" width="17" height="4.5" /><path d="M3.5 6.25h11M3.5 12.25h6M3.5 18.25h3" stroke-width="4.5" /></svg>
-{:else if name === "trophy"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10v5a5 5 0 0 1-10 0z" /><path d="M7 5.5H4.5a3 3 0 0 0 3 4.7" /><path d="M17 5.5h2.5a3 3 0 0 1-3 4.7" /><path d="M12 14v3.2" /><path d="M9.3 20.5h5.4l-.6-3.3H9.9z" /></svg>
-{:else if name === "target"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="1" fill="currentColor" /></svg>
+{#if def}
+  <svg width={size} height={size} viewBox="0 0 24 24" {...def.svg}>
+    {#each def.parts as [tag, attrs], i (i)}
+      <svelte:element this={tag} xmlns="http://www.w3.org/2000/svg" {...attrs} />
+    {/each}
+  </svg>
 {/if}
