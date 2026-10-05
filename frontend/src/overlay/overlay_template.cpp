@@ -92,10 +92,11 @@ constexpr PageAudio kSilent = PageAudio::Silent;
 constexpr TypeRow kTypeRows[] = {
 	{"alertbox", 600, 400, true, kPlays},          {"chatbox", 400, 480, false, kSilent},
 	{"chatleaderboard", 340, 191, false, kSilent}, {"countdown", 300, 54, false, kSilent},
-	{"counter", 400, 54, false, kSilent, true},    {"followercount", 640, 58, false, kSilent},
-	{"goalbar", 600, 76, false, kSilent},          {"labels", 600, 54, false, kSilent},
-	{"ticker", 640, 24, false, kSilent},           {"uptime", 300, 54, false, kSilent},
-	{"viewercount", 400, 58, false, kSilent},      {"wheretowatch", 320, 174, false, kSilent},
+	{"counter", 400, 54, false, kSilent, true},    {"eventlist", 400, 300, false, kSilent},
+	{"followercount", 640, 58, false, kSilent},    {"goalbar", 600, 76, false, kSilent},
+	{"labels", 600, 54, false, kSilent},           {"ticker", 640, 24, false, kSilent},
+	{"uptime", 300, 54, false, kSilent},           {"viewercount", 400, 58, false, kSilent},
+	{"wheretowatch", 320, 174, false, kSilent},
 };
 
 // `type`'s row, or null when the table has none.

@@ -1,0 +1,21 @@
+[
+  { "key": "showFollows", "type": "checkbox", "label": "Follows", "group": "Events", "default": true, "help": "YouTube subscribers count here: on YouTube the free follow is called subscribe." },
+  { "key": "showSubs", "type": "checkbox", "label": "Subs, resubs and gift subs", "group": "Events", "default": true },
+  { "key": "showMembers", "type": "checkbox", "label": "Members", "group": "Events", "default": true },
+  { "key": "showCheers", "type": "checkbox", "label": "Bits", "group": "Events", "default": true },
+  { "key": "showSuperChats", "type": "checkbox", "label": "Super Chats and Stickers", "group": "Events", "default": true },
+  { "key": "showKicks", "type": "checkbox", "label": "Kicks", "group": "Events", "default": true },
+  { "key": "showRaids", "type": "checkbox", "label": "Raids", "group": "Events", "default": true },
+  { "key": "maxItems", "type": "slider", "label": "Events shown", "group": "Content", "min": 1, "max": 20, "step": 1, "default": 6 },
+  { "key": "newestOnTop", "type": "checkbox", "label": "Newest on top", "group": "Content", "default": true },
+  { "key": "showEmoji", "type": "checkbox", "label": "Show event icons", "group": "Content", "default": true },
+  { "key": "showPlatform", "type": "checkbox", "label": "Show platform color", "group": "Content", "default": true },
+  { "key": "emptyText", "type": "text", "label": "Text before the first event", "group": "Content", "default": "", "help": "Shown until this broadcast has an event to list. Leave empty to show nothing." },
+  { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font size (design px)", "group": "Style", "min": 12, "max": 48, "step": 1, "default": 20 },
+  { "key": "textColor", "type": "color", "label": "Text color", "group": "Style", "default": "#ffffff" },
+  { "key": "nameColor", "type": "color", "label": "Name color", "group": "Style", "default": "#ffffff" },
+  { "key": "rowColor", "type": "color", "label": "Row background", "group": "Style", "default": "rgba(18, 18, 22, 0.72)" },
+  { "key": "backgroundColor", "type": "color", "label": "Background color", "group": "Style", "default": "rgba(0, 0, 0, 0)" },
+  { "key": "align", "type": "dropdown", "label": "Align", "group": "Style", "default": "left", "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" }, { "value": "right", "label": "Right" } ] }
+]

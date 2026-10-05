@@ -39,6 +39,7 @@ export const WIDGET_TYPES: WidgetTypeSpec[] = [
   { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch", tests: ["stream"] },
   { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard", tests: ["chat", "clear"] },
   { type: "countdown", label: "Countdown", name: "New Countdown", tests: [] },
+  { type: "eventlist", label: "Event List", name: "New Event List", tests: ["alerts"] },
   // `stream` rather than `clear`: Go live starts a fresh session count and End stream holds
   // it, which is the counter's whole broadcast-window behaviour.
   { type: "counter", label: "Counter", name: "New Counter", tests: ["alerts", "viewers", "channels", "stream"] },
