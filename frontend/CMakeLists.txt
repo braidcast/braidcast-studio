@@ -533,9 +533,9 @@ endif()
 # Env input name matches .env / CI (TWITCH_CLIENTID); the cache var keeps the
 # same name. FORCE-when-present so a re-configure with the credential exported
 # overrides a stale empty cache value.
-set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch OAuth client id (public; device-code flow)")
+set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch client id (public; the Helix Client-Id header)")
 if(DEFINED ENV{TWITCH_CLIENTID})
-  set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch OAuth client id (public; device-code flow)" FORCE)
+  set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch client id (public; the Helix Client-Id header)" FORCE)
 endif()
 set(TWITCH_HASH "$ENV{TWITCH_HASH}" CACHE STRING "Obfuscation key for TWITCH_CLIENTID; 0 means plaintext")
 if(NOT TWITCH_HASH)
