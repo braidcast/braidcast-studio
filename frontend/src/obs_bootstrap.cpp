@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -5576,6 +5577,19 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 	// UndoManager can only be emptied, not rolled back, so the stack is restored only when
 	// the test started from an empty one.
 	const UndoManager::State undoAtStart = undoState();
+	// An entry that applies nothing and always succeeds, pushed under one that is about to go
+	// dead: an undo that drops the dead entry lands here instead of on an older entry that
+	// would move something. Counted through a shared count, since the entry can outlive this
+	// test on a stack that was not empty at start.
+	const std::string floorLabel = "selftest: undo floor";
+	auto floorHits = std::make_shared<int>(0);
+	auto pushUndoFloor = [&floorLabel, floorHits]() {
+		const UndoManager::Cb hit = [floorHits](const std::string &) {
+			++*floorHits;
+			return true;
+		};
+		ObsBootstrap::Undo().AddAction(floorLabel, hit, hit, "", "");
+	};
 
 	std::vector<std::pair<std::string, std::string>> events;
 	std::vector<json> selections;
@@ -7677,6 +7691,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		}
 
 		// --- 13. ungroup: children get new top-level ids, the old entry must not follow --
+		pushUndoFloor();
 		moveParams["id"] = childAId;
 		moveParams["transform"] = json{{"pos", json{{"x", -20.0}, {"y", 0.0}}}};
 		run("sceneItems.setTransform", moveParams, ok);
@@ -7702,6 +7717,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			      std::to_string(ungrouped.size()) + " top-level item(s), group " +
 				      (stale ? "still resolves" : "gone"));
 		}
+		*floorHits = 0;
 		ObsBootstrap::Undo().Undo();
 		settle();
 		bool untouched = true;
@@ -7710,11 +7726,12 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			untouched = untouched && item && samePos(posOf(item), entry.second);
 		}
 		const UndoManager::State afterUngroupUndo = undoState();
-		check("undo after ungroup consumes its slot and moves nothing",
-		      untouched && afterUngroupUndo.redoName == moveLabel && afterUngroupUndo.undoName != moveLabel,
-		      "redo='" + afterUngroupUndo.redoName + "'");
+		check("undo after ungroup drops the dead entry and moves nothing",
+		      untouched && *floorHits == 1 && afterUngroupUndo.redoName == floorLabel &&
+			      afterUngroupUndo.undoName != moveLabel,
+		      "redo='" + afterUngroupUndo.redoName + "', floor applied " + std::to_string(*floorHits) + "x");
 
-		// --- 14. undo after deleting a group: logs, spends the slot, touches nothing ----
+		// --- 14. undo after deleting a group: logs, drops the entry, touches nothing ----
 		std::vector<int64_t> formerChildren;
 		for (const auto &entry : ungrouped) {
 			if (entry.first != topId) {
@@ -7722,6 +7739,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			}
 		}
 		json regrouped = run("sceneItems.group", json{{"canvas", canvasUuid}, {"ids", formerChildren}}, ok);
+		pushUndoFloor();
 		const int64_t group2Id = ok ? regrouped.value("id", int64_t(0)) : 0;
 		const std::string group2Uuid = ok ? regrouped.value("source", std::string()) : std::string();
 		obs_sceneitem_t *group2Item = group2Id ? obs_scene_find_sceneitem_by_id(scene, group2Id) : nullptr;
@@ -7774,6 +7792,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 					return true;
 				},
 				&survivors);
+			*floorHits = 0;
 			ObsBootstrap::Undo().Undo();
 			settle();
 			bool survivorsUntouched = orphan != nullptr;
@@ -7783,9 +7802,9 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			}
 			const UndoManager::State afterDeleteUndo = undoState();
 			OBSSourceAutoRelease stale = obs_get_source_by_uuid(group2Uuid.c_str());
-			check("undo after group delete consumes its slot and moves nothing",
-			      ok && !stale && survivorsUntouched && afterDeleteUndo.redoName == move2Label &&
-				      afterDeleteUndo.undoName != move2Label,
+			check("undo after group delete drops the dead entry and moves nothing",
+			      ok && !stale && survivorsUntouched && *floorHits == 1 &&
+				      afterDeleteUndo.redoName == floorLabel && afterDeleteUndo.undoName != move2Label,
 			      "redo='" + afterDeleteUndo.redoName + "', group " + (stale ? "still resolves" : "gone") +
 				      ", orphan " + (orphan ? posText(posOf(orphan)) : std::string("not added")));
 		} else {

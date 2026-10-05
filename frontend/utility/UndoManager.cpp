@@ -34,49 +34,47 @@ void UndoManager::AddAction(const std::string &name, const Cb &undo, const Cb &r
 	notify();
 }
 
-void UndoManager::Undo()
+// Move the newest entry of `from` that still applies onto `to`. An entry whose callback
+// reports false is gone from both stacks: keeping it would leave a keypress that does
+// nothing on each side.
+size_t UndoManager::Step(std::deque<Item> &from, std::deque<Item> &to, bool undo)
 {
 	// Refuse to re-enter while an apply is already in flight (recording disabled).
-	if (disableRefs != 0) {
-		return;
-	}
-	if (undoItems.empty()) {
-		return;
+	if (disableRefs != 0 || from.empty()) {
+		return 0;
 	}
 
-	Item item = std::move(undoItems.back());
-	undoItems.pop_back();
+	size_t dropped = 0;
+	while (!from.empty()) {
+		Item item = std::move(from.back());
+		from.pop_back();
 
-	if (item.undo) {
-		// Re-applying a snapshot must not record a new action; the guard
-		// restores the ref count even if the callback throws.
-		DisableGuard guard(this);
-		item.undo(item.undoData);
+		const Cb &apply = undo ? item.undo : item.redo;
+		bool applied = true;
+		if (apply) {
+			// Re-applying a snapshot must not record a new action; the guard
+			// restores the ref count even if the callback throws.
+			DisableGuard guard(this);
+			applied = apply(undo ? item.undoData : item.redoData);
+		}
+		if (applied) {
+			to.push_back(std::move(item));
+			break;
+		}
+		dropped++;
 	}
-
-	redoItems.push_back(std::move(item));
 	notify();
+	return dropped;
 }
 
-void UndoManager::Redo()
+size_t UndoManager::Undo()
 {
-	if (disableRefs != 0) {
-		return;
-	}
-	if (redoItems.empty()) {
-		return;
-	}
+	return Step(undoItems, redoItems, true);
+}
 
-	Item item = std::move(redoItems.back());
-	redoItems.pop_back();
-
-	if (item.redo) {
-		DisableGuard guard(this);
-		item.redo(item.redoData);
-	}
-
-	undoItems.push_back(std::move(item));
-	notify();
+size_t UndoManager::Redo()
+{
+	return Step(redoItems, undoItems, false);
 }
 
 void UndoManager::Clear()

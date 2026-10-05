@@ -2543,11 +2543,8 @@ obs_source_t *ResolveStateScene(const json &state)
 	}
 	obs_source_t *source = AcquireItemOwnerByUuid(uuid); // addref'd
 	if (!source) {
-		// UndoManager pops the entry before running the callback and pushes it onto the
-		// redo stack after, unconditionally (UndoManager.cpp:48, :54, :57), and the
-		// callback returns void -- so there is no channel to report that nothing was
-		// applied. A failure here is a Ctrl+Z that spends a stack slot and visibly does
-		// nothing; without this line there is no way to tell that from a bug.
+		// The apply reports this as false and UndoManager drops the entry, moving on to
+		// the next one; the line says which entry went and why.
 		HostLog("[bridge] undo apply: cannot resolve scene " + uuid);
 	}
 	return source;
@@ -2585,8 +2582,7 @@ bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneit
 		item = FindItemBySourceUuid(sceneSource, sourceUuid);
 	}
 	if (!item) {
-		// Spends a stack slot and applies nothing, exactly as a failed scene resolve
-		// does -- see the note in ResolveStateScene.
+		// The entry is dropped, as for a failed scene resolve (see ResolveStateScene).
 		// itemId stays at its -1 sentinel for states captured through the source
 		// overload, which carry no id at all -- naming it there would imply a lookup
 		// that never ran.
@@ -3042,22 +3038,23 @@ void SetItemGeometry(obs_sceneitem_t *item, const json &g)
 	Overlay::CommitForSource(obs_sceneitem_get_source(item));
 }
 
-void ApplyTransform(const std::string &data)
+bool ApplyTransform(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 
 	SetItemGeometry(item, state);
 
 	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
+	return true;
 }
 
 // The owners a batch of scene-item writes commits, one entry per distinct owner:
@@ -3215,121 +3212,127 @@ bool ApplyItemStates(const json &items)
 	return !commits.empty();
 }
 
-void ApplyTransforms(const std::string &data)
+bool ApplyTransforms(const std::string &data)
 {
 	json batch = json::parse(data, nullptr, false);
 	if (batch.is_discarded()) {
-		return;
+		return false;
 	}
 	auto itemsIt = batch.find("items");
-	if (itemsIt != batch.end() && itemsIt->is_array()) {
-		ApplyItemStates(*itemsIt);
-	}
+	return itemsIt != batch.end() && itemsIt->is_array() && ApplyItemStates(*itemsIt);
 }
 
-void ApplyVisible(const std::string &data)
+bool ApplyVisible(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_sceneitem_set_visible(item, state.value("visible", false));
 	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
+	return true;
 }
 
-void ApplyLocked(const std::string &data)
+bool ApplyLocked(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_sceneitem_set_locked(item, state.value("locked", false));
 	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
+	return true;
 }
 
-void ApplyScaleFilter(const std::string &data)
+bool ApplyScaleFilter(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_scale_type type;
-	if (ScaleFilterFromToken(OptString(state, "filter"), type)) {
+	const bool applied = ScaleFilterFromToken(OptString(state, "filter"), type);
+	if (applied) {
 		obs_sceneitem_set_scale_filter(item, type);
 		CommitSceneItemChange(state, sceneSource);
 	}
 	obs_source_release(sceneSource);
+	return applied;
 }
 
-void ApplyBlendingMode(const std::string &data)
+bool ApplyBlendingMode(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_blending_type type;
-	if (BlendModeFromToken(OptString(state, "mode"), type)) {
+	const bool applied = BlendModeFromToken(OptString(state, "mode"), type);
+	if (applied) {
 		obs_sceneitem_set_blending_mode(item, type);
 		CommitSceneItemChange(state, sceneSource);
 	}
 	obs_source_release(sceneSource);
+	return applied;
 }
 
-void ApplyBlendingMethod(const std::string &data)
+bool ApplyBlendingMethod(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_blending_method method;
-	if (BlendMethodFromToken(OptString(state, "method"), method)) {
+	const bool applied = BlendMethodFromToken(OptString(state, "method"), method);
+	if (applied) {
 		obs_sceneitem_set_blending_method(item, method);
 		CommitSceneItemChange(state, sceneSource);
 	}
 	obs_source_release(sceneSource);
+	return applied;
 }
 
-void ApplyRename(const std::string &data)
+bool ApplyRename(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	const std::string name = OptString(state, "name");
 	if (name.empty()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
 	if (src) {
@@ -3338,6 +3341,7 @@ void ApplyRename(const std::string &data)
 	EmitSceneItemsChangedForSource(src);
 	PersistSourceState(sceneSource);
 	obs_source_release(sceneSource);
+	return true;
 }
 
 // The full scene order as source uuids in native (bottom-to-top) enumeration
@@ -3367,22 +3371,22 @@ json CaptureOrderState(const json &params, obs_source_t *sceneSource)
 	};
 }
 
-void ApplyOrder(const std::string &data)
+bool ApplyOrder(const std::string &data)
 {
 	json state = json::parse(data, nullptr, false);
 	if (state.is_discarded()) {
-		return;
+		return false;
 	}
 	obs_source_t *sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
 		HostLog("[bridge] ApplyOrder: cannot resolve scene " + OptString(state, "sceneUuid"));
-		return;
+		return false;
 	}
 	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
 	auto orderIt = state.find("order");
 	if (orderIt == state.end() || !orderIt->is_array()) {
 		obs_source_release(sceneSource);
-		return;
+		return false;
 	}
 
 	std::unordered_map<std::string, obs_sceneitem_t *> byUuid;
@@ -3410,13 +3414,19 @@ void ApplyOrder(const std::string &data)
 			ordered.push_back(f->second);
 		}
 	}
-	// Only reorder when the captured set still matches the scene exactly;
-	// obs_scene_reorder_items no-ops (returns false) if the order is unchanged.
-	if (!ordered.empty() && ordered.size() == byUuid.size()) {
-		obs_scene_reorder_items(scene, ordered.data(), ordered.size());
+	// Only reorder when the captured set still matches the scene exactly; an item added or
+	// removed since means the recorded order can no longer be put back, so the entry is dead.
+	// obs_scene_reorder_items no-ops (returns false) if the order is unchanged, which is
+	// still the recorded order restored.
+	if (ordered.empty() || ordered.size() != byUuid.size()) {
+		HostLog("[bridge] ApplyOrder: the scene's items changed since the order was recorded");
+		obs_source_release(sceneSource);
+		return false;
 	}
+	obs_scene_reorder_items(scene, ordered.data(), ordered.size());
 	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
+	return true;
 }
 
 // Structural add/remove undo: ADD and REMOVE are mirror images, so two shared
@@ -3458,18 +3468,19 @@ void CommitWithGroupClosure(const json &state, obs_source_t *owner)
 }
 
 // Remove the scene item the state names (by id, else by source), then emit + persist.
-void RemoveItemBySource(const json &state)
+bool RemoveItemBySource(const json &state)
 {
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
+		return false;
 	}
 	GroupResizeDeferral hold(SceneItems::GroupItemOf(item));
 	obs_sceneitem_remove(item);
 	CommitWithGroupClosure(state, sceneSource);
 	hold.End();
 	obs_source_release(sceneSource);
+	return true;
 }
 
 // Re-add a removed item from its snapshot. Prefers the still-live source (shared
@@ -3478,12 +3489,12 @@ void RemoveItemBySource(const json &state)
 // obs_load_source restores the saved uuid (verified) as long as no live source
 // holds it, so a remove->undo recreates the SAME uuid and a following redo stays
 // valid.
-void AddItemFromSnapshot(const json &state)
+bool AddItemFromSnapshot(const json &state)
 {
 	obs_source_t *sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
 		HostLog("[bridge] AddItemFromSnapshot: cannot resolve scene for source " + OptString(state, "source"));
-		return;
+		return false;
 	}
 	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
 
@@ -3504,13 +3515,13 @@ void AddItemFromSnapshot(const json &state)
 	if (!source) {
 		HostLog("[bridge] AddItemFromSnapshot: cannot resolve or load source " + uuid);
 		obs_source_release(sceneSource);
-		return;
+		return false;
 	}
 
 	obs_sceneitem_t *item = obs_scene_add(scene, source); // scene takes its own ref
 	if (!item) {
 		obs_source_release(sceneSource);
-		return;
+		return false;
 	}
 	// Ids only grow within an owner, so the recorded one is free unless something unforeseen
 	// took it; the item then keeps its new id and later states resolve it by source.
@@ -3533,6 +3544,7 @@ void AddItemFromSnapshot(const json &state)
 	CommitWithGroupClosure(state, sceneSource);
 	hold.End();
 	obs_source_release(sceneSource);
+	return true;
 }
 
 // Capture everything AddItemFromSnapshot needs to recreate `item`: the
@@ -3611,15 +3623,11 @@ json RemovalState(const json &params, obs_source_t *src, obs_source_t *owner, co
 // Cb adapters: parse the payload, then dispatch to the matching primitive.
 const UndoManager::Cb kAddItemFromSnapshot = [](const std::string &d) {
 	json s = json::parse(d, nullptr, false);
-	if (!s.is_discarded()) {
-		AddItemFromSnapshot(s);
-	}
+	return !s.is_discarded() && AddItemFromSnapshot(s);
 };
 const UndoManager::Cb kRemoveItemBySource = [](const std::string &d) {
 	json s = json::parse(d, nullptr, false);
-	if (!s.is_discarded()) {
-		RemoveItemBySource(s);
-	}
+	return !s.is_discarded() && RemoveItemBySource(s);
 };
 
 // Find any scene other than `target` to use as a fallback before removing a scene
@@ -3652,11 +3660,12 @@ obs_source_t *FindFallbackScene(obs_canvas_t *canvas, obs_source_t *target)
 // Undo for scenes.duplicateToCanvas: remove the duplicated scene and every one of
 // its duplicated child sources by uuid, in one step (not the per-item undo used
 // elsewhere -- this is a genuinely new grouped/composite undo shape).
-void RemoveDuplicatedCanvasScene(const json &state)
+bool RemoveDuplicatedCanvasScene(const json &state)
 {
 	const std::string newSceneUuid = OptString(state, "newSceneUuid");
 	const std::string destCanvasUuid = OptString(state, "destCanvas");
 
+	bool removed = false;
 	OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(newSceneUuid.c_str());
 	if (sceneSource && obs_scene_from_source(sceneSource)) {
 		// If the target is the active program/channel-0 scene, switch to a
@@ -3682,6 +3691,7 @@ void RemoveDuplicatedCanvasScene(const json &state)
 			}
 		}
 		obs_source_remove(sceneSource);
+		removed = true;
 	}
 
 	if (auto it = state.find("sources"); it != state.end() && it->is_array()) {
@@ -3693,8 +3703,13 @@ void RemoveDuplicatedCanvasScene(const json &state)
 			OBSSourceAutoRelease src = obs_get_source_by_uuid(srcUuid.c_str());
 			if (src) {
 				obs_source_remove(src);
+				removed = true;
 			}
 		}
+	}
+	if (!removed) {
+		// Everything it duplicated is already gone: nothing to undo.
+		return false;
 	}
 
 	ObsBootstrap::PruneSceneLinksForCanvasScene(destCanvasUuid, newSceneUuid); // no-op if none was set
@@ -3703,6 +3718,7 @@ void RemoveDuplicatedCanvasScene(const json &state)
 				  ? std::string()
 				  : destCanvasUuid);
 	SceneCollection::Save();
+	return true;
 }
 
 // Redo for scenes.duplicateToCanvas: restore the scene and its child sources from
@@ -3721,7 +3737,7 @@ void RemoveDuplicatedCanvasScene(const json &state)
 // any restoredSources entry that is itself a nested scene/group (from an
 // OBS_SCENE_DUP_COPY duplicate), which otherwise ends up with an empty item
 // list of its own.
-void RestoreDuplicatedCanvasScene(const json &state)
+bool RestoreDuplicatedCanvasScene(const json &state)
 {
 	std::vector<OBSSourceAutoRelease> restoredSources;
 	if (auto it = state.find("sources"); it != state.end() && it->is_array()) {
@@ -3742,17 +3758,17 @@ void RestoreDuplicatedCanvasScene(const json &state)
 	const std::string sceneData = OptString(state, "sceneData");
 	if (sceneData.empty()) {
 		HostLog("[bridge] RestoreDuplicatedCanvasScene: empty sceneData, cannot restore scene");
-		return;
+		return false;
 	}
 	OBSDataAutoRelease data = obs_data_create_from_json(sceneData.c_str());
 	if (!data) {
 		HostLog("[bridge] RestoreDuplicatedCanvasScene: failed to parse sceneData");
-		return;
+		return false;
 	}
 	OBSSourceAutoRelease restoredScene = obs_load_source(data); // create-ref
 	if (!restoredScene || !obs_scene_from_source(restoredScene)) {
 		HostLog("[bridge] RestoreDuplicatedCanvasScene: obs_load_source failed to recreate the scene");
-		return;
+		return false;
 	}
 	// Load every child source first (matching obs_load_sources's two-pass order) so
 	// that any of them which is itself a nested scene/group gets its own item list
@@ -3782,19 +3798,16 @@ void RestoreDuplicatedCanvasScene(const json &state)
 				  ? std::string()
 				  : destCanvasUuid);
 	SceneCollection::Save();
+	return true;
 }
 
 const UndoManager::Cb kUndoDuplicateSceneToCanvas = [](const std::string &d) {
 	json s = json::parse(d, nullptr, false);
-	if (!s.is_discarded()) {
-		RemoveDuplicatedCanvasScene(s);
-	}
+	return !s.is_discarded() && RemoveDuplicatedCanvasScene(s);
 };
 const UndoManager::Cb kRedoDuplicateSceneToCanvas = [](const std::string &d) {
 	json s = json::parse(d, nullptr, false);
-	if (!s.is_discarded()) {
-		RestoreDuplicatedCanvasScene(s);
-	}
+	return !s.is_discarded() && RestoreDuplicatedCanvasScene(s);
 };
 
 // {type, duration} for a per-item show/hide transition, or null when unset.
@@ -8494,14 +8507,20 @@ bool MethodMultistreamStopOutput(const json &params, json &result, std::string &
 
 bool MethodUndoUndo(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	ObsBootstrap::Undo().Undo();
+	if (const size_t dropped = ObsBootstrap::Undo().Undo(); dropped > 0) {
+		HostLog("[bridge] undo: dropped " + std::to_string(dropped) + " entr" + (dropped == 1 ? "y" : "ies") +
+			" that no longer apply");
+	}
 	result = json::object();
 	return true;
 }
 
 bool MethodUndoRedo(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	ObsBootstrap::Undo().Redo();
+	if (const size_t dropped = ObsBootstrap::Undo().Redo(); dropped > 0) {
+		HostLog("[bridge] redo: dropped " + std::to_string(dropped) + " entr" + (dropped == 1 ? "y" : "ies") +
+			" that no longer apply");
+	}
 	result = json::object();
 	return true;
 }
