@@ -2,6 +2,8 @@
   export interface SegmentedOption {
     label: string;
     value: string;
+    /** This one choice is unavailable; the rest stay usable. */
+    disabled?: boolean;
   }
 </script>
 
@@ -16,6 +18,7 @@
     onChange,
     size = "sm",
     ariaLabel,
+    disabled = false,
   }: {
     options: SegmentedOption[];
     value: string;
@@ -23,10 +26,19 @@
     size?: "sm" | "md";
     /** Names the group for assistive tech when no visible heading is tied to it. */
     ariaLabel?: string;
+    /** The whole control is unavailable: shown dimmed, current choice still marked. */
+    disabled?: boolean;
   } = $props();
 </script>
 
-<div class="seg" data-size={size} role="radiogroup" aria-label={ariaLabel}>
+<div
+  class="seg"
+  class:dis={disabled}
+  data-size={size}
+  role="radiogroup"
+  aria-label={ariaLabel}
+  aria-disabled={disabled || undefined}
+>
   {#each options as opt (opt.value)}
     <button
       type="button"
@@ -34,6 +46,7 @@
       class:on={value === opt.value}
       role="radio"
       aria-checked={value === opt.value}
+      disabled={disabled || opt.disabled}
       onclick={() => onChange(opt.value)}>{opt.label}</button
     >
   {/each}
@@ -60,8 +73,21 @@
   .cell:last-child {
     border-right: none;
   }
-  .cell:hover {
+  .cell:hover:not(:disabled) {
     color: var(--color-text);
+  }
+  .cell:disabled {
+    cursor: default;
+  }
+  .cell:disabled:not(.on) {
+    opacity: 0.5;
+  }
+  .seg.dis {
+    opacity: 0.4;
+  }
+  /* The control's own dimming already says it; a cell must not dim twice. */
+  .seg.dis .cell:disabled {
+    opacity: 1;
   }
   .cell.on {
     background: color-mix(in srgb, var(--color-accent) 18%, transparent);
