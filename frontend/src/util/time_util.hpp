@@ -25,41 +25,63 @@ inline int64_t NowMs()
 		.count();
 }
 
-// Parse an RFC3339 / ISO-8601 UTC instant ("2024-01-02T03:04:05.678Z") into epoch
-// milliseconds, or nothing when it does not parse. MSVC UTC mktime (_mkgmtime).
+// Parse an RFC3339 / ISO-8601 instant ("2024-01-02T03:04:05.678Z", or with an offset:
+// "2024-01-02T08:34:05+05:30", "+0530") into epoch milliseconds, or nothing when it does not
+// parse. An offset is applied, so every form of one instant reads the same; a time with no
+// zone at all reads as UTC. MSVC UTC mktime (_mkgmtime).
 inline std::optional<int64_t> TryRfc3339ToEpochMs(const std::string &iso)
 {
-	int y = 0, mon = 0, d = 0, h = 0, mi = 0, s = 0;
-	if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mon, &d, &h, &mi, &s) == 6) {
-		std::tm tm{};
-		tm.tm_year = y - 1900;
-		tm.tm_mon = mon - 1;
-		tm.tm_mday = d;
-		tm.tm_hour = h;
-		tm.tm_min = mi;
-		tm.tm_sec = s;
-		const std::time_t epoch = _mkgmtime(&tm);
-		if (epoch != static_cast<std::time_t>(-1)) {
-			int64_t millis = 0;
-			// Optional fractional seconds after a '.': capture up to 3 digits.
-			const auto dot = iso.find('.');
-			if (dot != std::string::npos) {
-				std::string frac;
-				for (size_t i = dot + 1;
-				     i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) &&
-				     frac.size() < 3;
-				     ++i) {
-					frac.push_back(iso[i]);
-				}
-				while (frac.size() < 3) {
-					frac.push_back('0');
-				}
-				millis = std::stoll(frac);
-			}
-			return static_cast<int64_t>(epoch) * 1000 + millis;
+	int y = 0, mon = 0, d = 0, h = 0, mi = 0, s = 0, used = 0;
+	if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d%n", &y, &mon, &d, &h, &mi, &s, &used) != 6) {
+		return std::nullopt;
+	}
+	std::tm tm{};
+	tm.tm_year = y - 1900;
+	tm.tm_mon = mon - 1;
+	tm.tm_mday = d;
+	tm.tm_hour = h;
+	tm.tm_min = mi;
+	tm.tm_sec = s;
+	const std::time_t epoch = _mkgmtime(&tm);
+	if (epoch == static_cast<std::time_t>(-1)) {
+		return std::nullopt;
+	}
+	auto digit = [&iso](size_t i) {
+		return i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i]));
+	};
+	size_t i = static_cast<size_t>(used);
+	int64_t millis = 0;
+	// Optional fractional seconds: the first 3 digits count, the rest are skipped.
+	if (i < iso.size() && iso[i] == '.') {
+		int place = 100;
+		for (++i; digit(i); ++i) {
+			millis += place * (iso[i] - '0');
+			place /= 10;
 		}
 	}
-	return std::nullopt;
+	int64_t offsetMin = 0;
+	if (i < iso.size() && (iso[i] == '+' || iso[i] == '-')) {
+		const int sign = iso[i] == '-' ? -1 : 1;
+		// hh, then mm with or without a ':' between them.
+		if (!digit(i + 1) || !digit(i + 2)) {
+			return std::nullopt;
+		}
+		const int oh = (iso[i + 1] - '0') * 10 + (iso[i + 2] - '0');
+		size_t m = i + 3;
+		if (m < iso.size() && iso[m] == ':') {
+			++m;
+		}
+		int om = 0;
+		if (digit(m) && digit(m + 1)) {
+			om = (iso[m] - '0') * 10 + (iso[m + 1] - '0');
+		}
+		if (oh > 23 || om > 59) {
+			return std::nullopt;
+		}
+		offsetMin = sign * (oh * 60 + om);
+	}
+	// The clock reads local time at that offset, so UTC is that minus the offset.
+	return static_cast<int64_t>(epoch) * 1000 + millis - offsetMin * 60 * 1000;
 }
 
 // TryRfc3339ToEpochMs, falling back to the current wall clock on a parse failure so an
