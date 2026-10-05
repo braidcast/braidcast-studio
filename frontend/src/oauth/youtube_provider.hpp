@@ -258,7 +258,7 @@ public:
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err) override;
 	long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 				 const std::function<bool(std::string_view chunk)> &onChunk, std::string &errorBody,
-				 std::string &err) override;
+				 std::string &err, const std::function<bool()> &canceled = {}) override;
 
 private:
 	// YouTubeChat reaches back through this provider for SendAuthed (token coherence)

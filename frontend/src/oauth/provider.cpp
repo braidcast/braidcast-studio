@@ -547,7 +547,8 @@ bool StreamProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Htt
 
 long StreamProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 					 const std::function<bool(std::string_view chunk)> &onChunk,
-					 std::string &errorBody, std::string &err)
+					 std::string &errorBody, std::string &err,
+					 const std::function<bool()> &canceled)
 {
 	// Proactive refresh inside the skew window (best-effort, mirroring SendAuthed): if it
 	// fails the token may still be valid, so proceed and rely on the 401 path below.
@@ -557,7 +558,7 @@ long StreamProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 	Http::HttpReq attempt = req;
 	stampAuth(attempt, acct);
 	errorBody.clear();
-	long status = Http::HttpRequestStreaming(attempt, onChunk, errorBody, err);
+	long status = Http::HttpRequestStreaming(attempt, onChunk, errorBody, err, canceled);
 	if (status == 0) {
 		err = displayName() + " request failed: " + err;
 		return 0;
@@ -578,7 +579,7 @@ long StreamProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 	Http::HttpReq retry = req;
 	stampAuth(retry, acct);
 	errorBody.clear();
-	status = Http::HttpRequestStreaming(retry, onChunk, errorBody, err);
+	status = Http::HttpRequestStreaming(retry, onChunk, errorBody, err, canceled);
 	if (status == 0) {
 		err = displayName() + " request failed: " + err;
 		return 0;

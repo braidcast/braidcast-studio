@@ -49,9 +49,13 @@ HttpResponse HttpRequest(const HttpReq &req);
 // the whole transfer -- a streaming connection is meant to stay open -- while a stalled
 // (dead but not closed) connection is detected by a low-speed watchdog.
 //
+// `canceled`, when set, is polled about once a second whether or not bytes arrive, and a
+// true stops the transfer the same clean way an `onChunk` false does. Without it a cancel
+// is only seen at the next chunk, which on a silent stream is the watchdog's 90 s.
+//
 // Same thread-safety contract as HttpRequest: each call owns its own easy handle.
 long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::string_view chunk)> &onChunk,
-			  std::string &errorBody, std::string &error);
+			  std::string &errorBody, std::string &error, const std::function<bool()> &canceled = {});
 
 // Percent-encode a string for application/x-www-form-urlencoded bodies and
 // query parameters (RFC 3986 unreserved set kept literal).

@@ -425,9 +425,11 @@ public:
 	// otherwise the status with the body already streamed or captured. `req` is by value
 	// so the auth header is re-stamped cleanly on the retry (the bearer changes).
 	// Virtual for the same provider-wrap seam as SendAuthed.
+	// `canceled` is HttpRequestStreaming's: polled while the stream is idle too.
 	virtual long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 					 const std::function<bool(std::string_view chunk)> &onChunk,
-					 std::string &errorBody, std::string &err);
+					 std::string &errorBody, std::string &err,
+					 const std::function<bool()> &canceled = {});
 
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
 	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew

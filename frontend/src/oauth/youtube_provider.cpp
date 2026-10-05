@@ -544,7 +544,8 @@ bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Ht
 
 long YouTubeProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 					  const std::function<bool(std::string_view chunk)> &onChunk,
-					  std::string &errorBody, std::string &err)
+					  std::string &errorBody, std::string &err,
+					  const std::function<bool()> &canceled)
 {
 	if (QuotaExhausted()) {
 		errorBody.clear();
@@ -552,7 +553,8 @@ long YouTubeProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 		err = Err::User(msg, msg);
 		return 0;
 	}
-	const long status = StreamProvider::SendAuthedStreaming(acct, std::move(req), onChunk, errorBody, err);
+	const long status =
+		StreamProvider::SendAuthedStreaming(acct, std::move(req), onChunk, errorBody, err, canceled);
 	NoteIfQuotaError(status, errorBody);
 	return status;
 }

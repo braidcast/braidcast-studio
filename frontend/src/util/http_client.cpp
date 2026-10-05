@@ -44,8 +44,21 @@ struct StreamState {
 	CURL *curl = nullptr;
 	const std::function<bool(std::string_view)> *onChunk = nullptr;
 	std::string *errorBody = nullptr;
-	bool aborted = false; // onChunk requested cancellation
+	const std::function<bool()> *canceled = nullptr;
+	bool aborted = false; // onChunk or `canceled` requested cancellation
 };
+
+// libcurl's progress callback, which it also calls about once a second while the transfer
+// sits idle: the one place a cancel can land on a stream that is sending nothing.
+int StreamProgress(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
+{
+	auto *st = static_cast<StreamState *>(userdata);
+	if (st->canceled && *st->canceled && (*st->canceled)()) {
+		st->aborted = true;
+		return 1; // abort -> CURLE_ABORTED_BY_CALLBACK
+	}
+	return 0;
+}
 
 size_t WriteStreaming(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
@@ -153,7 +166,7 @@ HttpResponse HttpRequest(const HttpReq &req)
 }
 
 long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::string_view chunk)> &onChunk,
-			  std::string &errorBody, std::string &error)
+			  std::string &errorBody, std::string &error, const std::function<bool()> &canceled)
 {
 	EnsureGlobalInit();
 
@@ -173,6 +186,12 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteStreaming);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
+	if (canceled) {
+		st.canceled = &canceled;
+		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, StreamProgress);
+		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &st);
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+	}
 
 	// Connect timeout only -- the transfer is a long-lived push stream and must NOT be
 	// killed by a whole-request timeout. A connected-but-dead stream (no bytes for a long
@@ -187,10 +206,11 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
 
-	// A caller-driven cancel returns 0 from the write callback, surfacing as
-	// CURLE_WRITE_ERROR. That is a clean stop, not a transport failure: leave `error`
-	// empty and report whatever status was reached.
-	if (code != CURLE_OK && !(code == CURLE_WRITE_ERROR && st.aborted)) {
+	// A caller-driven cancel returns 0 from the write callback (CURLE_WRITE_ERROR) or 1
+	// from the progress callback (CURLE_ABORTED_BY_CALLBACK). Either is a clean stop, not
+	// a transport failure: leave `error` empty and report whatever status was reached.
+	const bool cleanStop = st.aborted && (code == CURLE_WRITE_ERROR || code == CURLE_ABORTED_BY_CALLBACK);
+	if (code != CURLE_OK && !cleanStop) {
 		error = curl_easy_strerror(code);
 	}
 

@@ -891,7 +891,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		std::string errorBody;
 		std::string reqErr;
 		const auto cycleStart = std::chrono::steady_clock::now();
-		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr);
+		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr, s.canceled);
 		// The quota preflight may hand back a {diagnostic, user message} envelope;
 		// unpack before this loop logs or emitState()s the string.
 		reqErr = Err::Diagnostic(reqErr);

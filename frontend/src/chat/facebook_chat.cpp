@@ -363,7 +363,7 @@ long RunLiveComments(CommentSession &s, int &delivered, std::string &errorBody, 
 	};
 
 	OAuth::OAuthAccount pageAcct = OAuth::PageAccount(s.owner.id(), s.pageToken);
-	const long status = s.owner.SendAuthedStreaming(pageAcct, req, onChunk, errorBody, reqErr);
+	const long status = s.owner.SendAuthedStreaming(pageAcct, req, onChunk, errorBody, reqErr, s.canceled);
 	delivered = frames;
 	if (overflow) {
 		reqErr = "the live-comment stream sent no event boundary within the frame buffer";
