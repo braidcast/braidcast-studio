@@ -30,6 +30,7 @@ import { EV } from "$lib/utils/eventNames";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
 
   type PaneMode = "simple" | "advanced" | "preview";
@@ -67,7 +68,22 @@ import { EV } from "$lib/utils/eventNames";
   let copiedId = $state<string | null>(null);
   let saving = $state(false);
   let dialog = $state<DialogSpec | null>(null);
-  let typeMenuOpen = $state(false);
+  // The "New overlay" type picker: the shared menu, so it closes on Escape, an outside
+  // click, scroll or resize, and takes the arrow keys, like every other menu here.
+  let typeMenu = $state<ContextMenuState | null>(null);
+
+  function openTypeMenu(e: MouseEvent): void {
+    if (typeMenu) {
+      typeMenu = null;
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    typeMenu = {
+      x: r.left,
+      y: r.bottom + 2,
+      items: WIDGET_TYPES.map((t) => ({ label: t.label, action: () => void create(t.type, t.name) })),
+    };
+  }
   // True while the local editor buffer has edits not yet flushed to the backend, so
   // an external overlays.changed refetch never clobbers in-flight typing.
   let dirty = $state(false);
@@ -366,7 +382,6 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function create(type: string, name: string): Promise<void> {
-    typeMenuOpen = false;
     error = null;
     try {
       const w = await obs.call("overlays.create", { name, type });
@@ -699,18 +714,11 @@ import { EV } from "$lib/utils/eventNames";
         <Button
           variant="dashed"
           aria-haspopup="menu"
-          aria-expanded={typeMenuOpen}
-          onclick={() => (typeMenuOpen = !typeMenuOpen)}
+          aria-expanded={typeMenu !== null}
+          onclick={openTypeMenu}
         >
           <Icon name="plus" size={12} /> New overlay
         </Button>
-        {#if typeMenuOpen}
-          <div class="typemenu" role="menu">
-            {#each WIDGET_TYPES as t (t.type)}
-              <button class="typeopt" role="menuitem" onclick={() => void create(t.type, t.name)}>{t.label}</button>
-            {/each}
-          </div>
-        {/if}
       </div>
     </nav>
 
@@ -837,6 +845,10 @@ import { EV } from "$lib/utils/eventNames";
   <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
 {/if}
 
+{#if typeMenu}
+  <ContextMenu {...typeMenu} onClose={() => (typeMenu = null)} />
+{/if}
+
 <style>
   .banner {
     flex: 0 0 auto;
@@ -950,32 +962,6 @@ import { EV } from "$lib/utils/eventNames";
   .addwrap > :global(button) {
     margin: 8px 12px 4px;
   }
-  .typemenu {
-    display: flex;
-    flex-direction: column;
-    margin: 0 12px;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-  }
-  .typeopt {
-    text-align: left;
-    padding: 8px 12px;
-    background: transparent;
-    border: 0;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-  }
-  .typeopt:last-child {
-    border-bottom: 0;
-  }
-  .typeopt:hover {
-    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-    color: var(--color-accent);
-  }
-
   .pane {
     flex: 1;
     min-width: 0;
