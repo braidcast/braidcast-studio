@@ -342,6 +342,9 @@ export interface GeneralSettings {
    * comes back as it is, and chat history then runs as 7 days that saves no new chat until
    * one of the three is chosen. */
   chatHistoryRetention: string;
+  /** The streamer's currency for Super Chat amounts (ISO 4217), or "" for automatic: the
+   * YouTube channel's country, else the Windows region. setGeneral refuses anything else. */
+  fxHomeCurrency: string;
   startMinimized: boolean;
   minimizeToTray: boolean;
   alwaysShowTray: boolean;
@@ -1553,9 +1556,32 @@ export type ChatFragment =
  * usually one emote fragment (the sticker image, code "[sticker]"). */
 export interface ChatPaid {
   kind: "superchat" | "supersticker" | "cheer";
+  /** What the platform shows for what was paid ("$5.00", "100 bits"). */
   amount: string;
+  /** Money only, together with `currency` and only when the host could read the figure:
+   * hundredths of `currency`'s major unit. What lib/utils/fx.ts converts. */
+  value?: number;
+  currency?: string;
   color?: string;
 }
+
+/** Exchange rates and the streamer's currency (fx.get, fx.changed, and each overlay's
+ * bootstrap): Fx::RateStore::Snapshot. lib/utils/fx.ts reads it. */
+export interface FxSnapshot {
+  /** The streamer's currency, "" when nothing names one the rates cover. */
+  home: string;
+  /** Where `home` came from: "setting", "youtube", "locale" or "none". */
+  homeSource: string;
+  /** The ECB reference date, "YYYY-MM-DD"; "" before any table was fetched. */
+  date: string;
+  /** When the table was fetched, epoch ms; 0 for none. */
+  fetchedAt: number;
+  /** True when the table is too old (or absent) to convert with. */
+  stale: boolean;
+  /** Units of each currency per 1 EUR, EUR itself at 1. Empty before any table. */
+  rates: Record<string, number>;
+}
+
 
 /** One normalized chat message (the `chat.message` event). `id` is the platform
  * message id (dedupe/list key); `ts` is epoch ms; `channelId` is the platform
@@ -2542,6 +2568,9 @@ export interface ObsMethods {
   "polls.end": { poll: LivePoll };
   "polls.list": { polls: LivePoll[] };
   "polls.dismiss": { ok: true };
+  // Exchange rates and the streamer's currency for Super Chat amounts (roadmap 9.6). Every
+  // change (a new day's rates, the currency setting) also emits fx.changed.
+  "fx.get": FxSnapshot;
   // Creator goals the destinations' chats are showing, in the order first seen. Read-only;
   // every change also emits goals.changed with the whole list.
   "goals.list": { goals: LiveGoal[] };
@@ -2703,6 +2732,7 @@ export interface ObsEvents {
   "settings.audioChanged": AudioSettings;
   // General app settings changed (any setGeneral apply); the full state is pushed.
   "settings.generalChanged": GeneralSettings;
+  "fx.changed": FxSnapshot;
   // Advanced app settings changed (any setAdvanced apply); the full state is pushed.
   "settings.advancedChanged": AdvancedSettings;
   "canvas.changed": Record<string, never>;

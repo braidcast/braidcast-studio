@@ -23,6 +23,7 @@ import { librarySoundId } from "../lib/overlays/soundLibrary";
 import { fillTemplate, fillTemplateParts } from "./fillTemplate";
 import { amountOf, MONEY_TYPES } from "./eventAmount";
 import { normalizeScopes, resolveAlertSettings, type ResolvedAlert } from "./alertScopes";
+import { fmtMoneyDual, type FxSnapshot } from "../lib/utils/fx";
 import { logOnce } from "./logOnce";
 import { animate, applyTextFx, playMs } from "./animation/engine";
 import { chatIdentity, moderationMatcher, type ChatIdentity } from "../lib/docks/multichat/chatModeration";
@@ -54,6 +55,10 @@ interface OverlayBootstrap {
    * template ships scopes.json, {events} alone for a fork, absent otherwise. Values are the
    * host's served copies, with uploads and library sounds already rewritten to URLs. */
   scopes?: unknown;
+  /** The exchange rates and the streamer's currency as of this load (roadmap 9.6): a Super
+   * Chat's amount reads in both currencies. Absent from an older build's document, which
+   * then shows the payer's amount alone. */
+  fx?: FxSnapshot;
 }
 
 /** A viewer-count cycle as a widget sees it: the host payload verbatim, plus the
@@ -527,12 +532,14 @@ function applyStyles(fields: Record<string, unknown>) {
   slotStyleEl.textContent = css;
 }
 
+// Money reads in the streamer's currency first when the rates allow ("≈₹4,180 ($50.00)"),
+// else as the payer's amount alone, exactly as the app's docks read it.
 function formatAmount(e: NormalizedEvent): string {
   const n = amountOf(e);
   if (n == null) {
     return "";
   }
-  return MONEY_TYPES.has(e.type) ? fmtMoney(n, e.currency) : fmtCount(n);
+  return MONEY_TYPES.has(e.type) ? fmtMoneyDual(n, e.currency, boot.fx) : fmtCount(n);
 }
 
 function formatAmountText(e: NormalizedEvent): string {
@@ -540,7 +547,7 @@ function formatAmountText(e: NormalizedEvent): string {
   if (n == null) {
     return "";
   }
-  return MONEY_TYPES.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
+  return MONEY_TYPES.has(e.type) ? fmtMoneyDual(n, e.currency, boot.fx) : fmtTally(e.type, n);
 }
 
 const alertScopes = normalizeScopes(boot.scopes);
@@ -584,7 +591,8 @@ const OBSOverlay = {
   formatMoney: fmtMoney,
   /** A whole count (bits, viewers, a running total), grouped per locale: 1000 -> "1,000". */
   formatCount: fmtCount,
-  /** An event's `amount` as its type means it: currency for a Super Chat or Sticker, a
+  /** An event's `amount` as its type means it: currency for a Super Chat or Sticker (the
+   * streamer's first and the payer's after, "≈₹4,180 ($50.00)", when the rates allow), a
    * grouped count for bits or raiders. Empty when the event carries no amount; a tally
    * type with none reads as zero, since the host omits a zero amount. */
   formatAmount,

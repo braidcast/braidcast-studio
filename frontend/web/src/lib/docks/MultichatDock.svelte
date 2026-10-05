@@ -2,6 +2,8 @@
   import { untrack } from "svelte";
   import { obs, type ChatFragment, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
+  import { fxStore } from "$lib/stores/fxStore.svelte";
+  import { paidAmountText } from "$lib/utils/fx";
   import Button from "$lib/ui/Button.svelte";
   import { PLATFORM_COLORS, platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
   import { HEX_COLOR_RE, readableTextColor } from "$lib/utils/hexColor";
@@ -92,6 +94,7 @@
     destinationIdentityStore.start();
     pollStore.start();
     goalStore.start();
+    fxStore.start();
     return transportHealthStore.subscribe();
   });
 
@@ -692,7 +695,7 @@
               {/if}
               {#if paid}
                 <span class="sr-only">{PAID_KIND_LABEL[paid.kind]}</span>
-                <span class="amount" style:color={chipTextColor}>{paid.amount}</span>
+                <span class="amount" style:color={chipTextColor}>{paidAmountText(paid, fxStore.snapshot)}</span>
               {/if}
               {#if m.deleted}
                 {#if m.retracted && m.retracted.length > 0}

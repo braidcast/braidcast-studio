@@ -15,6 +15,8 @@ import { EV } from "$lib/utils/eventNames";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
+  import { fxStore } from "$lib/stores/fxStore.svelte";
+  import { automaticLabel, currencyChoices, fxStatusText } from "./fxSettings";
   import Button from "$lib/ui/Button.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
@@ -48,6 +50,7 @@ import { EV } from "$lib/utils/eventNames";
     warnBeforeStop: false,
     scheduleRequireAllDestinations: false,
     chatHistoryRetention: "off",
+    fxHomeCurrency: "",
     startMinimized: false,
     minimizeToTray: false,
     alwaysShowTray: false,
@@ -105,6 +108,10 @@ import { EV } from "$lib/utils/eventNames";
   });
 
   // Optimistic local set, then reconcile from the echoed full state.
+  fxStore.start();
+  const FX_ID = "fx-home-currency";
+  const fxLine = $derived(fxStatusText(fxStore.snapshot));
+
   async function apply(patch: Partial<GeneralSettings>): Promise<void> {
     error = null;
     const current = guard.claim();
@@ -391,6 +398,24 @@ import { EV } from "$lib/utils/eventNames";
       </div>
     {/if}
     <p class="dim note">Deleting is best effort: deleted chat is overwritten in the history file, but the drive (an SSD especially) or the database journal can keep a copy for a while.</p>
+  </section>
+
+  <section class="group">
+    <h4>Super Chat amounts</h4>
+    <div class="field">
+      <label class="flabel" for={FX_ID}>Your currency</label>
+      <select id={FX_ID} value={s.fxHomeCurrency} onchange={(e) => void apply({ fxHomeCurrency: e.currentTarget.value })}>
+        <option value="">{automaticLabel(fxStore.snapshot, s.fxHomeCurrency)}</option>
+        {#each currencyChoices(fxStore.snapshot, s.fxHomeCurrency) as code (code)}
+          <option value={code}>{code}</option>
+        {/each}
+      </select>
+    </div>
+    <p class="dim note">
+      Super Chats show in your currency first and the viewer's after, in the chat and Events docks and on your
+      overlays. The figure is approximate: YouTube pays out after its own fees and conversion.
+    </p>
+    <p class="note status" class:dim={!fxLine.problem} class:warn={fxLine.problem} role="status">{fxLine.text}</p>
   </section>
 
   <section class="group">

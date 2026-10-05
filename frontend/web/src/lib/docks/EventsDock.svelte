@@ -2,7 +2,9 @@
   import { untrack } from "svelte";
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
-  import { fmtMoney, fmtTally } from "$lib/utils/format";
+  import { fmtTally } from "$lib/utils/format";
+  import { fmtMoneyDual } from "$lib/utils/fx";
+  import { fxStore } from "$lib/stores/fxStore.svelte";
   import Button from "$lib/ui/Button.svelte";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
   import { followVerb, eventTypeLabel } from "$lib/docks/events/eventWording";
@@ -62,12 +64,17 @@
     },
     cheer: (e) => `cheered ${fmtTally("cheer", e.amount ?? 0)}`,
     raid: (e) => `raided with ${fmtTally("raid", e.amount ?? 0)}`,
-    superchat: (e) => "Super Chat" + (e.amount != null ? ` ${fmtMoney(e.amount, e.currency)}` : ""),
-    supersticker: (e) => "Super Sticker" + (e.amount != null ? ` ${fmtMoney(e.amount, e.currency)}` : ""),
+    // The streamer's currency first when the rates allow it (fxStore), else the payer's alone.
+    superchat: (e) =>
+      "Super Chat" + (e.amount != null ? ` ${fmtMoneyDual(e.amount, e.currency, fxStore.snapshot)}` : ""),
+    supersticker: (e) =>
+      "Super Sticker" + (e.amount != null ? ` ${fmtMoneyDual(e.amount, e.currency, fxStore.snapshot)}` : ""),
     member: (e) =>
       e.months ? `member · ${e.months} months` : e.tier ? `became a member · ${e.tier}` : "became a member",
     kicks: (e) => `sent ${fmtTally("kicks", e.amount ?? 0)}` + (e.tier ? ` · ${e.tier}` : ""),
   };
+
+  fxStore.start();
 
   function summary(e: NormalizedEvent): string {
     const fn = SUMMARY[e.type];
