@@ -132,7 +132,7 @@ private:
 	// same order; the overlay sends complete before the lock is released.
 	//
 	// Lock order: admitMutex_, then RecentRemovals::mutex_, EventStore::mutex_ or
-	// EventStore::writeMutex_ (one at a time; each is released before the next is taken), then
+	// EventStore's writer (OrderedStoreSave) (one at a time; each is released before the next is taken), then
 	// the overlay's BroadcastTally mutex and its save, then OverlayServer::sseMutex_ and, for
 	// Replay's widget filter, the overlay widget store's mutex, then each SSE socket's send
 	// mutex in turn, then the log. Nothing reached under it calls back into EventHub: the event

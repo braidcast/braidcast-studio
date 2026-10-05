@@ -15,6 +15,7 @@
 
 #include "event_model.hpp"
 #include "../chat/feed_query.hpp"
+#include "../multistream/StorePaths.hpp" // OrderedStoreSave
 #include "../util/time_util.hpp"
 
 // The persisted, de-duplicated event history (Phase 9.2a). A single global file
@@ -142,21 +143,22 @@ private:
 
 	// Serialize events_ into the on-disk shape. Caller must hold mutex_.
 	json BuildJsonLocked() const;
-	// Open a new write epoch after a change that must reach disk now (a clear, a removal, a
-	// redaction) and snapshot it: an in-flight snapshot from before it can then never be
-	// written after it. Caller must hold mutex_, then Persist the result with it released.
-	json NewEpochSnapshotLocked(uint64_t &writeSeq);
-	// Write a prebuilt snapshot to disk. Does its own file I/O with NO deque lock held
-	// (serialized against other writers by writeMutex_), so a write never blocks Add's
-	// deque access -- the point of the debounce. `seq` is the epoch the snapshot was
-	// captured at; a snapshot older than the last one written is dropped (see below).
+	// Open a new page epoch after a change that must reach disk now (a clear, a removal, a
+	// redaction) and snapshot it, stamped by writer_: an in-flight snapshot from before it can
+	// then never be written after it. Caller must hold mutex_, then Persist the result with it
+	// released.
+	json NewEpochSnapshotLocked(uint64_t &stamp);
+	// Write a prebuilt snapshot to disk through writer_. Does its own file I/O with NO deque
+	// lock held, so a write never blocks Add's deque access -- the point of the debounce.
+	// `stamp` is writer_'s stamp for the snapshot, taken under mutex_; a snapshot older than
+	// the last one written is dropped.
 	// Every write replaces events.json.bak with the new state (SaveJsonAtomicDroppingHistory),
 	// and Load clears what a crash or a locked backup left (DropStoreHistory), so a removed
 	// event or removed text cannot come back from the backup Load falls back to. False when
 	// the new state is not in events.json.
-	bool WriteToDisk(const json &root, uint64_t seq) const;
+	bool WriteToDisk(const json &root, uint64_t stamp);
 	// WriteToDisk, marking the store dirty again when it failed so Flush retries it.
-	void Persist(const json &root, uint64_t seq);
+	void Persist(const json &root, uint64_t stamp);
 
 	// Coalesce disk writes to at most one per this interval; bursts of events (a raid,
 	// a sub train) then cost a single write instead of one rewrite per event.
@@ -168,20 +170,18 @@ private:
 	bool dirty_ = false;                  // unpersisted change pending (guarded by mutex_)
 	uint64_t lastSaveNs_ = 0;             // last WriteToDisk time (guarded by mutex_)
 
-	// Monotonic write-epoch counter, bumped by Clear() and by every removal (content
-	// discontinuities) under mutex_. Add/Clear/Flush capture its value with their snapshot; WriteToDisk drops any
-	// snapshot older than the last written epoch, so a stale in-flight Add that built its
-	// snapshot before a Clear can't win writeMutex_ afterward and resurrect the wiped feed.
-	// It is also the epoch a Page reports, which is how a dock tells a pre-Clear page apart.
+	// Page epoch, bumped by Clear() and by every removal (content discontinuities) under
+	// mutex_. It is the epoch a Page reports, which is how a dock tells a pre-Clear page apart.
+	// Write ordering is writer_'s, which stamps every snapshot, not only these.
 	uint64_t seq_ = 0; // guarded by mutex_
 
 	const bool persist_ = true; // false: never read or write events.json (InMemory)
 	const std::string path_;    // the file this store reads and writes (empty when InMemory)
 
-	mutable std::mutex writeMutex_; // serializes WriteToDisk; never held with mutex_
-	// Highest epoch written to disk. Guarded by writeMutex_ ONLY (never mutex_), so the
-	// "never hold mutex_ and writeMutex_ together" rule is preserved.
-	mutable uint64_t lastWrittenSeq_ = 0;
+	// Orders and performs every write: stamps are taken under mutex_, and its own write
+	// mutex is never held with mutex_. Drop history: a removed event or its removed text must
+	// not survive in events.json.bak.
+	OrderedStoreSave writer_{SaveHistory::Drop};
 };
 
 } // namespace Events

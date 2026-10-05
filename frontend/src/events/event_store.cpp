@@ -60,7 +60,7 @@ bool EventStore::Add(const NormalizedEvent &ev)
 {
 	json snapshot;
 	bool doWrite = false;
-	uint64_t writeSeq = 0;
+	uint64_t stamp = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (ev.id.empty()) {
@@ -84,14 +84,14 @@ bool EventStore::Add(const NormalizedEvent &ev)
 		const uint64_t now = os_gettime_ns();
 		if (lastSaveNs_ == 0 || now - lastSaveNs_ >= kSaveIntervalNs) {
 			snapshot = BuildJsonLocked();
-			writeSeq = seq_; // stamp the snapshot with the current epoch
+			stamp = writer_.Stamp();
 			lastSaveNs_ = now;
 			dirty_ = false;
 			doWrite = true;
 		}
 	}
 	if (doWrite) {
-		Persist(snapshot, writeSeq);
+		Persist(snapshot, stamp);
 	}
 	return true;
 }
@@ -184,21 +184,23 @@ EventPage EventStore::Page(const std::optional<EventCursor> &before, size_t limi
 uint64_t EventStore::Clear()
 {
 	json snapshot;
-	uint64_t writeSeq = 0;
+	uint64_t stamp = 0;
+	uint64_t epoch = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		events_.clear();
 		ids_.clear();
-		snapshot = NewEpochSnapshotLocked(writeSeq); // empty feed
+		snapshot = NewEpochSnapshotLocked(stamp); // empty feed
+		epoch = seq_;
 	}
-	Persist(snapshot, writeSeq);
-	return writeSeq;
+	Persist(snapshot, stamp);
+	return epoch;
 }
 
 template<typename Pred> size_t EventStore::RemoveIf(Pred drop)
 {
 	json snapshot;
-	uint64_t writeSeq = 0;
+	uint64_t stamp = 0;
 	size_t removed = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -212,9 +214,9 @@ template<typename Pred> size_t EventStore::RemoveIf(Pred drop)
 			return 0;
 		}
 		events_.erase(std::remove_if(events_.begin(), events_.end(), drop), events_.end());
-		snapshot = NewEpochSnapshotLocked(writeSeq);
+		snapshot = NewEpochSnapshotLocked(stamp);
 	}
-	Persist(snapshot, writeSeq);
+	Persist(snapshot, stamp);
 	return removed;
 }
 
@@ -223,7 +225,7 @@ std::vector<NormalizedEvent> EventStore::RedactMessages(const std::function<bool
 {
 	std::vector<NormalizedEvent> changed;
 	json snapshot;
-	uint64_t writeSeq = 0;
+	uint64_t stamp = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (NormalizedEvent &ev : events_) {
@@ -237,9 +239,9 @@ std::vector<NormalizedEvent> EventStore::RedactMessages(const std::function<bool
 		if (changed.empty()) {
 			return changed;
 		}
-		snapshot = NewEpochSnapshotLocked(writeSeq);
+		snapshot = NewEpochSnapshotLocked(stamp);
 	}
-	Persist(snapshot, writeSeq);
+	Persist(snapshot, stamp);
 	return changed;
 }
 
@@ -275,18 +277,18 @@ size_t EventStore::PruneExpired()
 void EventStore::Flush()
 {
 	json snapshot;
-	uint64_t writeSeq = 0;
+	uint64_t stamp = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (!dirty_) {
 			return;
 		}
 		snapshot = BuildJsonLocked();
-		writeSeq = seq_; // stamp with the current epoch
+		stamp = writer_.Stamp();
 		dirty_ = false;
 		lastSaveNs_ = os_gettime_ns();
 	}
-	Persist(snapshot, writeSeq);
+	Persist(snapshot, stamp);
 }
 
 void EventStore::Load()
@@ -325,9 +327,10 @@ void EventStore::Load()
 	}
 }
 
-json EventStore::NewEpochSnapshotLocked(uint64_t &writeSeq)
+json EventStore::NewEpochSnapshotLocked(uint64_t &stamp)
 {
-	writeSeq = ++seq_;
+	++seq_;
+	stamp = writer_.Stamp();
 	dirty_ = false;
 	lastSaveNs_ = os_gettime_ns();
 	return BuildJsonLocked();
@@ -342,9 +345,9 @@ json EventStore::BuildJsonLocked() const
 	return json{{"events", std::move(arr)}};
 }
 
-void EventStore::Persist(const json &root, uint64_t seq)
+void EventStore::Persist(const json &root, uint64_t stamp)
 {
-	if (WriteToDisk(root, seq)) {
+	if (WriteToDisk(root, stamp)) {
 		return;
 	}
 	// Not on disk: the shutdown Flush, or the next write, tries again. Until then the file
@@ -353,27 +356,19 @@ void EventStore::Persist(const json &root, uint64_t seq)
 	dirty_ = true;
 }
 
-bool EventStore::WriteToDisk(const json &root, uint64_t seq) const
+bool EventStore::WriteToDisk(const json &root, uint64_t stamp)
 {
-	// Serialize concurrent writers (Add vs. Flush vs. Clear) so two passes can't
-	// interleave on the shared tmp path; mutex_ is NOT held here, so the deque stays
-	// writable during the (slow) file I/O.
 	if (!persist_) {
 		return true;
 	}
-	std::lock_guard<std::mutex> wlock(writeMutex_);
-	// Drop a snapshot a later epoch already superseded: a stale in-flight Add that built
-	// its snapshot before a Clear must not win writeMutex_ after Clear and resurrect the
-	// wiped feed. Equal seq is allowed (same epoch -- e.g. a post-Clear Add persisting
-	// genuinely new events, or the initial epoch 0).
-	if (seq < lastWrittenSeq_) {
-		return true;
-	}
-	lastWrittenSeq_ = seq;
-	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-	// Every write, not only the removals: a removal's own write would otherwise rotate the
-	// file it replaces, removed content included, into the backup Load falls back to.
-	return ReportSaveResult(SaveJsonAtomicDroppingHistory(data, path_), path_);
+	// The shared ordered writer serializes concurrent writers (Add vs. Flush vs. Clear) on
+	// the shared tmp path with mutex_ NOT held, so the deque stays writable during the slow
+	// file I/O, and it drops a snapshot older than one already written: a stale in-flight Add
+	// that built its snapshot before a Clear can never land after it and resurrect the wiped
+	// feed. Drop history on every write, not only the removals: a removal's own write would
+	// otherwise rotate the file it replaces, removed content included, into the backup Load
+	// falls back to.
+	return writer_.Write(root, path_, stamp);
 }
 
 } // namespace Events
