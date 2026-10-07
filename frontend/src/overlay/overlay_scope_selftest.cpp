@@ -367,9 +367,12 @@ bool ServedDataStep()
 	const Overlay::Widget stored = w;
 
 	const Overlay::ServedData served = Overlay::BuildServedData(w, resolved);
-	const std::string chime = "/lib/" + Overlay::LibraryFileFor("chime-01").value_or("?");
+	// A build without the sound pack lists no ids, so the library sound is left as stored and
+	// not preloaded.
+	const std::optional<std::string> chimeFile = Overlay::LibraryFileFor("chime-01");
+	const std::string chime = chimeFile ? "/lib/" + *chimeFile : "library:chime-01";
 	const std::string upload = "/w/served/assets/v_ab12-sound.ogg?t=tok&r=7";
-	const json expectedSounds = json::array({chime, upload});
+	const json expectedSounds = chimeFile ? json::array({chime, upload}) : json::array({upload});
 	const bool fieldsOk = served.fields.value("sound", std::string()) == chime &&
 			      served.fields.value("burstWindow", 0.0) == 1.5;
 	const json &scopes = served.scopes;
