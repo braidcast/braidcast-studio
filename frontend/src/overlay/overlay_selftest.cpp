@@ -63,29 +63,16 @@ bool WriteAll(SOCKET s, const std::string &data)
 }
 
 // Read the whole response (server sends Content-Length + Connection: close).
-std::string RecvUntilClose(SOCKET s)
+std::string RecvUntilClose(SOCKET s, int *recvError = nullptr)
 {
 	std::string out;
 	char buf[2048];
 	while (true) {
 		const int n = recv(s, buf, sizeof(buf), 0);
 		if (n <= 0) {
-			break;
-		}
-		out.append(buf, (size_t)n);
-	}
-	return out;
-}
-
-// Read only up to (and including) the header terminator; leftover bytes returned via
-// `out` so a following SSE frame recv can continue where this stopped.
-std::string RecvHeaders(SOCKET s)
-{
-	std::string out;
-	char buf[512];
-	while (out.find("\r\n\r\n") == std::string::npos) {
-		const int n = recv(s, buf, sizeof(buf), 0);
-		if (n <= 0) {
+			if (n == SOCKET_ERROR && recvError) {
+				*recvError = WSAGetLastError();
+			}
 			break;
 		}
 		out.append(buf, (size_t)n);
@@ -105,6 +92,89 @@ int StatusOf(const std::string &resp)
 	} catch (...) {
 		return 0;
 	}
+}
+
+// Declared Content-Length of a response, if its header block names one.
+std::optional<size_t> ContentLengthOf(const std::string &resp)
+{
+	const size_t head = resp.find("\r\n\r\n");
+	const size_t at = resp.find("\r\nContent-Length: ");
+	if (head == std::string::npos || at == std::string::npos || at > head) {
+		return std::nullopt;
+	}
+	try {
+		return (size_t)std::stoull(resp.substr(at + 18, head - at - 18));
+	} catch (...) {
+		return std::nullopt;
+	}
+}
+
+// One request/response on a fresh connection. `complete` is false when the header never ended or the body's
+// length differs from the declared Content-Length; a 304 counts as complete whatever it carries, since the
+// caller's own check judges a 304 that has a body. `transportFailed` marks a dial or send failure, which is
+// not a cut-short response and is never retried.
+struct FetchResult {
+	std::string resp;
+	bool complete = false;
+	bool transportFailed = false;
+	std::optional<size_t> expected; // declared Content-Length
+	size_t got = 0;                 // body bytes received
+	int recvError = 0;
+};
+
+FetchResult FetchOnce(int port, const std::string &request)
+{
+	FetchResult r;
+	SOCKET c = DialLoopback(port);
+	if (c == INVALID_SOCKET) {
+		r.transportFailed = true;
+		return r;
+	}
+	const DWORD timeoutMs = 3000;
+	setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeoutMs, sizeof(timeoutMs));
+	if (WriteAll(c, request)) {
+		r.resp = RecvUntilClose(c, &r.recvError);
+	} else {
+		r.transportFailed = true;
+	}
+	closesocket(c);
+	const size_t head = r.resp.find("\r\n\r\n");
+	if (head == std::string::npos) {
+		return r;
+	}
+	r.expected = ContentLengthOf(r.resp);
+	r.got = r.resp.size() - (head + 4);
+	r.complete = !r.expected || StatusOf(r.resp) == 304 || r.got == *r.expected;
+	return r;
+}
+
+// Loopback can drop a tail segment on some machines; a cut-short response gets one retry.
+FetchResult FetchWhole(int port, const std::string &request, const char *what)
+{
+	FetchResult r = FetchOnce(port, request);
+	if (r.complete || r.transportFailed) {
+		return r;
+	}
+	HostLog(std::string("[selftest] overlay ") + what + ": loopback response cut short (" + std::to_string(r.got) +
+		" of " + (r.expected ? std::to_string(*r.expected) : std::string("?")) + " body bytes, recv error " +
+		std::to_string(r.recvError) + "); retrying once");
+	return FetchOnce(port, request);
+}
+
+// Read only up to (and including) the header terminator; leftover bytes returned via
+// `out` so a following SSE frame recv can continue where this stopped.
+std::string RecvHeaders(SOCKET s)
+{
+	std::string out;
+	char buf[512];
+	while (out.find("\r\n\r\n") == std::string::npos) {
+		const int n = recv(s, buf, sizeof(buf), 0);
+		if (n <= 0) {
+			break;
+		}
+		out.append(buf, (size_t)n);
+	}
+	return out;
 }
 
 // Does `acc` hold a complete SSE frame named `eventName` whose data line contains
@@ -560,34 +630,27 @@ void ObsBootstrap::RunOverlaySelfTest()
 	{
 		std::string etag;
 		size_t bodyLen = 0;
-		SOCKET c = DialLoopback(port);
-		if (c != INVALID_SOCKET) {
-			WriteAll(c, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
-			const std::string resp = RecvUntilClose(c);
-			closesocket(c);
-			const size_t tagAt = resp.find("ETag: ");
-			const size_t tagEnd = tagAt == std::string::npos ? std::string::npos : resp.find("\r\n", tagAt);
-			const size_t head = resp.find("\r\n\r\n");
-			if (StatusOf(resp) == 200 && tagEnd != std::string::npos && head != std::string::npos &&
-			    resp.find("Cache-Control: private, max-age=") != std::string::npos) {
-				etag = resp.substr(tagAt + 6, tagEnd - tagAt - 6);
-				bodyLen = resp.size() - (head + 4);
-			}
+		const FetchResult first = FetchWhole(
+			port, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n", "runtime caching");
+		const std::string &resp = first.resp;
+		const size_t tagAt = resp.find("ETag: ");
+		const size_t tagEnd = tagAt == std::string::npos ? std::string::npos : resp.find("\r\n", tagAt);
+		if (StatusOf(resp) == 200 && tagEnd != std::string::npos &&
+		    resp.find("\r\n\r\n") != std::string::npos &&
+		    resp.find("Cache-Control: private, max-age=") != std::string::npos) {
+			etag = resp.substr(tagAt + 6, tagEnd - tagAt - 6);
+			bodyLen = first.got;
 		}
 		if (!etag.empty() && bodyLen > 0) {
-			SOCKET c2 = DialLoopback(port);
-			if (c2 != INVALID_SOCKET) {
-				WriteAll(c2, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n"
-					     "If-None-Match: " +
-						     etag + "\r\n\r\n");
-				const std::string again = RecvUntilClose(c2);
-				closesocket(c2);
-				const size_t head2 = again.find("\r\n\r\n");
-				cacheOk = StatusOf(again) == 304 && head2 != std::string::npos &&
-					  again.size() == head2 + 4 &&
-					  again.find("Content-Length: " + std::to_string(bodyLen) + "\r\n") !=
-						  std::string::npos;
-			}
+			const FetchResult again = FetchWhole(port,
+							     "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n"
+							     "If-None-Match: " +
+								     etag + "\r\n\r\n",
+							     "runtime caching");
+			cacheOk = StatusOf(again.resp) == 304 && again.resp.find("\r\n\r\n") != std::string::npos &&
+				  again.got == 0 &&
+				  again.resp.find("Content-Length: " + std::to_string(bodyLen) + "\r\n") !=
+					  std::string::npos;
 		}
 	}
 	HostLog(std::string("[selftest] overlay runtime caching -> ") + (cacheOk ? "OK" : "MISMATCH"));
@@ -598,20 +661,15 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// with a cached old runtime.
 	bool versionOk = false;
 	{
-		SOCKET c = DialLoopback(port);
-		if (c != INVALID_SOCKET) {
-			WriteAll(c, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
-			const std::string resp = RecvUntilClose(c);
-			closesocket(c);
-			const size_t tagAt = resp.find("ETag: \"");
-			const size_t tagEnd = tagAt == std::string::npos ? std::string::npos
-									 : resp.find("\"\r\n", tagAt + 7);
-			if (StatusOf(resp) == 200 && tagEnd != std::string::npos) {
-				const std::string hash = resp.substr(tagAt + 7, tagEnd - tagAt - 7);
-				versionOk = !hash.empty() &&
-					    docResp.find("src=\"/runtime.js?t=selftesttoken&v=" + hash + "\"") !=
-						    std::string::npos;
-			}
+		const FetchResult r = FetchWhole(port, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n",
+						 "runtime version");
+		const std::string &resp = r.resp;
+		const size_t tagAt = resp.find("ETag: \"");
+		const size_t tagEnd = tagAt == std::string::npos ? std::string::npos : resp.find("\"\r\n", tagAt + 7);
+		if (StatusOf(resp) == 200 && tagEnd != std::string::npos && r.complete && r.expected) {
+			const std::string hash = resp.substr(tagAt + 7, tagEnd - tagAt - 7);
+			versionOk = !hash.empty() && docResp.find("src=\"/runtime.js?t=selftesttoken&v=" + hash +
+								  "\"") != std::string::npos;
 		}
 	}
 	HostLog(std::string("[selftest] overlay runtime version -> ") + (versionOk ? "OK" : "MISMATCH"));
