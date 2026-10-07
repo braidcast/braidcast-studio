@@ -52,8 +52,10 @@ public:
 	// the store's persisted port; returns the actually-bound port via *boundPort.
 	bool StartForTest(int port, int *boundPort);
 
-	// Close the listen socket + every SSE socket (unblocking their recv loops), then
-	// join all connection threads. Called from Bridge::Shutdown before CEF teardown.
+	// Stop the fan-out taking frames, close the listen socket, shut down every client socket
+	// (unblocking their recv loops and any send in flight), then join the fan-out -- frames
+	// still queued are counted, not sent, and resolve to 0 -- flush the tally, and join all
+	// connection threads. Called from Bridge::Shutdown before CEF teardown.
 	void Stop();
 
 	bool IsListening() const { return running_.load(); }
@@ -67,10 +69,11 @@ public:
 	// and frames queued in an order on one thread (a removal's frames after the events they
 	// reach, a stream end before the event that fences it) reach every socket in that order.
 	// The calls that return a count wait for their own frame to be sent, so they must not be
-	// made under a lock a producer needs.
+	// made under a lock the fan-out thread needs to send: sseMutex_, any socket's send mutex,
+	// the widget store's mutex, the tally's, clientsMutex_ or the log.
 
 	// Push a live NormalizedEvent (the EventHub::Ingest sink) to EVERY open widget socket.
-	// The broadcast tally counts it here, as it is queued.
+	// The broadcast tally counts it on the fan-out thread, right before its frame is sent.
 	void Broadcast(const Events::NormalizedEvent &ev);
 	// Push a stored event again (events.replay -- never counted) to the sockets of widgets
 	// whose TYPE accepts a replay (Overlay::AcceptsReplay). Resolves, once it is sent, to how
@@ -129,7 +132,10 @@ public:
 
 	// Self-tests only: called on a connecting SSE socket's thread right after it registers,
 	// while it still holds the socket's send mutex and has read nothing it replays -- the
-	// moment a broadcast racing the connect is decided. Null clears it.
+	// moment a broadcast racing the connect is decided. Null clears it. The fan-out's next
+	// frame to that widget waits for that send mutex, and every later frame waits behind it,
+	// so the observer must not wait for a send (BroadcastTo, SendTestFrame, Replay's future,
+	// DrainForTest); queueing one (Broadcast) is fine.
 	void SetRegisteredObserverForTest(std::function<void(const std::string &widgetId)> observer);
 	// Self-tests only: return once every frame queued before the call has been sent, for a
 	// step that needs a broadcast to be out before it connects.
@@ -150,49 +156,68 @@ private:
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only, or (with widgetFilter set) to only the widgets it
 	// answers true for -- events.replay's per-type gate; the two selectors are never
-	// combined by a real caller. The single snapshot-under-lock / send-unlocked
-	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/
-	// BroadcastChannelStats/BroadcastStreamState/BroadcastTo/SendTestFrame, so sseMutex_ is
-	// never held across the bounded-blocking sends -- nor across widgetFilter, which reads
-	// the widget store and would otherwise put every SSE channel behind an overlay save.
+	// combined by a real caller. With keepAs set the frame also becomes that state channel's
+	// replay copy (replayFrames_), written in the same sseMutex_ section that snapshots the
+	// sockets, so a connecting page gets the frame exactly once: from its replay if it
+	// registered before that section, live if after. The single snapshot-under-lock /
+	// send-unlocked implementation every frame goes through, so sseMutex_ is never held
+	// across the bounded-blocking sends -- nor across widgetFilter, which reads the widget
+	// store, so a connection registering or tearing down never waits on an overlay save.
+	// The fan-out itself does: a save holds the store's mutex across its disk write, which
+	// delays this frame, and every frame queued behind it, by up to that write's length.
 	// Returns how many WIDGETS took the frame (a widget with two open sockets counts once).
 	// Runs on the fan-out thread only (FanoutLoop); everything else queues (Enqueue).
 	size_t BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr,
-			      bool (*widgetFilter)(const std::string &) = nullptr);
+			      bool (*widgetFilter)(const std::string &) = nullptr, const std::string *keepAs = nullptr);
 
-	// One queued frame and who it goes to (BroadcastFrame's selectors). `onSent` runs on the
-	// fan-out thread with the count once it is sent; `delivered` is set then too, for a
-	// caller that waits on it.
+	// One queued frame, who it goes to and what is recorded as it goes (BroadcastFrame's
+	// parameters). `beforeSend` runs on the fan-out thread right before the frame is sent, so
+	// what it records happens in send order: the tally's count of a live event, a stream
+	// frame's move of the tally's window. It runs even when the frame is never sent -- a
+	// frame left queued at Stop has it run by JoinFanout -- and a failure in it does not stop
+	// the send. `onSent` runs on the fan-out thread with the count once it is sent;
+	// `delivered` is set then too, for a caller that waits on it.
 	struct FrameJob {
 		std::string frame;
 		std::optional<std::string> onlyWidgetId;
 		bool (*widgetFilter)(const std::string &) = nullptr;
+		std::string keepAs; // a state channel's name, or empty
+		std::function<void()> beforeSend;
 		std::function<void(size_t delivered)> onSent;
 		std::shared_ptr<std::promise<size_t>> delivered;
 	};
-	// Queue `job` for the fan-out thread. With `wantCount` the returned future resolves to
-	// the delivered count; without it the future is empty. A frame queued while the server
-	// is not running resolves to 0 at once, as BroadcastFrame would with no sockets.
+	// Queue `job` for the fan-out thread. Every frame is queued, however long the queue: a
+	// socket that stalls costs one SO_SNDTIMEO and is dropped, after which the queue drains,
+	// and a dropped frame could be one a page's state rests on -- a removal, a stream end, a
+	// tally, an event the tally counts. With `wantCount` the returned future resolves to the
+	// delivered count; without it the future is empty. A job queued while the fan-out is not
+	// running is dropped whole (its beforeSend and keepAs never run) and resolves to 0 at
+	// once, as BroadcastFrame would with no sockets.
 	std::future<size_t> Enqueue(FrameJob job, bool wantCount = false);
 	void FanoutLoop();
 	void StartFanout();
-	// Stops the fan-out thread after the frame it is sending; frames still queued resolve to 0.
-	void StopFanout();
-	// How many frames may wait at once. Far past anything a healthy server holds: a socket
-	// that stalls costs one SO_SNDTIMEO and is dropped, after which the queue drains. Past it
-	// a frame nobody waits on is dropped (logged once per backlog) rather than letting a
-	// wedged consumer grow memory without bound; a counted frame is never dropped.
-	static constexpr size_t kMaxQueuedFrames = 8192;
-	std::mutex fanoutMutex_; // guards the four below; a leaf, never held across a send
+	// Tells the fan-out thread to stop after the frame it is sending; nothing queued from
+	// then on is sent.
+	void SignalFanoutStop();
+	// Joins the fan-out thread (SignalFanoutStop first). Frames still queued are not sent, but
+	// their beforeSend runs here, in queue order, so the tally counts every event queued
+	// before the stop; then they resolve to 0.
+	void JoinFanout();
+	// A queue this deep is logged once, and again only after it has drained below half: a
+	// reader that takes each frame just inside SO_SNDTIMEO is never dropped, but it holds up
+	// every widget behind it, and the depth is the only trace of that. Nothing is dropped.
+	static constexpr size_t kFanoutBacklogLogDepth = 1024;
+	// Guards fanoutQueue_, fanoutRunning_ and fanoutBacklogLogged_; a leaf, never held across a send.
+	std::mutex fanoutMutex_;
 	std::condition_variable fanoutCv_;
 	std::deque<FrameJob> fanoutQueue_;
 	bool fanoutRunning_ = false;
-	bool fanoutOverflowLogged_ = false;
-	std::thread fanoutThread_;
-	// BroadcastFrame for a channel whose latest frame is also KEPT for replay on
-	// connect, keyed by eventName. The one place a replayable frame is built and
-	// stored, so a second such channel cannot drift from the first.
-	void BroadcastStateFrame(const char *eventName, const nlohmann::json &body);
+	bool fanoutBacklogLogged_ = false;
+	std::thread fanoutThread_; // started under fanoutMutex_ (StartFanout), joined by JoinFanout
+	// The job for a channel whose latest frame is also KEPT for replay on connect, keyed by
+	// eventName. The one place a replayable frame is built, so a second such channel cannot
+	// drift from the first; the fan-out stores it as it sends it (BroadcastFrame's keepAs).
+	static FrameJob StateFrameJob(const char *eventName, const nlohmann::json &body);
 	// Owns the socket for its lifetime. `tally`: the widget counts events, so it is sent the
 	// `tally` frame on connect (Overlay::CountsEvents, decided by the caller, which already
 	// holds the widget). Registers the socket BEFORE reading anything it replays, holding the
@@ -242,7 +267,8 @@ private:
 	std::set<uintptr_t> deferredCloseSse_;
 
 	// eventName -> that channel's last frame, replayed to a newly connected SSE client so
-	// a widget does not wait out the interval to the next one. Guarded by sseMutex_ but
+	// a widget does not wait out the interval to the next one. Written only by the fan-out
+	// thread, as it sends the frame (BroadcastFrame's keepAs); guarded by sseMutex_ but
 	// never sent while holding it. Only channels carrying STATE belong here: `channels`
 	// (a ~15 minute poll cadence) and `stream` (changes only at a transition, which may
 	// be hours away). Chat and viewers are deliberately absent -- see RunSse.
@@ -250,8 +276,12 @@ private:
 
 	// The current or most recent broadcast's event totals and its latched window. Its open
 	// window also bounds the `backfill` frame. In memory until Start opens its file, so a
-	// self-test server never touches the user's. Its own mutex is a leaf: the only server lock
-	// it is taken under is a connecting socket's send mutex (RunSse), and nothing waits on
+	// self-test server never touches the user's. Counted into and its window moved only on the
+	// fan-out thread, each right before the frame it belongs to is sent (Broadcast,
+	// BroadcastStreamState) -- or, for a frame still queued at Stop, on the stopping thread
+	// once the fan-out is joined (JoinFanout) -- so its counts follow queue order; a save
+	// it makes there delays the fan-out by that write. Its own mutex is a leaf: the only server
+	// lock it is taken under is a connecting socket's send mutex (RunSse), and nothing waits on
 	// another lock while holding it.
 	BroadcastTally tally_;
 

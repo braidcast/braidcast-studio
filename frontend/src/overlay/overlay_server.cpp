@@ -483,8 +483,9 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 // TypeOf rather than Get: this runs once per connected widget on the broadcast path, and
 // Get would copy the whole Widget -- a fork's html/css/js included -- under the store's
 // mutex, which its mutators hold across a disk Save(). BroadcastFrame calls this with
-// sseMutex_ released, so a save merely delays the filter rather than stalling every SSE
-// channel behind it.
+// sseMutex_ released, so a save never holds up a connection registering or tearing down;
+// it does delay the fan-out thread, and every frame queued behind this one, by up to the
+// length of that write.
 bool WidgetAcceptsReplay(const std::string &widgetId)
 {
 	const std::optional<std::string> type = Store().TypeOf(widgetId);
@@ -513,8 +514,10 @@ json AsTest(json body)
 // ---- Broadcast --------------------------------------------------------------
 
 // Snapshot the live socket handles under sseMutex_, then send OUTSIDE the lock so a single
-// slow/dead client (bounded by SO_SNDTIMEO) can't hold the mutex and stall delivery to
-// every other client (head-of-line blocking). Each send holds that socket's send mutex, so
+// slow/dead client (bounded by SO_SNDTIMEO) can't hold the mutex and stall every other
+// connection's registration, keepalive and teardown behind it. It still holds up the
+// fan-out -- the rest of this frame's sockets and every frame queued behind it wait out its
+// send timeout -- once: the failed send drops it. Each send holds that socket's send mutex, so
 // a frame never interleaves with another thread's on the wire, and one sent to a socket
 // still being handed its replay waits for the replay to finish. Dead sockets are pruned on
 // a re-lock. A failed send drops the socket from the registry and shutdown()s it (NOT
@@ -533,17 +536,25 @@ json AsTest(json body)
 //
 // widgetFilter is applied with sseMutex_ RELEASED. It reads the widget store, whose own
 // mutex OverlayStore::Create/Update/Delete hold across a disk Save(); asking it under
-// sseMutex_ would put every SSE channel -- chat, viewer counts, live events, keepalives,
-// teardown -- behind an overlay save for the length of that write. The snapshot is what the
-// lock is for, and nothing else here needs it.
+// sseMutex_ would put every connection's registration, keepalive and teardown behind an
+// overlay save for the length of that write. The fan-out thread still waits that write out
+// (it is the one calling the filter), so a save delays every frame queued behind this one.
+//
+// keepAs, for a state channel, makes the frame that channel's replay copy in the same
+// section that takes the snapshot, so a page registering concurrently (RunSse, also under
+// sseMutex_) either reads this copy and is not in the snapshot, or reads the previous copy
+// and is sent this frame: once, never older than its replay.
 size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId,
-				     bool (*widgetFilter)(const std::string &))
+				     bool (*widgetFilter)(const std::string &), const std::string *keepAs)
 {
 	// Grouped by widget rather than flattened, so the filter is asked once per widget
 	// instead of once per socket, and a widget's sockets can answer as one delivery.
 	std::vector<std::pair<std::string, std::vector<std::pair<uintptr_t, SendMutex>>>> targets;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
+		if (keepAs) {
+			replayFrames_[*keepAs] = frame;
+		}
 		for (auto &[wid, socks] : sockets_) {
 			if (onlyWidgetId && wid != *onlyWidgetId) {
 				continue;
@@ -649,10 +660,17 @@ std::function<void(size_t)> LogEventDelivery(const Events::NormalizedEvent &ev, 
 
 void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
 {
-	// Counted as it is queued, so a page that registers before the send and reads the tally
-	// finds it either counted there or on its way to the page, never in neither (RunSse).
-	tally_.Add(ev);
-	Enqueue(FrameJob{DataFrame(ev.ToJson()), std::nullopt, nullptr, LogEventDelivery(ev, false), nullptr});
+	FrameJob job;
+	job.frame = DataFrame(ev.ToJson());
+	// Counted on the fan-out thread right before the send rather than here, so the only
+	// counted-but-unsent event is the one being sent -- the newest counted, so always in the
+	// tally's recentIds. A page reading the tally on connect then finds an event counted
+	// there or on its way to the page, never neither, and one in both it skips (RunSse).
+	job.beforeSend = [this, ev] {
+		tally_.Add(ev);
+	};
+	job.onSent = LogEventDelivery(ev, false);
+	Enqueue(std::move(job));
 }
 
 std::future<size_t> OverlayServer::Replay(const Events::NormalizedEvent &ev)
@@ -667,9 +685,11 @@ std::future<size_t> OverlayServer::Replay(const Events::NormalizedEvent &ev)
 	// that can show this got it", not "some socket got a frame it was always going to
 	// ignore". The count is of widgets, so the same alert box open in the editor preview and
 	// in a Browser Source is one.
-	return Enqueue(FrameJob{DataFrame(body), std::nullopt, WidgetAcceptsReplay, LogEventDelivery(ev, true),
-				nullptr},
-		       /*wantCount=*/true);
+	FrameJob job;
+	job.frame = DataFrame(body);
+	job.widgetFilter = WidgetAcceptsReplay;
+	job.onSent = LogEventDelivery(ev, true);
+	return Enqueue(std::move(job), /*wantCount=*/true);
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`
@@ -705,17 +725,15 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 	Enqueue(FrameJob{NamedFrame("viewers", viewers)});
 }
 
-// Build a named frame, keep it as this channel's replay copy, then queue it. The keep is a
-// plain map write under sseMutex_. A page that connects between the two gets the frame twice,
-// from its replay and from the queue; a state frame says the same thing both times.
-void OverlayServer::BroadcastStateFrame(const char *eventName, const nlohmann::json &body)
+// A named frame the fan-out keeps as this channel's replay copy as it sends it, not as it is
+// queued: a copy written at queue time would let a page that connects meanwhile replay this
+// frame and then be sent the older ones still queued ahead of it.
+OverlayServer::FrameJob OverlayServer::StateFrameJob(const char *eventName, const nlohmann::json &body)
 {
-	std::string frame = NamedFrame(eventName, body);
-	{
-		std::lock_guard<std::mutex> lock(sseMutex_);
-		replayFrames_[eventName] = frame;
-	}
-	Enqueue(FrameJob{std::move(frame)});
+	FrameJob job;
+	job.frame = NamedFrame(eventName, body);
+	job.keepAs = eventName;
+	return job;
 }
 
 // Named `channels` event for the same reason `viewers` is named: an unnamed frame lands on
@@ -725,15 +743,15 @@ void OverlayServer::BroadcastStateFrame(const char *eventName, const nlohmann::j
 // never TID_UI.
 void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
 {
-	BroadcastStateFrame("channels", stats);
+	Enqueue(StateFrameJob("channels", stats));
 }
 
 // Named `stream` event, for the same reason the three above are named. Body is the bridge's
 // `streaming.changed` payload dumped as-is -- a null startedAt means no output has reported a
 // start yet, never a zero epoch, and an empty `destinations` under active is a broadcast going
 // out nowhere rather than a broadcast that ended. Called on TID_UI (the transition seam that
-// owns the store reads); the frame is a few hundred bytes and fires only at a transition, not
-// on a poll cadence.
+// owns the store reads), which only queues it; the frame is a few hundred bytes and fires only
+// at a transition, not on a poll cadence.
 void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 {
 	// This frame is the only place the broadcast's start time is known, so it is what moves
@@ -747,14 +765,27 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 			startedAt = it->get<int64_t>();
 		}
 	}
-	const std::optional<json> moved = tally_.OnStreamState(active, startedAt, TimeUtil::NowMs());
-	BroadcastStateFrame("stream", state);
-	// A page sees a window move only here, as the server's own figure for it. An event sent
-	// on another thread can land either side of this frame; the page keeps one that lands
-	// before it and dedupes one the frame already counted by its recentIds.
-	if (moved) {
-		Enqueue(FrameJob{NamedFrame("tally", *moved), std::nullopt, WidgetCountsEvents});
-	}
+	// The window moves on the fan-out thread right before this frame is sent, in queue order
+	// with the events counted there: one queued before this frame is counted under the window
+	// as it stood -- an end does not drop an event still waiting behind a stalled socket --
+	// and one queued after it under the moved window. The end's time is still the
+	// transition's, taken here. The moved tally goes out right after this frame in the same
+	// job, so nothing is counted between the move and the frame reporting it: its totals
+	// cover exactly the events open pages were sent before it, and its recentIds name the
+	// newest of those, which a page that holds one live skips.
+	const int64_t nowMs = TimeUtil::NowMs();
+	auto moved = std::make_shared<std::optional<json>>();
+	FrameJob job = StateFrameJob("stream", state);
+	job.beforeSend = [this, active, startedAt, nowMs, moved] {
+		*moved = tally_.OnStreamState(active, startedAt, nowMs);
+	};
+	job.onSent = [this, moved](size_t) {
+		// A page sees a window move only here, as the server's own figure for it.
+		if (*moved) {
+			BroadcastFrame(NamedFrame("tally", **moved), nullptr, WidgetCountsEvents);
+		}
+	};
+	Enqueue(std::move(job));
 }
 
 void OverlayServer::SaveTallyIfDue()
@@ -764,22 +795,30 @@ void OverlayServer::SaveTallyIfDue()
 
 size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
-	return Enqueue(FrameJob{DataFrame(AsTest(ev.ToJson())), widgetId}, /*wantCount=*/true).get();
+	FrameJob job;
+	job.frame = DataFrame(AsTest(ev.ToJson()));
+	job.onlyWidgetId = widgetId;
+	return Enqueue(std::move(job), /*wantCount=*/true).get();
 }
 
-// Deliberately NOT BroadcastStateFrame: that keeps the frame for replay, and for `stream`
+// Deliberately NOT StateFrameJob: that keeps the frame for replay, and for `stream`
 // BroadcastStreamState would also move the tally's window. A preview fired from the editor
 // would then be the state a real browser source picks up when it connects mid-broadcast.
 size_t OverlayServer::SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body)
 {
-	return Enqueue(FrameJob{NamedFrame(eventName, AsTest(body)), widgetId}, /*wantCount=*/true).get();
+	FrameJob job;
+	job.frame = NamedFrame(eventName, AsTest(body));
+	job.onlyWidgetId = widgetId;
+	return Enqueue(std::move(job), /*wantCount=*/true).get();
 }
 
 void OverlayServer::DrainForTest()
 {
 	// A frame for no widget: it sends nothing, and since the queue is FIFO it resolves only
 	// after everything queued before it.
-	Enqueue(FrameJob{std::string(), std::string()}, /*wantCount=*/true).get();
+	FrameJob job;
+	job.onlyWidgetId = std::string();
+	Enqueue(std::move(job), /*wantCount=*/true).get();
 }
 
 // ---- Fan-out queue ------------------------------------------------------------
@@ -791,33 +830,50 @@ std::future<size_t> OverlayServer::Enqueue(FrameJob job, bool wantCount)
 		job.delivered = std::make_shared<std::promise<size_t>>();
 		result = job.delivered->get_future();
 	}
-	bool dropped = false;
-	bool logOverflow = false;
+	bool queued = false;
+	size_t backlog = 0;
 	{
 		std::lock_guard<std::mutex> lock(fanoutMutex_);
-		if (!fanoutRunning_) {
-			dropped = true; // no server, so no socket: what BroadcastFrame would answer
-		} else if (fanoutQueue_.size() >= kMaxQueuedFrames && !job.delivered) {
-			dropped = true;
-			logOverflow = !fanoutOverflowLogged_;
-			fanoutOverflowLogged_ = true;
-		} else {
+		if (fanoutRunning_) {
 			fanoutQueue_.push_back(std::move(job));
+			queued = true;
+			if (!fanoutBacklogLogged_ && fanoutQueue_.size() >= kFanoutBacklogLogDepth) {
+				fanoutBacklogLogged_ = true;
+				backlog = fanoutQueue_.size();
+			}
 		}
 	}
-	if (dropped) {
-		if (logOverflow) {
-			HostLog("[overlay] fan-out queue full (" + std::to_string(kMaxQueuedFrames) +
-				" frames waiting); dropping frames until it drains");
-		}
+	if (!queued) {
+		// No fan-out, so no socket: what BroadcastFrame would answer.
 		if (job.delivered) {
 			job.delivered->set_value(0);
 		}
 		return result;
 	}
 	fanoutCv_.notify_one();
+	if (backlog > 0) {
+		HostLog("[overlay] fan-out backlog: " + std::to_string(backlog) +
+			" frames waiting (a widget socket is slow to take frames; none are dropped)");
+	}
 	return result;
 }
+
+namespace {
+
+// Run one step of a fan-out job, logging what it throws rather than letting it end the
+// thread it runs on or the job's other steps.
+template<typename Step> void RunFanoutStep(const char *what, Step &&step)
+{
+	try {
+		step();
+	} catch (const std::exception &e) {
+		HostLog(std::string("[overlay] fan-out ") + what + " failed: " + e.what());
+	} catch (...) {
+		HostLog(std::string("[overlay] fan-out ") + what + " failed");
+	}
+}
+
+} // namespace
 
 void OverlayServer::FanoutLoop()
 {
@@ -827,27 +883,27 @@ void OverlayServer::FanoutLoop()
 			std::unique_lock<std::mutex> lock(fanoutMutex_);
 			fanoutCv_.wait(lock, [this] { return !fanoutRunning_ || !fanoutQueue_.empty(); });
 			if (!fanoutRunning_) {
-				return; // StopFanout resolves what is left
+				return; // JoinFanout resolves what is left
 			}
 			job = std::move(fanoutQueue_.front());
 			fanoutQueue_.pop_front();
-			if (fanoutQueue_.size() < kMaxQueuedFrames / 2) {
-				fanoutOverflowLogged_ = false;
+			if (fanoutQueue_.size() < kFanoutBacklogLogDepth / 2) {
+				fanoutBacklogLogged_ = false;
 			}
 		}
-		// Whatever happens to one frame, the next still goes out and a waiter still wakes.
+		// Whatever happens to one frame, the next still goes out and a waiter still wakes; a
+		// failed tally step still lets the frame go out.
+		if (job.beforeSend) {
+			RunFanoutStep("pre-send step", job.beforeSend);
+		}
 		size_t delivered = 0;
-		try {
+		RunFanoutStep("send", [&] {
 			delivered = BroadcastFrame(job.frame, job.onlyWidgetId ? &*job.onlyWidgetId : nullptr,
-						   job.widgetFilter);
+						   job.widgetFilter, job.keepAs.empty() ? nullptr : &job.keepAs);
 			if (job.onSent) {
 				job.onSent(delivered);
 			}
-		} catch (const std::exception &e) {
-			HostLog(std::string("[overlay] fan-out send failed: ") + e.what());
-		} catch (...) {
-			HostLog("[overlay] fan-out send failed");
-		}
+		});
 		if (job.delivered) {
 			job.delivered->set_value(delivered);
 		}
@@ -860,26 +916,41 @@ void OverlayServer::StartFanout()
 	if (fanoutRunning_) {
 		return;
 	}
-	fanoutRunning_ = true;
 	fanoutThread_ = std::thread(&OverlayServer::FanoutLoop, this);
+	// Raised only once the thread exists: if creating it throws, Enqueue keeps resolving
+	// frames to 0 rather than queueing them for a thread that will never send them. The new
+	// thread waits on this lock, so it never sees the flag down.
+	fanoutRunning_ = true;
 }
 
-void OverlayServer::StopFanout()
+void OverlayServer::SignalFanoutStop()
 {
-	std::deque<FrameJob> left;
 	{
 		std::lock_guard<std::mutex> lock(fanoutMutex_);
 		fanoutRunning_ = false;
 	}
 	fanoutCv_.notify_all();
+}
+
+void OverlayServer::JoinFanout()
+{
+	std::deque<FrameJob> left;
 	if (fanoutThread_.joinable()) {
 		fanoutThread_.join();
 	}
 	{
 		std::lock_guard<std::mutex> lock(fanoutMutex_);
 		left.swap(fanoutQueue_);
+		fanoutBacklogLogged_ = false;
 	}
+	// The fan-out has exited, so this thread is the only one left recording. A beforeSend
+	// takes only the tally's own leaf mutex and its ordered save (Add, OnStreamState) and
+	// needs nothing from the fan-out; a stream job's onSent, which would send the moved
+	// tally, is not run.
 	for (FrameJob &job : left) {
+		if (job.beforeSend) {
+			RunFanoutStep("pre-send step", job.beforeSend);
+		}
 		if (job.delivered) {
 			job.delivered->set_value(0);
 		}
@@ -1024,8 +1095,6 @@ bool OverlayServer::StartForTest(int port, int *boundPort)
 
 void OverlayServer::Stop()
 {
-	// The tally's trailing save: events since the last one are otherwise only in memory.
-	tally_.Flush();
 	if (!running_.exchange(false)) {
 		// Not running; still balance a stray WSAStartup / join a late accept thread.
 		if (acceptThread_.joinable()) {
@@ -1047,9 +1116,10 @@ void OverlayServer::Stop()
 		return;
 	}
 
-	// The fan-out first: once it is joined no send is in flight from it, and whatever is
-	// still queued resolves to 0 rather than racing the socket teardown below.
-	StopFanout();
+	// The fan-out takes no frame after the one it is sending, and whatever is queued from here
+	// on resolves to 0. It is joined only once the sockets are shut down below, so a send stuck
+	// on a page that stopped reading fails then instead of waiting out its SO_SNDTIMEO.
+	SignalFanoutStop();
 	// Close the listen socket to unblock accept().
 	if (listenSocket_ != ~uintptr_t(0)) {
 		closesocket((SOCKET)listenSocket_);
@@ -1069,6 +1139,13 @@ void OverlayServer::Stop()
 			shutdown((SOCKET)s, SD_BOTH);
 		}
 	}
+	// No fd is freed by shutdown(), and RunSse defers its own close past a send in flight
+	// (broadcastDepth_), so the fan-out's last send cannot land on a recycled fd. Frames still
+	// queued are counted, not sent, and resolve to 0.
+	JoinFanout();
+	// The tally's trailing save, now that nothing counts into it: events since the last one
+	// are otherwise only in memory.
+	tally_.Flush();
 	// Join the connection threads (each closed its own fd + deregistered as it unwound).
 	{
 		std::lock_guard<std::mutex> lock(threadsMutex_);
@@ -1403,13 +1480,23 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId, 
 	// rebuild" from "not heard yet".
 	//
 	// The socket is registered FIRST, then everything is read, with this socket's send mutex
-	// held from before registration until the replay is out. So an event or a transition
-	// broadcast after a read is not lost in a gap: it reaches this socket, queued behind the
-	// replay by the send mutex. One broadcast just before a read can be in both: a counting
-	// page dedupes such an event by the tally's recentIds, a backfill reader by the event's
-	// id, and a state frame simply arrives twice. A state frame is never older than the
-	// replay it follows: each state channel is sent from one thread, so a frame's send has
-	// started before the next frame replaces it in replayFrames_.
+	// held from before registration until the replay is out. Every frame the fan-out
+	// snapshots the sockets for after the registration reaches this socket, behind the
+	// replay, so nothing sent after a read is lost in a gap. What both can carry:
+	//
+	// - The tally. The fan-out counts an event right before that event's own send, and
+	//   counts the next only once this one's send is done, which on this socket waits for
+	//   the replay. So an event counted before the read was either snapshotted before the
+	//   registration (counted here, not sent here) or is still being sent (counted here and
+	//   sent here, but the newest counted, so in recentIds and skipped); an event counted
+	//   after the read was snapshotted after the registration and is sent here. Counted
+	//   there or on its way, never neither, never twice.
+	// - The backfill. It reads the event store, which the hub writes before it queues the
+	//   event, so any event still queued can be in both; a backfill reader dedupes by id.
+	// - A state frame never is. Only the fan-out writes replayFrames_, in the same sseMutex_
+	//   section that snapshots the sockets for that frame (BroadcastFrame's keepAs), so this
+	//   page is either replayed a frame or sent it live, and is never sent one older than
+	//   the copy it replayed.
 	const SendMutex sendMutex = std::make_shared<std::mutex>();
 	std::unique_lock<std::mutex> sending(*sendMutex);
 	std::vector<std::string> replay;

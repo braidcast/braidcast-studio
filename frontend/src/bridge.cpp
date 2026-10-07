@@ -240,12 +240,11 @@ json BuildStreamState()
 	return StreamStateJson(engine.StatsSnapshot(), engine.AnyLive(), TimeUtil::NowMs());
 }
 
-// Sends on TID_UI, unlike the poller and event fan-outs, because the projection has to read
-// UI-thread-owned stores and dispatching the send would let two transitions land out of order
-// -- a stale `active: true` arriving after a stop would leave a widget claiming a broadcast
-// that has ended. The cost is bounded rather than open-ended: a client that cannot take the
-// frame stalls one send (kSseSendTimeoutMs) and is then dropped from the registry, so it
-// cannot charge that again.
+// Queued on TID_UI, unlike the poller and event fan-outs, because the projection has to read
+// UI-thread-owned stores, and queueing it from another thread would let two transitions land
+// out of order -- a stale `active: true` arriving after a stop would leave a widget claiming a
+// broadcast that has ended. Queued from this one thread, the overlay's single fan-out sends
+// them in order; TID_UI never waits on a socket.
 //
 // dump() can throw on a malformed payload (invalid UTF-8 in a user-entered profile label);
 // the overlay fan-out is then skipped rather than taking the bridge emit down with it.
@@ -14489,10 +14488,10 @@ bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*er
 constexpr const char *kOverlayServerDown = "the overlay server is not running \xe2\x80\x94 it could not bind a "
 					   "loopback port, so no overlay widget is connected to anything";
 
-// events.replay {id} -> {ok:true, delivered:<n>} (async lane -- the overlay server's
-// socket sends block): re-fire a STORED event through the same Broadcast() path a live
-// event takes, tagged `replay:true`. Broadcast() itself gates delivery to widget TYPES
-// that accept a replay (Overlay::AcceptsReplay) -- only the alert box, stock or forked,
+// events.replay {id} -> {ok:true, delivered:<n>} (async lane -- it waits for the overlay
+// server's fan-out to send the frame): re-fire a STORED event to the overlay widgets as a
+// live event reaches them, tagged `replay:true`. OverlayServer::Replay gates delivery to
+// widget TYPES that accept a replay (Overlay::AcceptsReplay) -- only the alert box, stock or forked,
 // since forking a widget keeps its type; a type that accumulates from events (a goal, a
 // running count, the recent-events belt), one that never reads an event, and an unknown
 // type all never receive the frame at all. So `delivered` counts only widgets that could
@@ -14507,7 +14506,7 @@ bool MethodEventsReplay(const json &p, json &result, std::string &error)
 		error = "requires id";
 		return false;
 	}
-	// Refused rather than answered with delivered:0. Broadcast() cannot tell the two
+	// Refused rather than answered with delivered:0. Replay() cannot tell the two
 	// apart, and the UI's 0-delivered wording sends the user to look at their scene and
 	// their browser sources -- exactly the wrong place when the loopback server never
 	// bound a port (ObsBootstrap's overlayUp) and no widget could have connected to
@@ -15006,8 +15005,9 @@ static const std::unordered_map<std::string, OverlayTestChannel> kOverlayTestCha
 // preview iframe subscribed, so 0 means nothing at all is listening -- which is otherwise
 // indistinguishable from a delivery, since targeting one widget leaves no other trace.
 //
-// Runs on the async lane: the sends block (bounded by the overlay server's send timeout),
-// which must never run on TID_UI -- every browser source on stream renders there.
+// Runs on the async lane: it waits for the overlay server's fan-out to send the frame (each
+// stalled socket bounded by the server's send timeout), which must never happen on TID_UI --
+// every browser source on stream renders there.
 bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");

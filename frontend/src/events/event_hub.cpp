@@ -517,7 +517,8 @@ bool RecentRemovals::Scrub(NormalizedEvent &ev, const EventStore &store, int64_t
 void EventHub::ApplyModeration(const OAuth::DestinationId &dest, const Chat::ModerationOp &op)
 {
 	// Held through the fan-out below: an event admitted before this is reached by the store
-	// pass and its frames went out first; one admitted after is scrubbed (admitMutex_).
+	// pass and its frames were queued first, so they go out first; one admitted after is
+	// scrubbed (admitMutex_).
 	std::lock_guard<std::mutex> admission(admitMutex_);
 	removals_.Remember(dest, op, TimeUtil::NowMs());
 	const std::vector<NormalizedEvent> redacted = RedactModeratedEvents(Store(), dest, op);

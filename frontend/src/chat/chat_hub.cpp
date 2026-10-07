@@ -34,8 +34,8 @@ namespace {
 // EmitEvent's dump() can throw on a malformed payload (invalid UTF-8); drop the
 // frame instead (EmitEvent is already internally guarded, but sits behind the same
 // barrier for free). Nothing here may block: every browser source on stream renders
-// on this thread, so the overlay SSE fan-out (blocking socket sends) happens on the
-// chat transport worker BEFORE this hop (see ctx.emit in ChatHub::Start), never here.
+// on this thread. The overlay SSE frame is queued on the chat transport worker BEFORE
+// this hop (see ctx.emit in ChatHub::Start), in order with that worker's removals.
 void RouteEmit(const std::string &event, const json &body)
 {
 	try {
@@ -252,13 +252,13 @@ void ChatHub::Start()
 				}
 				// Fan chat messages (never connection-state frames) to overlay
 				// widgets as a named `chat` SSE event, HERE on the emitting worker
-				// rather than after the UI hop (mirrors EventHub::Ingest):
-				// BroadcastChat does blocking socket sends (bounded by the overlay
-				// server's send timeout), and every browser source on stream renders
-				// on the frontend's TID_UI, so one stalled overlay reader would
-				// freeze them all. This account's single read worker also keeps its
-				// lines in order. dump() can throw on a malformed payload (invalid
-				// UTF-8): skip the fan-out and still forward to the (guarded) bridge.
+				// rather than after the UI hop (mirrors EventHub::Ingest).
+				// BroadcastChat only queues the frame; the overlay server's fan-out
+				// thread sends it, in queue order. This account's single read worker
+				// queues its lines in order, and its moderation removals behind the
+				// lines they name (ctx.emitModeration). dump() can throw on a
+				// malformed payload (invalid UTF-8): skip the fan-out and still
+				// forward to the (guarded) bridge.
 				try {
 					Overlay::Server().BroadcastChat(body);
 				} catch (...) {
@@ -293,9 +293,11 @@ void ChatHub::Start()
 			ctx.canceled = canceled;
 			ctx.emit = emitFn;
 			// A moderator's removal: redact the ring here on the worker and queue the same
-			// redaction for chat.db's writer, then tell the overlay widgets from here (the
-			// same blocking-send reason as the `chat` fan-out in emit) and the docks on the
-			// UI thread, behind the same stop guard as emit.
+			// redaction for chat.db's writer, then tell the overlay widgets from here (queued
+			// behind the `chat` lines this worker queued in emit, so it reaches each widget
+			// after them; an echo the send worker queued is unordered, see
+			// OverlayServer::BroadcastChatModeration) and the docks on the UI thread, behind the
+			// same stop guard as emit.
 			ctx.emitModeration = [dest, providerId, canceled](const ModerationOp &op) {
 				if (canceled()) {
 					return;

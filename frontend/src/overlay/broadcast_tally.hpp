@@ -42,11 +42,13 @@
 // event is therefore on disk within kSaveDebounceMs plus one tick of being counted, and a
 // failed write leaves the tally owed a save, retried at the same pace.
 //
-// Thread map: Add on the hub's admitting thread (OverlayServer::Broadcast, under the hub's
-// admitMutex_); OnStreamState on TID_UI (BroadcastStreamState); SaveIfDue on TID_UI (the bridge's
-// stats tick); Snapshot and OpenSince on SSE connection threads and TID_UI; Open and Flush on
-// TID_UI (server Start and Stop). All of it under mutex_, which is a leaf: nothing is called
-// while it is held. Disk writes happen after it is released, ordered by writer_.
+// Thread map: Add and OnStreamState on the overlay server's fan-out thread, each right before
+// the frame it belongs to is sent (OverlayServer::Broadcast, BroadcastStreamState), or on the
+// stopping thread after the fan-out is joined for a frame Stop left queued (JoinFanout);
+// SaveIfDue on TID_UI (the bridge's stats tick); Snapshot and OpenSince on SSE connection
+// threads and TID_UI; Open and Flush on TID_UI (server Start and Stop). All of it under
+// mutex_, which is a leaf: nothing is called while it is held. Disk writes happen after it is
+// released, ordered by writer_.
 namespace Overlay {
 
 class BroadcastTally {

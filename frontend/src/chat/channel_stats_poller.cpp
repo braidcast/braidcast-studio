@@ -216,12 +216,12 @@ std::optional<json> ChannelStatsPoller::BuildPayload(PollCycle &&cycle)
 	json payload = json{{"perAccount", std::move(cycle.perAccount)}, {"perDestination", std::move(cycle.rows)}};
 
 	// Overlay widgets read the SAME payload object the bridge emit carries, so a widget's
-	// total can never disagree with the panel's. Fanned out HERE on the poll worker rather
-	// than after the UI hop (mirrors the viewer poller): BroadcastChannelStats does blocking
-	// socket sends bounded by the overlay server's send timeout, and every browser source
-	// renders on the frontend's TID_UI, so one stalled overlay reader would freeze them all.
-	// dump() can throw on a malformed payload (invalid UTF-8 in a platform-supplied id):
-	// skip the fan-out and still forward to the (guarded) bridge.
+	// total can never disagree with the panel's. Queued HERE on the poll worker, before the
+	// UI hop (mirrors the viewer poller); the overlay server's fan-out thread does the
+	// socket sends, so a stalled overlay reader holds up neither this worker nor TID_UI,
+	// where every browser source renders. dump() can throw on a malformed payload (invalid
+	// UTF-8 in a platform-supplied id): skip the fan-out and still forward to the (guarded)
+	// bridge.
 	try {
 		Overlay::Server().BroadcastChannelStats(payload);
 	} catch (...) {

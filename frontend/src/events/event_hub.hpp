@@ -147,13 +147,13 @@ private:
 	//
 	// Lock order: admitMutex_, then RecentRemovals::mutex_, EventStore::mutex_ or
 	// EventStore's writer (OrderedStoreSave) (one at a time; each is released before the next is taken), then
-	// the overlay's BroadcastTally mutex and its save, then the overlay's fan-out queue mutex,
-	// then the log. Nothing reached under it calls back into EventHub: the event store,
-	// StorePaths, the overlay server and widget store take no Events::Hub(), and the bridge emit
-	// only queues script for the renderer. Every caller outside the self-tests is a worker
-	// thread, so the UI thread never waits on it. It is held across the store's disk write, so
-	// a slow disk delays the next admission; never across an overlay send, which happens on
-	// the fan-out thread (Replay waits for its count after releasing it).
+	// the overlay's fan-out queue mutex, then the log. Nothing reached under it calls back into
+	// EventHub: the event store, StorePaths, the overlay server and widget store take no
+	// Events::Hub(), and the bridge emit only queues script for the renderer. Every caller
+	// outside the self-tests is a worker thread, so the UI thread never waits on it. It is held
+	// across the store's disk write, so a slow disk delays the next admission; never across an
+	// overlay send, which happens on the fan-out thread (Replay waits for its count after
+	// releasing it).
 	std::mutex admitMutex_;
 	RecentRemovals removals_; // written and read under admitMutex_ by the hub
 	std::function<void(const char *, const json &)> fanoutObserver_; // guarded by admitMutex_
