@@ -148,7 +148,8 @@ FetchResult FetchOnce(int port, const std::string &request)
 	return r;
 }
 
-// Loopback can drop a tail segment on some machines; a cut-short response gets one retry.
+// On some machines loopback loses data still buffered at close; a cut-short response gets one
+// retry here, so step 1e, which does not retry, is the one that checks delivery itself.
 FetchResult FetchWhole(int port, const std::string &request, const char *what)
 {
 	FetchResult r = FetchOnce(port, request);
@@ -739,6 +740,30 @@ void ObsBootstrap::RunOverlaySelfTest()
 			HostLog(std::string("[selftest] overlay sound library -> ") +
 				(libraryOk ? "SKIPPED (no sound pack; guard=ok)" : "MISMATCH (no sound pack)"));
 		}
+	}
+
+	// 1e) Every response arrives whole on the first try. Deliberately FetchOnce, not FetchWhole:
+	// on a machine whose loopback drops data still buffered at close, a retry would hide exactly
+	// the defect this step exists to catch, and a cut-short fetch costs only its 3 s timeout.
+	{
+		constexpr int kFetches = 40;
+		int whole = 0;
+		int cutShort = 0;
+		for (int i = 0; i < kFetches; ++i) {
+			const FetchResult r =
+				FetchOnce(port, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			if (r.complete && r.expected && StatusOf(r.resp) == 200) {
+				++whole;
+			} else if (!r.transportFailed && !r.complete) {
+				++cutShort;
+			}
+		}
+		const int other = kFetches - whole - cutShort;
+		HostLog(std::string("[selftest] overlay response delivery -> ") +
+			(whole == kFetches
+				 ? "OK (" + std::to_string(whole) + "/" + std::to_string(kFetches) + " whole)"
+				 : "MISMATCH (" + std::to_string(cutShort) + " cut short" +
+					   (other ? ", " + std::to_string(other) + " other failures" : "") + ")"));
 	}
 
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then

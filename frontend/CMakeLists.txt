@@ -102,6 +102,9 @@ target_sources(
     # The one cryptographic RNG: MCP token, overlay widget tokens, OAuth PKCE entropy.
     src/util/random_util.cpp
     src/util/random_util.hpp
+    # The one send policy for every loopback server that answers and then closes.
+    src/util/socket_util.cpp
+    src/util/socket_util.hpp
     src/util/text_encoding.hpp
     src/util/time_util.hpp
     src/util/async_task.cpp

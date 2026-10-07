@@ -10,6 +10,7 @@
 
 #include "log.hpp"
 #include "util/http_status.hpp"
+#include "util/socket_util.hpp"
 #include "util/string_util.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -59,16 +60,8 @@ void WriteResponse(SOCKET sock, const HttpResponse &resp)
 	head += "Connection: close\r\n";
 	head += "\r\n";
 
-	std::string out = head + resp.body;
-	size_t sent = 0;
-	while (sent < out.size()) {
-		const int chunk = (int)std::min<size_t>(out.size() - sent, 64 * 1024);
-		const int n = send(sock, out.data() + sent, chunk, 0);
-		if (n <= 0) {
-			break;
-		}
-		sent += (size_t)n;
-	}
+	const std::string out = head + resp.body;
+	SocketUtil::SendResponse(sock, out.data(), out.size());
 }
 
 void WriteSimple(SOCKET sock, int status, const std::string &jsonBody)

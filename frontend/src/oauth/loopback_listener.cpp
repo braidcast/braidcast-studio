@@ -10,6 +10,7 @@
 #include <string>
 
 #include "../log.hpp"
+#include "../util/socket_util.hpp"
 
 namespace OAuth {
 
@@ -291,7 +292,7 @@ bool LoopbackListener::Await(const std::function<bool()> &canceled, int timeoutS
 			break;
 		}
 		const std::string ignore = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-		send(conn.s, ignore.data(), static_cast<int>(ignore.size()), 0);
+		SocketUtil::SendResponse(conn.s, ignore.data(), ignore.size());
 		shutdown(conn.s, SD_SEND);
 		closesocket(conn.s);
 		conn.s = INVALID_SOCKET;
@@ -322,7 +323,7 @@ void LoopbackListener::Respond(bool ok)
 				 bodyHtml + "</body></html>";
 	const std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
 				     std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
-	send(impl_->conn.s, response.data(), static_cast<int>(response.size()), 0);
+	SocketUtil::SendResponse(impl_->conn.s, response.data(), response.size());
 	shutdown(impl_->conn.s, SD_SEND);
 	// listeners + conn close via their SocketGuards when the Impl is destroyed.
 }

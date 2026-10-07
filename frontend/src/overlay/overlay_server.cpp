@@ -18,6 +18,7 @@
 #include "../log.hpp"
 #include "util/file_util.hpp"      // FileUtil::ReadBinaryFile
 #include "util/http_status.hpp"    // Http::ReasonFor
+#include "util/socket_util.hpp"    // SocketUtil::SendAll, SocketUtil::SendResponse
 #include "util/string_util.hpp"    // StringUtil::ToLower
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
@@ -241,20 +242,7 @@ private:
 	F f_;
 };
 
-// Blocking best-effort write of an entire buffer; false on any send failure.
-bool SendAll(SOCKET sock, const char *data, size_t len)
-{
-	size_t sent = 0;
-	while (sent < len) {
-		const int chunk = (int)std::min<size_t>(len - sent, 64 * 1024);
-		const int n = send(sock, data + sent, chunk, 0);
-		if (n <= 0) {
-			return false;
-		}
-		sent += (size_t)n;
-	}
-	return true;
-}
+using SocketUtil::SendAll;
 
 // Write a complete HTTP/1.1 response with Connection: close (mirrors mcp WriteResponse).
 //
@@ -279,7 +267,7 @@ void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std:
 	head += extraHeaders;
 	head += "\r\n";
 	const std::string out = suppressBody ? head : head + body;
-	SendAll(sock, out.data(), out.size());
+	SocketUtil::SendResponse(sock, out.data(), out.size());
 }
 
 // What a Range header asks of a body: all of it, one byte span of it, or a span it does not
