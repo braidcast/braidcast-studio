@@ -535,7 +535,13 @@ endif()
 # overrides a stale empty cache value.
 set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch client id (public; the Helix Client-Id header)")
 if(DEFINED ENV{TWITCH_CLIENTID})
-  set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch client id (public; the Helix Client-Id header)" FORCE)
+  set(
+    TWITCH_CLIENTID
+    "$ENV{TWITCH_CLIENTID}"
+    CACHE STRING
+    "Twitch client id (public; the Helix Client-Id header)"
+    FORCE
+  )
 endif()
 set(TWITCH_HASH "$ENV{TWITCH_HASH}" CACHE STRING "Obfuscation key for TWITCH_CLIENTID; 0 means plaintext")
 if(NOT TWITCH_HASH)
