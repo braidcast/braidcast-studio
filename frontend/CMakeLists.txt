@@ -721,6 +721,7 @@ set_source_files_properties(
   src/multistream/StorePaths.cpp
   src/mcp/McpServer.cpp
   src/history/Thumbnails.cpp
+  src/update/update_check.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 
