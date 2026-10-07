@@ -1,0 +1,290 @@
+[
+  {
+    "id": "chime-01",
+    "name": "Bright confirm",
+    "category": "Chimes",
+    "file": "sounds/chime-01.ogg",
+    "durationMs": 539,
+    "source": "Kenney Interface Sounds: Audio/confirmation_002.ogg"
+  },
+  {
+    "id": "chime-02",
+    "name": "Two-note confirm",
+    "category": "Chimes",
+    "file": "sounds/chime-02.ogg",
+    "durationMs": 490,
+    "source": "Kenney Interface Sounds: Audio/confirmation_004.ogg"
+  },
+  {
+    "id": "chime-03",
+    "name": "Rising question",
+    "category": "Chimes",
+    "file": "sounds/chime-03.ogg",
+    "durationMs": 491,
+    "source": "Kenney Interface Sounds: Audio/question_001.ogg"
+  },
+  {
+    "id": "chime-04",
+    "name": "Soft question",
+    "category": "Chimes",
+    "file": "sounds/chime-04.ogg",
+    "durationMs": 333,
+    "source": "Kenney Interface Sounds: Audio/question_002.ogg"
+  },
+  {
+    "id": "chime-05",
+    "name": "Glass tap",
+    "category": "Chimes",
+    "file": "sounds/chime-05.ogg",
+    "durationMs": 225,
+    "source": "Kenney Interface Sounds: Audio/maximize_009.ogg"
+  },
+  {
+    "id": "chime-06",
+    "name": "Select ping",
+    "category": "Chimes",
+    "file": "sounds/chime-06.ogg",
+    "durationMs": 383,
+    "source": "Kenney Interface Sounds: Audio/select_003.ogg"
+  },
+  {
+    "id": "coin-01",
+    "name": "Power up",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-01.ogg",
+    "durationMs": 1164,
+    "source": "Kenney Digital Audio: Audio/powerUp1.ogg"
+  },
+  {
+    "id": "coin-02",
+    "name": "Long power up",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-02.ogg",
+    "durationMs": 1111,
+    "source": "Kenney Digital Audio: Audio/powerUp3.ogg"
+  },
+  {
+    "id": "coin-03",
+    "name": "Quick reward",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-03.ogg",
+    "durationMs": 406,
+    "source": "Kenney Digital Audio: Audio/powerUp5.ogg"
+  },
+  {
+    "id": "coin-04",
+    "name": "Bonus",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-04.ogg",
+    "durationMs": 510,
+    "source": "Kenney Digital Audio: Audio/powerUp9.ogg"
+  },
+  {
+    "id": "coin-05",
+    "name": "Level up",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-05.ogg",
+    "durationMs": 824,
+    "source": "Kenney Digital Audio: Audio/powerUp12.ogg"
+  },
+  {
+    "id": "coin-06",
+    "name": "Three-tone reward",
+    "category": "Coins & Rewards",
+    "file": "sounds/coin-06.ogg",
+    "durationMs": 1164,
+    "source": "Kenney Digital Audio: Audio/threeTone2.ogg"
+  },
+  {
+    "id": "jingle-01",
+    "name": "8-bit fanfare",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-01.ogg",
+    "durationMs": 408,
+    "source": "Kenney Music Jingles: Audio/8-Bit jingles/jingles_NES00.ogg"
+  },
+  {
+    "id": "jingle-02",
+    "name": "8-bit victory",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-02.ogg",
+    "durationMs": 373,
+    "source": "Kenney Music Jingles: Audio/8-Bit jingles/jingles_NES13.ogg"
+  },
+  {
+    "id": "jingle-03",
+    "name": "Pizzicato flourish",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-03.ogg",
+    "durationMs": 536,
+    "source": "Kenney Music Jingles: Audio/Pizzicato jingles/jingles_PIZZI03.ogg"
+  },
+  {
+    "id": "jingle-04",
+    "name": "Sax sting",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-04.ogg",
+    "durationMs": 391,
+    "source": "Kenney Music Jingles: Audio/Sax jingles/jingles_SAX07.ogg"
+  },
+  {
+    "id": "jingle-05",
+    "name": "Steel drum run",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-05.ogg",
+    "durationMs": 586,
+    "source": "Kenney Music Jingles: Audio/Steel jingles/jingles_STEEL07.ogg"
+  },
+  {
+    "id": "jingle-06",
+    "name": "Hit jingle",
+    "category": "Fanfare & Jingles",
+    "file": "sounds/jingle-06.ogg",
+    "durationMs": 293,
+    "source": "Kenney Music Jingles: Audio/Hit jingles/jingles_HIT15.ogg"
+  },
+  {
+    "id": "arcade-01",
+    "name": "Laser",
+    "category": "Arcade",
+    "file": "sounds/arcade-01.ogg",
+    "durationMs": 1608,
+    "source": "Kenney Digital Audio: Audio/laser1.ogg"
+  },
+  {
+    "id": "arcade-02",
+    "name": "Phaser up",
+    "category": "Arcade",
+    "file": "sounds/arcade-02.ogg",
+    "durationMs": 453,
+    "source": "Kenney Digital Audio: Audio/phaserUp3.ogg"
+  },
+  {
+    "id": "arcade-03",
+    "name": "Pep",
+    "category": "Arcade",
+    "file": "sounds/arcade-03.ogg",
+    "durationMs": 484,
+    "source": "Kenney Digital Audio: Audio/pepSound1.ogg"
+  },
+  {
+    "id": "arcade-04",
+    "name": "Zap up",
+    "category": "Arcade",
+    "file": "sounds/arcade-04.ogg",
+    "durationMs": 1164,
+    "source": "Kenney Digital Audio: Audio/zapThreeToneUp.ogg"
+  },
+  {
+    "id": "arcade-05",
+    "name": "Low three-tone",
+    "category": "Arcade",
+    "file": "sounds/arcade-05.ogg",
+    "durationMs": 981,
+    "source": "Kenney Digital Audio: Audio/lowThreeTone.ogg"
+  },
+  {
+    "id": "arcade-06",
+    "name": "Phase jump",
+    "category": "Arcade",
+    "file": "sounds/arcade-06.ogg",
+    "durationMs": 406,
+    "source": "Kenney Digital Audio: Audio/phaseJump1.ogg"
+  },
+  {
+    "id": "whoosh-01",
+    "name": "Rise",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-01.ogg",
+    "durationMs": 418,
+    "source": "Kenney Interface Sounds: Audio/maximize_004.ogg"
+  },
+  {
+    "id": "whoosh-02",
+    "name": "Fall",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-02.ogg",
+    "durationMs": 418,
+    "source": "Kenney Interface Sounds: Audio/minimize_004.ogg"
+  },
+  {
+    "id": "whoosh-03",
+    "name": "Quick drop",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-03.ogg",
+    "durationMs": 225,
+    "source": "Kenney Interface Sounds: Audio/minimize_009.ogg"
+  },
+  {
+    "id": "whoosh-04",
+    "name": "Long scroll",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-04.ogg",
+    "durationMs": 1000,
+    "source": "Kenney Interface Sounds: Audio/scroll_005.ogg"
+  },
+  {
+    "id": "whoosh-05",
+    "name": "Scratch",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-05.ogg",
+    "durationMs": 325,
+    "source": "Kenney Interface Sounds: Audio/scratch_005.ogg"
+  },
+  {
+    "id": "whoosh-06",
+    "name": "Card pull",
+    "category": "Whoosh & Swipe",
+    "file": "sounds/whoosh-06.ogg",
+    "durationMs": 631,
+    "source": "Kenney Casino Audio: Audio/cards-pack-take-out-2.ogg"
+  },
+  {
+    "id": "impact-01",
+    "name": "Metal tap",
+    "category": "Impact",
+    "file": "sounds/impact-01.ogg",
+    "durationMs": 376,
+    "source": "Kenney Impact Sounds: Audio/impactMetal_light_000.ogg"
+  },
+  {
+    "id": "impact-02",
+    "name": "Metal ring",
+    "category": "Impact",
+    "file": "sounds/impact-02.ogg",
+    "durationMs": 236,
+    "source": "Kenney Impact Sounds: Audio/impactMetal_light_002.ogg"
+  },
+  {
+    "id": "impact-03",
+    "name": "Metal knock",
+    "category": "Impact",
+    "file": "sounds/impact-03.ogg",
+    "durationMs": 213,
+    "source": "Kenney Impact Sounds: Audio/impactMetal_light_004.ogg"
+  },
+  {
+    "id": "impact-04",
+    "name": "Plank thud",
+    "category": "Impact",
+    "file": "sounds/impact-04.ogg",
+    "durationMs": 779,
+    "source": "Kenney Impact Sounds: Audio/impactPlank_medium_001.ogg"
+  },
+  {
+    "id": "impact-05",
+    "name": "Plank knock",
+    "category": "Impact",
+    "file": "sounds/impact-05.ogg",
+    "durationMs": 779,
+    "source": "Kenney Impact Sounds: Audio/impactPlank_medium_003.ogg"
+  },
+  {
+    "id": "impact-06",
+    "name": "Glass clink",
+    "category": "Impact",
+    "file": "sounds/impact-06.ogg",
+    "durationMs": 210,
+    "source": "Kenney Impact Sounds: Audio/impactGlass_light_002.ogg"
+  }
+]
