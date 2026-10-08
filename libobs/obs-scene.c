@@ -1904,40 +1904,22 @@ obs_scene_t *obs_scene_create_private(const char *name)
 	return create_private_id("scene", name);
 }
 
-static obs_source_t *get_child_at_idx(obs_scene_t *scene, size_t idx)
-{
-	struct obs_scene_item *item = scene->first_item;
+struct legacy_dup_param {
+	bool make_unique;
+	bool make_private;
+};
 
-	while (item && idx--) {
-		item = item->next;
+/* obs_scene_duplicate's own source mapping: obs_source_duplicate's answer when
+ * copying (a fresh copy, except that a public copy shares nested scenes and
+ * DO_NOT_DUPLICATE types share always), a plain ref otherwise. */
+static obs_source_t *legacy_dup_source(void *param, obs_source_t *source)
+{
+	const struct legacy_dup_param *p = param;
+
+	if (!p->make_unique) {
+		return obs_source_get_ref(source);
 	}
-	return item ? item->source : NULL;
-}
-
-static inline obs_source_t *dup_child(obs_scene_item_ptr_array_t *old_items, size_t idx, obs_scene_t *new_scene,
-				      bool private)
-{
-	obs_source_t *source;
-
-	source = old_items->array[idx]->source;
-
-	/* if the old item is referenced more than once in the old scene,
-	 * make sure they're referenced similarly in the new scene to reduce
-	 * load times */
-	for (size_t i = 0; i < idx; i++) {
-		struct obs_scene_item *item = old_items->array[i];
-		if (item->source == source) {
-			source = get_child_at_idx(new_scene, i);
-			return obs_source_get_ref(source);
-		}
-	}
-
-	return obs_source_duplicate(source, private ? obs_source_get_name(source) : NULL, private);
-}
-
-static inline obs_source_t *new_ref(obs_source_t *source)
-{
-	return obs_source_get_ref(source);
+	return obs_source_duplicate(source, p->make_private ? obs_source_get_name(source) : NULL, p->make_private);
 }
 
 static inline void duplicate_item_data(struct obs_scene_item *dst, struct obs_scene_item *src,
@@ -2020,20 +2002,20 @@ static inline void duplicate_item_data(struct obs_scene_item *dst, struct obs_sc
 	obs_data_apply(dst->private_settings, src->private_settings);
 }
 
-obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_scene_duplicate_type type)
+/* The one duplication skeleton behind obs_scene_duplicate and
+ * obs_scene_duplicate_mapped. A public copy is created on `canvas`, or on the
+ * original's canvas when that is NULL. `map_source` is asked once per distinct
+ * source: when an item repeats an earlier item's source, the copy repeats the
+ * earlier mapping too, so a source used twice stays one source used twice. */
+static obs_scene_t *scene_duplicate_internal(obs_scene_t *scene, const char *name, obs_canvas_t *canvas,
+					     bool make_private, obs_scene_duplicate_source_cb map_source, void *param)
 {
-	bool make_unique = type == OBS_SCENE_DUP_COPY || type == OBS_SCENE_DUP_PRIVATE_COPY;
-	bool make_private = type == OBS_SCENE_DUP_PRIVATE_REFS || type == OBS_SCENE_DUP_PRIVATE_COPY;
 	obs_scene_item_ptr_array_t items;
 	struct obs_scene *new_scene;
 	struct obs_scene_item *item;
-	struct obs_source *source;
+	obs_source_t **mapped;
 
 	da_init(items);
-
-	if (!obs_ptr_valid(scene, "obs_scene_duplicate")) {
-		return NULL;
-	}
 
 	/* --------------------------------- */
 
@@ -2050,10 +2032,15 @@ obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_
 
 	/* --------------------------------- */
 
-	obs_canvas_t *canvas = obs_weak_canvas_get_canvas(scene->source->canvas);
-	new_scene = make_private ? create_private_id(scene->source->info.id, name)
-				 : create_id(canvas, scene->source->info.id, name);
-	obs_canvas_release(canvas);
+	if (make_private) {
+		new_scene = create_private_id(scene->source->info.id, name);
+	} else if (canvas) {
+		new_scene = create_id(canvas, scene->source->info.id, name);
+	} else {
+		obs_canvas_t *own = obs_weak_canvas_get_canvas(scene->source->canvas);
+		new_scene = create_id(own, scene->source->info.id, name);
+		obs_canvas_release(own);
+	}
 
 	new_scene->is_group = scene->is_group;
 	new_scene->custom_size = scene->custom_size;
@@ -2067,32 +2054,36 @@ obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_
 
 	obs_data_apply(new_scene->source->private_settings, scene->source->private_settings);
 
-	/* never duplicate sub-items for groups */
-	if (scene->is_group) {
-		make_unique = false;
-	}
+	/* One owned ref per item (or NULL), held until every item is added so the
+	 * repeat lookup below never reads a source a failed add already freed. */
+	mapped = items.num ? bzalloc(sizeof(*mapped) * items.num) : NULL;
 
 	for (size_t i = 0; i < items.num; i++) {
 		item = items.array[i];
-		source = make_unique ? dup_child(&items, i, new_scene, make_private) : new_ref(item->source);
 
-		if (source) {
-			struct obs_scene_item *new_item = obs_scene_add(new_scene, source);
-
-			if (!new_item) {
-				obs_source_release(source);
-				continue;
+		size_t first = i;
+		for (size_t j = 0; j < i; j++) {
+			if (items.array[j]->source == item->source) {
+				first = j;
+				break;
 			}
+		}
+		mapped[i] = first < i ? obs_source_get_ref(mapped[first]) : map_source(param, item->source);
+		if (!mapped[i]) {
+			continue;
+		}
 
+		struct obs_scene_item *new_item = obs_scene_add(new_scene, mapped[i]);
+		if (new_item) {
 			duplicate_item_data(new_item, item, false, false);
-
-			obs_source_release(source);
 		}
 	}
 
 	for (size_t i = 0; i < items.num; i++) {
+		obs_source_release(mapped[i]);
 		obs_sceneitem_release(items.array[i]);
 	}
+	bfree(mapped);
 
 	if (new_scene->is_group) {
 		resize_scene(new_scene);
@@ -2100,6 +2091,39 @@ obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_
 
 	da_free(items);
 	return new_scene;
+}
+
+obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_scene_duplicate_type type)
+{
+	if (!obs_ptr_valid(scene, "obs_scene_duplicate")) {
+		return NULL;
+	}
+
+	struct legacy_dup_param param = {
+		.make_unique = type == OBS_SCENE_DUP_COPY || type == OBS_SCENE_DUP_PRIVATE_COPY,
+		.make_private = type == OBS_SCENE_DUP_PRIVATE_REFS || type == OBS_SCENE_DUP_PRIVATE_COPY,
+	};
+
+	/* never duplicate sub-items for groups */
+	if (scene->is_group) {
+		param.make_unique = false;
+	}
+
+	return scene_duplicate_internal(scene, name, NULL, param.make_private, legacy_dup_source, &param);
+}
+
+obs_scene_t *obs_scene_duplicate_mapped(obs_scene_t *scene, const char *name, obs_canvas_t *canvas,
+					obs_scene_duplicate_source_cb map_source, void *param)
+{
+	if (!obs_ptr_valid(scene, "obs_scene_duplicate_mapped")) {
+		return NULL;
+	}
+	if (!map_source) {
+		blog(LOG_DEBUG, "obs_scene_duplicate_mapped: Null 'map_source' parameter");
+		return NULL;
+	}
+
+	return scene_duplicate_internal(scene, name, canvas, false, map_source, param);
 }
 
 static inline void obs_scene_addref(obs_scene_t *scene)

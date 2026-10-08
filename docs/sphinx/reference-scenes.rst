@@ -197,6 +197,34 @@ General Scene Functions
 
 ---------------------
 
+.. type:: obs_source_t *(*obs_scene_duplicate_source_cb)(void *param, obs_source_t *source)
+
+   Picks the source an item of a scene being duplicated holds in the copy.
+   Returns a new reference: a fresh copy's own reference, or
+   :c:func:`obs_source_get_ref()` of a source to share.  Returning *NULL*
+   leaves the item out of the copy.
+
+---------------------
+
+.. function:: obs_scene_t *obs_scene_duplicate_mapped(obs_scene_t *scene, const char *name, obs_canvas_t *canvas, obs_scene_duplicate_source_cb map_source, void *param)
+
+   Duplicates a scene or group the way :c:func:`obs_scene_duplicate()`
+   does -- filters, size, private settings and every item's own data
+   (transform, crop, visibility, blending, show/hide transitions, lock,
+   private settings) -- but lets the caller decide which source each item
+   holds.  *map_source* is called once per distinct source, in item order;
+   an item repeating an earlier item's source reuses that mapping, so a
+   source used twice in the original is one source used twice in the copy.
+
+   :param name:       Name of the new (public) scene source
+   :param canvas:     Canvas to create the copy on, or *NULL* for the
+                      original's canvas
+   :param map_source: Source mapping callback
+   :param param:      Passed through to *map_source*
+   :return:           A reference to a new scene
+
+---------------------
+
 .. function:: obs_scene_t *obs_scene_get_ref(obs_scene_t *scene)
 
    Returns an incremented reference if still valid, otherwise returns

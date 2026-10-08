@@ -1772,6 +1772,23 @@ enum obs_scene_duplicate_type {
  */
 EXPORT obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name, enum obs_scene_duplicate_type type);
 
+/**
+ * Decides which source an item of a scene being duplicated holds in the copy.
+ * Returns a new reference (a fresh copy's own reference, or obs_source_get_ref of a
+ * source to share), or NULL to leave the item out.
+ */
+typedef obs_source_t *(*obs_scene_duplicate_source_cb)(void *param, obs_source_t *source);
+
+/**
+ * Duplicates a scene or group as a public source named `name` on `canvas` (NULL =
+ * the original's canvas), copying its filters, size, private settings and every
+ * item's own data, while `map_source` picks each item's source. It is called once
+ * per distinct source, in item order; an item repeating an earlier item's source
+ * reuses that mapping.
+ */
+EXPORT obs_scene_t *obs_scene_duplicate_mapped(obs_scene_t *scene, const char *name, obs_canvas_t *canvas,
+					       obs_scene_duplicate_source_cb map_source, void *param);
+
 EXPORT void obs_scene_release(obs_scene_t *scene);
 
 EXPORT obs_scene_t *obs_scene_get_ref(obs_scene_t *scene);
