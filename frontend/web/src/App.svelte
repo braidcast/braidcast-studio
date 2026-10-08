@@ -17,6 +17,8 @@
   import { filterDialogOpener, closeFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import TransformDialog from "$lib/dialogs/TransformDialog.svelte";
   import { transformOpener, closeTransform, openTransform } from "$lib/dialogs/transformOpener.svelte";
+  import DuplicateSceneDialog from "$lib/dialogs/DuplicateSceneDialog.svelte";
+  import { duplicateSceneOpener, closeDuplicateScene } from "$lib/dialogs/duplicateSceneOpener.svelte";
   import AdvAudioDialog from "$lib/dialogs/AdvAudioDialog.svelte";
   import { advAudioOpener, closeAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
   import AboutDialog from "$lib/dialogs/AboutDialog.svelte";
@@ -551,6 +553,10 @@ import { EV } from "$lib/utils/eventNames";
 
 {#if transformOpener.target}
   <TransformDialog target={transformOpener.target} label={transformOpener.label} onClose={closeTransform} />
+{/if}
+
+{#if duplicateSceneOpener.scene}
+  <DuplicateSceneDialog {...duplicateSceneOpener.scene} onClose={closeDuplicateScene} />
 {/if}
 
 {#if advAudioOpener.open && advAudioOpener.source}

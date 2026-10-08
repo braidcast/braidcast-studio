@@ -4,9 +4,6 @@
 import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
-  import { canvasStore } from "$lib/stores/canvasStore.svelte";
-  import { callOrToast, renamedSuffix } from "$lib/utils/callToast";
-  import { showToast } from "$lib/stores/toastStore.svelte";
   import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
@@ -15,6 +12,7 @@ import { EV } from "$lib/utils/eventNames";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
   import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { openDuplicateScene } from "$lib/dialogs/duplicateSceneOpener.svelte";
   import {
     SceneDragReorder,
     sceneMoveActions,
@@ -38,7 +36,6 @@ import { EV } from "$lib/utils/eventNames";
 
   onMount(() => {
     defaultCanvas.start();
-    canvasStore.start();
     obs
       .call("settings.getGeneral")
       .then((g) => (gridMode = g.scenesGridMode))
@@ -208,11 +205,6 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  function duplicate(name: string) {
-    actionError = null;
-    defaultCanvas.duplicate(name).catch(report);
-  }
-
   async function copySceneFilters(name: string) {
     actionError = null;
     try {
@@ -231,19 +223,6 @@ import { EV } from "$lib/utils/eventNames";
       await obs.call("filters.pasteChain", { source: name, filters: clipboard.filters });
     } catch (e) {
       report(e);
-    }
-  }
-
-  // Duplicates a scene from the Default canvas onto another canvas (a deep copy,
-  // unlike the same-canvas duplicate() above which is a ref duplicate). No `canvas`
-  // param is sent, mirroring defaultCanvasStore's other calls (omitted = Default).
-  // See scenes.duplicateToCanvas in bridge.ts.
-  async function duplicateToCanvas(sceneName: string, destUuid: string) {
-    const r = await callOrToast("scenes.duplicateToCanvas", { name: sceneName, destCanvas: destUuid }, "Duplicate failed");
-    if (r) {
-      const destName = canvasStore.byUuid(destUuid)?.name;
-      const to = destName ? ` to "${destName}"` : "";
-      showToast(`Duplicated "${sceneName}"${to}${renamedSuffix(sceneName, r.name)}`, r.name);
     }
   }
 
@@ -286,14 +265,6 @@ import { EV } from "$lib/utils/eventNames";
 
   function openMenu(e: MouseEvent, name: string) {
     e.preventDefault();
-    const otherCanvases = canvasStore.canvases.filter((c) => !c.isDefault);
-    const duplicateChildren =
-      otherCanvases.length === 0
-        ? [{ label: "(no other canvases)", disabled: true }]
-        : otherCanvases.map((c) => ({
-            label: c.name,
-            action: () => void duplicateToCanvas(name, c.uuid),
-          }));
     const idx = defaultCanvas.scenes.findIndex((s) => s.name === name);
     const orderChildren = sceneOrderMenuChildren(orderTarget(idx, (d) => void reorder(name, d)));
     menu = {
@@ -302,8 +273,8 @@ import { EV } from "$lib/utils/eventNames";
       items: [
         { label: "Rename", action: () => beginRename(name) },
         { label: "Filters", action: () => openFilters(name) },
-        { label: "Duplicate", action: () => duplicate(name) },
-        { label: "Duplicate to canvas", children: duplicateChildren },
+        // No `canvas`: this list is the Default canvas's, which the bridge addresses by omission.
+        { label: "Duplicate…", action: () => openDuplicateScene(name) },
         { label: "Order", children: orderChildren },
         // A scene is a source, so its screenshot reuses screenshot.takeSource (the
         // per-source path), targeting the scene by name instead of a scene-item id.

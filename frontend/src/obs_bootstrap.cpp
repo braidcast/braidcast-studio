@@ -4349,220 +4349,377 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		}
 		return result;
 	};
-
-	// Bring up two temporary ADDITIONAL canvases (source + destination), exactly
-	// like the canvas-scene selftest. Operate ONLY on the in-memory stores (never
-	// Save explicitly) so the user's files stay untouched. The point is to prove
-	// scenes.duplicateToCanvas performs a real deep copy across canvases, with
-	// undo/redo that preserves the copied source's uuid on restore.
-	const std::string srcCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-src-canvas");
-	const std::string destCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-dest-canvas");
-
-	bool ok = false;
-
-	// 1) Create + select a scene on the source canvas, then add one color source.
-	const char *kSceneName = "selftest-duplicate-scene";
-	run("scenes.create", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
-	HostLog(std::string("[selftest] scene-duplicate scenes.create -> ") + (ok ? "ok" : "FAIL (BUG)"));
-
-	run("scenes.setCurrent", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
-	HostLog(std::string("[selftest] scene-duplicate scenes.setCurrent -> ") + (ok ? "ok" : "FAIL (BUG)"));
-
-	// Explicit unique name: sources.create's default (the type's display name,
-	// "Color") collides globally against any source already named that in the
-	// user's loaded scene collection, which would fail this step for reasons
-	// having nothing to do with what's under test here.
-	json srcCreated = run(
-		"sources.create",
-		json{{"canvas", srcCanvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-color"}}, ok);
-	const int64_t srcItemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
-	const std::string srcSrcName = ok ? srcCreated.value("source", std::string()) : std::string();
-	HostLog(std::string("[selftest] scene-duplicate sources.create -> ") +
-		(ok ? "id=" + std::to_string(srcItemId) + " source='" + srcSrcName + "'" : "FAIL (BUG)"));
-
-	std::string origSrcUuid;
-	if (!srcSrcName.empty()) {
-		OBSSourceAutoRelease s = obs_get_source_by_name(srcSrcName.c_str());
-		if (s) {
-			const char *u = obs_source_get_uuid(s);
-			origSrcUuid = u ? u : std::string();
-		}
-	}
-	HostLog(std::string("[selftest] scene-duplicate original source uuid -> ") +
-		(origSrcUuid.empty() ? "MISSING (BUG)" : origSrcUuid));
-
-	// 2) Duplicate the scene from the source canvas onto the destination canvas.
-	json dup = run("scenes.duplicateToCanvas",
-		       json{{"name", kSceneName}, {"canvas", srcCanvasUuid}, {"destCanvas", destCanvasUuid}}, ok);
-	const std::string newSceneName = ok ? dup.value("name", std::string()) : std::string();
-	HostLog(std::string("[selftest] scene-duplicate scenes.duplicateToCanvas -> ") +
-		(ok ? "ok name='" + newSceneName + "'" : "FAIL (BUG)"));
-
-	// Helper: does the destination canvas's scene list contain `sceneName`?
-	auto sceneExistsOnDest = [&](const std::string &sceneName) -> bool {
-		bool listOk = false;
-		json scenes = run("scenes.list", json{{"canvas", destCanvasUuid}}, listOk);
-		if (!listOk || !scenes.is_array()) {
-			return false;
-		}
-		for (const auto &s : scenes) {
-			if (s.value("name", std::string()) == sceneName) {
-				return true;
-			}
-		}
-		return false;
+	auto check = [](const std::string &label, bool pass) {
+		HostLog("[selftest] scene-duplicate " + label + " -> " + (pass ? "ok" : "FAIL (BUG)"));
 	};
-
-	// Helper: make `sceneName` current on `canvasUuid`, assert it has exactly one
-	// item, and return that item's source uuid (empty on any failure).
-	auto singleItemSourceUuid = [&](const std::string &canvasUuid, const std::string &sceneName, int64_t &outItemId,
-					std::string &outSrcName) -> std::string {
-		bool setOk = false;
-		run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", sceneName}}, setOk);
-		if (!setOk) {
-			return {};
-		}
-		bool listOk = false;
-		json items = run("sceneItems.list", json{{"canvas", canvasUuid}}, listOk);
-		if (!listOk || !items.is_array() || items.size() != 1) {
-			return {};
-		}
-		outItemId = items[0].value("id", int64_t(0));
-		outSrcName = items[0].value("source", std::string());
-		if (outSrcName.empty()) {
-			return {};
-		}
-		OBSSourceAutoRelease s = obs_get_source_by_name(outSrcName.c_str());
-		if (!s) {
-			return {};
-		}
-		const char *u = obs_source_get_uuid(s);
+	auto uuidOf = [](obs_source_t *s) -> std::string {
+		const char *u = s ? obs_source_get_uuid(s) : nullptr;
 		return u ? u : std::string();
 	};
-
-	// 3) Assert the new scene exists on the destination canvas with exactly one
-	// item whose source uuid differs from the original -- a real copy.
-	const bool foundOnDest = sceneExistsOnDest(newSceneName);
-	HostLog(std::string("[selftest] scene-duplicate destCanvas scenes.list -> scene present=") +
-		(foundOnDest ? "true" : "false (BUG)"));
-
-	int64_t dupItemId = 0;
-	std::string dupSrcName;
-	const std::string dupSrcUuid =
-		foundOnDest ? singleItemSourceUuid(destCanvasUuid, newSceneName, dupItemId, dupSrcName) : std::string();
-	const bool isRealCopy = !dupSrcUuid.empty() && dupSrcUuid != origSrcUuid;
-	HostLog(std::string("[selftest] scene-duplicate item copy -> uuid=") +
-		(dupSrcUuid.empty() ? "MISSING (BUG)" : dupSrcUuid) +
-		"; independent-of-original=" + (isRealCopy ? "true" : "false (BUG)"));
-
-	// 3b) scenes.duplicate: a same-canvas ref-duplicate on the SOURCE canvas. This
-	// runs before Undo() below on purpose -- scenes.duplicate adds no UndoManager
-	// entry, so Undo() must still pop the duplicateToCanvas action from step 2;
-	// running this block first makes that a live assertion of the settled
-	// no-undo decision, not just a comment.
-	json sameDup = run("scenes.duplicate", json{{"name", kSceneName}, {"canvas", srcCanvasUuid}}, ok);
-	const std::string sameName = ok ? sameDup.value("name", std::string()) : std::string();
-	HostLog(std::string("[selftest] scene-duplicate scenes.duplicate -> ") +
-		(ok ? "ok name='" + sameName + "'" : "FAIL (BUG)"));
-
-	const bool sameNameSuffixed = sameName == std::string(kSceneName) + " 2";
-	HostLog(std::string("[selftest] scene-duplicate same-canvas name -> ") +
-		(sameNameSuffixed ? "'" + sameName + "'" : "WRONG '" + sameName + "' (BUG)"));
-
-	// The copy must land on the SOURCE canvas alongside the original -- the whole
-	// premise of "no obs_canvas_move_scene needed" -- and must NOT leak onto the
-	// Default canvas.
-	json srcScenes = run("scenes.list", json{{"canvas", srcCanvasUuid}}, ok);
-	bool srcHasOriginal = false;
-	bool srcHasDuplicate = false;
-	if (ok && srcScenes.is_array()) {
-		for (const auto &s : srcScenes) {
-			const std::string n = s.value("name", std::string());
-			srcHasOriginal = srcHasOriginal || n == kSceneName;
-			srcHasDuplicate = srcHasDuplicate || n == sameName;
+	auto alive = [](const std::string &uuid) {
+		OBSSourceAutoRelease s = obs_get_source_by_uuid(uuid.c_str());
+		return !uuid.empty() && s != nullptr;
+	};
+	// A scene's or group's items, bottom to top. Borrowed: valid while the scene lives.
+	auto itemsOf = [](obs_scene_t *scene) {
+		std::vector<obs_sceneitem_t *> out;
+		if (scene) {
+			obs_scene_enum_items(
+				scene,
+				[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+					static_cast<std::vector<obs_sceneitem_t *> *>(param)->push_back(item);
+					return true;
+				},
+				&out);
 		}
-	}
-	HostLog(std::string("[selftest] scene-duplicate srcCanvas scenes.list -> original=") +
-		(srcHasOriginal ? "true" : "false (BUG)") + " duplicate=" + (srcHasDuplicate ? "true" : "false (BUG)"));
+		return out;
+	};
+	auto onCanvas = [](obs_source_t *s, obs_canvas_t *canvas) {
+		OBSCanvasAutoRelease c = obs_source_get_canvas(s);
+		return c && c == canvas;
+	};
+	// Undo pops the action; the removed sources only leave the uuid registry once the
+	// destruction thread runs, so drain it before asserting they are gone (and before
+	// a redo restores the same uuids).
+	auto undo = []() {
+		ObsBootstrap::Undo().Undo();
+		while (obs_wait_for_destroy_queue()) {
+		}
+	};
 
-	json defaultScenes = run("scenes.list", json(nullptr), ok);
-	bool leakedToDefault = false;
-	if (ok && defaultScenes.is_array()) {
-		for (const auto &s : defaultScenes) {
-			if (s.value("name", std::string()) == sameName) {
-				leakedToDefault = true;
+	// Two temporary ADDITIONAL canvases (source + destination), like the canvas-scene
+	// selftest. Never Saved explicitly; the bridge calls do their own normal Save.
+	const std::string srcCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-src-canvas");
+	const std::string destCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-dest-canvas");
+	obs_canvas_t *srcCanvas = g_canvasRuntime->Find(srcCanvasUuid);
+	obs_canvas_t *destCanvas = g_canvasRuntime->Find(destCanvasUuid);
+
+	const char *kSceneName = "selftest-duplicate-scene";
+	const char *kNestedName = "selftest-duplicate-nested";
+	bool ok = false;
+	run("scenes.create", json{{"canvas", srcCanvasUuid}, {"name", kNestedName}}, ok);
+	check("scenes.create nested", ok);
+	run("scenes.create", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
+	check("scenes.create", ok);
+
+	{
+		OBSSourceAutoRelease sceneSrc = srcCanvas ? obs_canvas_get_source_by_name(srcCanvas, kSceneName)
+							  : nullptr;
+		OBSSourceAutoRelease nested = srcCanvas ? obs_canvas_get_source_by_name(srcCanvas, kNestedName)
+							: nullptr;
+		obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+
+		// A type libobs flags OBS_SOURCE_DO_NOT_DUPLICATE -- the kind OBS_SCENE_DUP_COPY
+		// used to leave shared. ffmpeg_source first: it is headless-safe with no file.
+		const char *mediaId = nullptr;
+		for (const char *id : {"ffmpeg_source", "vlc_source", "browser_source"}) {
+			if (obs_source_get_display_name(id)) {
+				mediaId = id;
 				break;
 			}
 		}
+		OBSSourceAutoRelease color =
+			obs_source_create("color_source", "selftest-duplicate-color", nullptr, nullptr);
+		OBSSourceAutoRelease media =
+			mediaId ? obs_source_create(mediaId, "selftest-duplicate-media", nullptr, nullptr) : nullptr;
+		OBSSourceAutoRelease audio =
+			obs_source_create("wasapi_output_capture", "selftest-duplicate-audio", nullptr, nullptr);
+		OBSSourceAutoRelease groupChild =
+			obs_source_create("color_source", "selftest-duplicate-group-child", nullptr, nullptr);
+		HostLog(std::string("[selftest] scene-duplicate flagged type -> ") +
+			(mediaId ? mediaId : "none registered, SKIP (BUG)"));
+		check("flagged type carries OBS_SOURCE_DO_NOT_DUPLICATE",
+		      media && (obs_source_get_output_flags(media) & OBS_SOURCE_DO_NOT_DUPLICATE) != 0);
+
+		// Items bottom to top: color (hidden, moved), media, audio, nested scene, a
+		// group holding its own color plus the first color, and the first color again.
+		obs_source_t *groupSrc = nullptr; // borrowed from its item
+		if (scene && color && media && audio && nested && groupChild) {
+			obs_sceneitem_t *colorItem = obs_scene_add(scene, color);
+			vec2 pos;
+			vec2_set(&pos, 123.0f, 45.0f);
+			obs_sceneitem_set_pos(colorItem, &pos);
+			obs_sceneitem_set_visible(colorItem, false);
+			obs_scene_add(scene, media);
+			obs_scene_add(scene, audio);
+			obs_scene_add(scene, nested);
+			obs_sceneitem_t *groupItem = obs_scene_add_group2(scene, "selftest-duplicate-group", true);
+			obs_scene_add(obs_sceneitem_group_get_scene(groupItem), groupChild);
+			obs_scene_add(obs_sceneitem_group_get_scene(groupItem), color);
+			groupSrc = obs_sceneitem_get_source(groupItem);
+			obs_scene_add(scene, color);
+		}
+		const std::vector<obs_sceneitem_t *> origItems = itemsOf(scene);
+		check("setup items=" + std::to_string(origItems.size()), origItems.size() == 6 && groupSrc);
+		const std::vector<std::string> originals = {uuidOf(color),  uuidOf(media),    uuidOf(audio),
+							    uuidOf(nested), uuidOf(groupSrc), uuidOf(groupChild)};
+		auto originalsAlive = [&]() {
+			return std::all_of(originals.begin(), originals.end(), alive);
+		};
+
+		// Names the dialog prefills: suffixed beside the original, verbatim on a canvas
+		// that has no such scene.
+		json freeSrc = run("scenes.freeName", json{{"name", kSceneName}, {"canvas", srcCanvasUuid}}, ok);
+		check("freeName same canvas", ok && freeSrc.value("name", "") == std::string(kSceneName) + " 2");
+		json freeDest = run("scenes.freeName", json{{"name", kSceneName}, {"canvas", destCanvasUuid}}, ok);
+		check("freeName other canvas", ok && freeDest.value("name", "") == kSceneName);
+
+		// A taken newName is refused, not silently suffixed.
+		{
+			json ignored;
+			std::string error;
+			const bool taken = !Bridge::Dispatch(
+				"scenes.duplicate",
+				json{{"name", kSceneName}, {"canvas", srcCanvasUuid}, {"newName", kSceneName}}, ignored,
+				error);
+			check("taken newName refused", taken && !error.empty());
+		}
+
+		// 1) Independent copies onto the destination canvas.
+		json dup = run("scenes.duplicate",
+			       json{{"name", kSceneName},
+				    {"canvas", srcCanvasUuid},
+				    {"destCanvas", destCanvasUuid},
+				    {"sources", "copy"}},
+			       ok);
+		const std::string dupUuid = ok ? dup.value("uuid", std::string()) : std::string();
+		check("copy scenes.duplicate name='" + (ok ? dup.value("name", std::string()) : std::string()) + "'",
+		      ok && dup.value("name", "") == kSceneName);
+
+		std::vector<std::string> created; // color copy, media copy, group child copy, group copy
+		std::string groupCopyUuid, groupChildCopyUuid;
+		{
+			OBSSourceAutoRelease dupSrc = obs_get_source_by_uuid(dupUuid.c_str());
+			const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(dupSrc));
+			check("copy lands on destination canvas", dupSrc && onCanvas(dupSrc, destCanvas));
+			check("copy items=" + std::to_string(items.size()), items.size() == 6);
+			if (items.size() == 6 && origItems.size() == 6) {
+				obs_source_t *c0 = obs_sceneitem_get_source(items[0]);
+				obs_source_t *m = obs_sceneitem_get_source(items[1]);
+				obs_source_t *g = obs_sceneitem_get_source(items[4]);
+				check("copy color is its own source", c0 != color.Get());
+				check("copy color named '" + std::string(obs_source_get_name(c0)) + "'",
+				      std::string(obs_source_get_name(c0)) != obs_source_get_name(color) &&
+					      std::string(obs_source_get_name(c0)).rfind("__unnamed", 0) != 0);
+				check("copy flagged source is its own instance",
+				      m != media.Get() &&
+					      std::string(obs_source_get_id(m)) == obs_source_get_id(media));
+				check("copy on another canvas mutes the copy that carries audio",
+				      obs_source_muted(m) && !obs_source_muted(media));
+				{
+					OBSDataAutoRelease a = obs_source_get_settings(m);
+					OBSDataAutoRelease b = obs_source_get_settings(media);
+					check("copy flagged source has its own settings", a.Get() != b.Get());
+				}
+				check("copy keeps wasapi shared", obs_sceneitem_get_source(items[2]) == audio.Get());
+				check("copy keeps nested scene linked",
+				      obs_sceneitem_get_source(items[3]) == nested.Get());
+				check("copy reuses one copy for a source used twice",
+				      obs_sceneitem_get_source(items[5]) == c0);
+
+				vec2 pos;
+				obs_sceneitem_get_pos(items[0], &pos);
+				check("copy item data (hidden, pos)",
+				      !obs_sceneitem_visible(items[0]) && pos.x == 123.0f && pos.y == 45.0f);
+
+				check("copy group is its own group on the destination",
+				      g != groupSrc && obs_source_is_group(g) && onCanvas(g, destCanvas));
+				const std::vector<obs_sceneitem_t *> children = itemsOf(obs_group_from_source(g));
+				obs_source_t *child = children.size() == 2 ? obs_sceneitem_get_source(children[0])
+									   : nullptr;
+				check("copy group child is its own source", child && child != groupChild.Get());
+				check("copy reuses the top-level copy inside the group",
+				      children.size() == 2 && obs_sceneitem_get_source(children[1]) == c0);
+
+				groupCopyUuid = uuidOf(g);
+				groupChildCopyUuid = uuidOf(child);
+				created = {uuidOf(c0), uuidOf(m), groupChildCopyUuid, groupCopyUuid};
+			}
+		}
+
+		// 2) Undo removes the scene and exactly what it created, never a shared source.
+		undo();
+		check("copy undo removes scene", !alive(dupUuid));
+		check("copy undo removes created sources",
+		      !created.empty() && std::none_of(created.begin(), created.end(), alive));
+		check("copy undo keeps every original", originalsAlive());
+
+		// 3) Redo restores the same uuids, the group copy with its copied child.
+		ObsBootstrap::Undo().Redo();
+		check("copy redo restores scene", alive(dupUuid));
+		check("copy redo restores created sources",
+		      !created.empty() && std::all_of(created.begin(), created.end(), alive));
+		{
+			OBSSourceAutoRelease dupSrc = obs_get_source_by_uuid(dupUuid.c_str());
+			OBSSourceAutoRelease groupCopy = obs_get_source_by_uuid(groupCopyUuid.c_str());
+			const std::vector<obs_sceneitem_t *> children = itemsOf(obs_group_from_source(groupCopy));
+			check("copy redo restores group children",
+			      children.size() == 2 &&
+				      uuidOf(obs_sceneitem_get_source(children[0])) == groupChildCopyUuid &&
+				      uuidOf(obs_sceneitem_get_source(children[1])) == created[0]);
+			check("copy redo items=" + std::to_string(itemsOf(obs_scene_from_source(dupSrc)).size()),
+			      itemsOf(obs_scene_from_source(dupSrc)).size() == 6 && onCanvas(dupSrc, destCanvas));
+		}
+		undo();
+		check("copy second undo removes scene", !alive(dupUuid));
+
+		// 4) Independent copies beside the original, which is what the dialog defaults to:
+		// distinct sources, and the copy that carries audio keeps it.
+		json same = run("scenes.duplicate",
+				json{{"name", kSceneName}, {"canvas", srcCanvasUuid}, {"sources", "copy"}}, ok);
+		const std::string sameUuid = ok ? same.value("uuid", std::string()) : std::string();
+		check("copy same canvas name='" + (ok ? same.value("name", std::string()) : std::string()) + "'",
+		      ok && same.value("name", "") == std::string(kSceneName) + " 2");
+		{
+			OBSSourceAutoRelease sameSrc = obs_get_source_by_uuid(sameUuid.c_str());
+			const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(sameSrc));
+			obs_source_t *c0 = items.size() == 6 ? obs_sceneitem_get_source(items[0]) : nullptr;
+			obs_source_t *m = items.size() == 6 ? obs_sceneitem_get_source(items[1]) : nullptr;
+			check("copy same canvas gives distinct sources",
+			      c0 && m && c0 != color.Get() && m != media.Get() && onCanvas(sameSrc, srcCanvas));
+			check("copy same canvas keeps the copy's audio", m && !obs_source_muted(m));
+		}
+		undo();
+		check("copy same canvas undo removes scene", !alive(sameUuid));
+		check("copy same canvas undo keeps every original", originalsAlive());
+
+		// 5) Shared, beside the original: every item holds the original's source.
+		json share = run("scenes.duplicate",
+				 json{{"name", kSceneName}, {"canvas", srcCanvasUuid}, {"sources", "share"}}, ok);
+		const std::string shareUuid = ok ? share.value("uuid", std::string()) : std::string();
+		check("share scenes.duplicate name='" + (ok ? share.value("name", std::string()) : std::string()) + "'",
+		      ok && share.value("name", "") == std::string(kSceneName) + " 2");
+		{
+			OBSSourceAutoRelease shareSrc = obs_get_source_by_uuid(shareUuid.c_str());
+			const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(shareSrc));
+			bool allShared = items.size() == origItems.size() && onCanvas(shareSrc, srcCanvas);
+			for (size_t i = 0; allShared && i < items.size(); i++) {
+				allShared = obs_sceneitem_get_source(items[i]) ==
+					    obs_sceneitem_get_source(origItems[i]);
+			}
+			check("share keeps every source shared", allShared);
+		}
+		undo();
+		check("share undo removes scene", !alive(shareUuid));
+		check("share undo keeps every original", originalsAlive());
+
+		// 6) Shared onto another canvas, under an explicit name: the group needs a
+		// container there, but what it holds stays shared.
+		const std::string kRenamed = "selftest-duplicate-renamed";
+		json shareX = run("scenes.duplicate",
+				  json{{"name", kSceneName},
+				       {"canvas", srcCanvasUuid},
+				       {"destCanvas", destCanvasUuid},
+				       {"newName", "  " + kRenamed + " "},
+				       {"sources", "share"}},
+				  ok);
+		const std::string shareXUuid = ok ? shareX.value("uuid", std::string()) : std::string();
+		check("share cross-canvas newName", ok && shareX.value("name", "") == kRenamed);
+		std::string shareXGroupUuid;
+		{
+			OBSSourceAutoRelease shareSrc = obs_get_source_by_uuid(shareXUuid.c_str());
+			const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(shareSrc));
+			if (items.size() == 6) {
+				obs_source_t *g = obs_sceneitem_get_source(items[4]);
+				const std::vector<obs_sceneitem_t *> children = itemsOf(obs_group_from_source(g));
+				shareXGroupUuid = uuidOf(g);
+				check("share cross-canvas group container on destination",
+				      g != groupSrc && onCanvas(g, destCanvas));
+				check("share cross-canvas group children shared",
+				      children.size() == 2 &&
+					      obs_sceneitem_get_source(children[0]) == groupChild.Get() &&
+					      obs_sceneitem_get_source(children[1]) == color.Get());
+				check("share cross-canvas inputs shared",
+				      obs_sceneitem_get_source(items[0]) == color.Get() &&
+					      obs_sceneitem_get_source(items[1]) == media.Get());
+			} else {
+				check("share cross-canvas items=" + std::to_string(items.size()), false);
+			}
+		}
+		undo();
+		check("share cross-canvas undo removes scene and container",
+		      !alive(shareXUuid) && !shareXGroupUuid.empty() && !alive(shareXGroupUuid));
+		check("share cross-canvas undo keeps every original", originalsAlive());
+
+		// 7) canvas.duplicate keeps what OBS_SCENE_DUP_COPY did: unflagged inputs copied,
+		// flagged types and nested scenes shared, a group in a new container over the
+		// original's children.
+		json canvasDup = run("canvas.duplicate", json{{"uuid", srcCanvasUuid}}, ok);
+		const std::string dupCanvasUuid = ok ? canvasDup.value("uuid", std::string()) : std::string();
+		check("canvas.duplicate", ok && !dupCanvasUuid.empty());
+		if (obs_canvas_t *dupCanvas = g_canvasRuntime->Find(dupCanvasUuid)) {
+			OBSSourceAutoRelease copied = obs_canvas_get_source_by_name(dupCanvas, kSceneName);
+			const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(copied));
+			if (items.size() == 6) {
+				obs_source_t *c0 = obs_sceneitem_get_source(items[0]);
+				obs_source_t *g = obs_sceneitem_get_source(items[4]);
+				const std::vector<obs_sceneitem_t *> children = itemsOf(obs_group_from_source(g));
+				check("canvas.duplicate copies an unflagged input", c0 != color.Get());
+				check("canvas.duplicate shares a flagged source",
+				      obs_sceneitem_get_source(items[1]) == media.Get());
+				check("canvas.duplicate shares the nested scene",
+				      obs_sceneitem_get_source(items[3]) == nested.Get());
+				check("canvas.duplicate gives the group a container over shared children",
+				      g != groupSrc && onCanvas(g, dupCanvas) && children.size() == 2 &&
+					      obs_sceneitem_get_source(children[0]) == groupChild.Get() &&
+					      obs_sceneitem_get_source(children[1]) == color.Get());
+				obs_source_remove(c0); // the one input it copied
+			} else {
+				check("canvas.duplicate items=" + std::to_string(items.size()), false);
+			}
+		}
+		if (!dupCanvasUuid.empty()) {
+			run("canvas.remove", json{{"uuid", dupCanvasUuid}}, ok);
+			check("canvas.duplicate cleanup", ok && g_canvasRuntime->Find(dupCanvasUuid) == nullptr);
+		}
+
+		// 8) On the Default canvas a group copy takes a name free in the namespace
+		// obs_get_source_by_name searches, and lives on the main canvas.
+		{
+			const char *kDefaultScene = "selftest-duplicate-default-scene";
+			run("scenes.create", json{{"name", kDefaultScene}}, ok);
+			check("Default scenes.create", ok);
+			OBSSourceAutoRelease defScene = obs_get_source_by_name(kDefaultScene);
+			OBSSourceAutoRelease defChild =
+				obs_source_create("color_source", "selftest-duplicate-default-child", nullptr, nullptr);
+			obs_source_t *defGroup = nullptr; // borrowed from its item
+			if (obs_scene_t *ds = obs_scene_from_source(defScene)) {
+				obs_sceneitem_t *gi =
+					obs_scene_add_group2(ds, "selftest-duplicate-default-group", true);
+				obs_scene_add(obs_sceneitem_group_get_scene(gi), defChild);
+				defGroup = obs_sceneitem_get_source(gi);
+			}
+			json defDup = run("scenes.duplicate", json{{"name", kDefaultScene}, {"sources", "copy"}}, ok);
+			const std::string defDupUuid = ok ? defDup.value("uuid", std::string()) : std::string();
+			{
+				OBSSourceAutoRelease dupSrc = obs_get_source_by_uuid(defDupUuid.c_str());
+				const std::vector<obs_sceneitem_t *> items = itemsOf(obs_scene_from_source(dupSrc));
+				obs_source_t *g = items.size() == 1 ? obs_sceneitem_get_source(items[0]) : nullptr;
+				OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas();
+				OBSSourceAutoRelease byName = g ? obs_get_source_by_name(obs_source_get_name(g))
+								: nullptr;
+				check("Default group copy on the main canvas under a free name",
+				      g && defGroup && g != defGroup && onCanvas(g, mainCanvas) && byName.Get() == g);
+			}
+			undo();
+			check("Default undo removes scene", !alive(defDupUuid));
+			run("scenes.remove", json{{"name", kDefaultScene}}, ok);
+			check("Default scenes.remove", ok);
+			if (defChild) {
+				obs_source_remove(defChild);
+			}
+		}
+
+		// Clean up the inputs and the group; the scenes go with their canvas below.
+		for (obs_source_t *s : {color.Get(), media.Get(), audio.Get(), groupChild.Get(), groupSrc}) {
+			if (s) {
+				obs_source_remove(s);
+			}
+		}
 	}
-	HostLog(std::string("[selftest] scene-duplicate Default scenes.list -> leaked=") +
-		(leakedToDefault ? "true (BUG)" : "false"));
-
-	// OBS_SCENE_DUP_REFS: the copy's single item must point at the SAME source
-	// uuid as the original -- the contrast to isRealCopy above, which asserts the
-	// opposite for scenes.duplicateToCanvas's deep copy.
-	int64_t sameItemId = 0;
-	std::string sameSrcName;
-	const std::string sameSrcUuid = singleItemSourceUuid(srcCanvasUuid, sameName, sameItemId, sameSrcName);
-	const bool sameRefIsShared = !sameSrcUuid.empty() && sameSrcUuid == origSrcUuid;
-	HostLog(std::string("[selftest] scene-duplicate same-canvas item ref -> uuid=") +
-		(sameSrcUuid.empty() ? "MISSING (BUG)" : sameSrcUuid) +
-		"; shared-with-original=" + (sameRefIsShared ? "true" : "false (BUG)"));
-
-	// singleItemSourceUuid just made the duplicate current on srcCanvasUuid;
-	// restore kSceneName so the srcItemId-based cleanup below still targets the
-	// scene it was captured from.
-	run("scenes.setCurrent", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
-
-	// 4) Undo: the duplicated scene must disappear from the destination canvas.
-	// The removed scene + its child source only fully leave the uuid/name
-	// registry once the destruction-task thread processes their deferred
-	// obs_source_destroy (obs_source_remove only marks them removed); drain it
-	// synchronously so the redo below restores into a clean registry instead of
-	// racing a still-live duplicate of the same uuid, mirroring the drain-loop
-	// idiom Stop() already uses around canvas/scene teardown.
-	ObsBootstrap::Undo().Undo();
 	while (obs_wait_for_destroy_queue()) {
 	}
-	const bool goneAfterUndo = !sceneExistsOnDest(newSceneName);
-	HostLog(std::string("[selftest] scene-duplicate undo -> scene removed=") +
-		(goneAfterUndo ? "true" : "false (BUG)"));
 
-	// 5) Redo: the scene must come back with the SAME item source uuid captured
-	// above -- proof of uuid-preserving restore-from-snapshot, not a fresh
-	// re-duplicate (which would mint a new uuid).
-	ObsBootstrap::Undo().Redo();
-	const bool backAfterRedo = sceneExistsOnDest(newSceneName);
-	HostLog(std::string("[selftest] scene-duplicate redo -> scene restored=") +
-		(backAfterRedo ? "true" : "false (BUG)"));
-
-	int64_t redoItemId = 0;
-	std::string redoSrcName;
-	const std::string redoSrcUuid =
-		backAfterRedo ? singleItemSourceUuid(destCanvasUuid, newSceneName, redoItemId, redoSrcName)
-			      : std::string();
-	const bool uuidPreserved = !redoSrcUuid.empty() && redoSrcUuid == dupSrcUuid;
-	HostLog(std::string("[selftest] scene-duplicate redo uuid-preserved -> ") +
-		(uuidPreserved ? "true" : "false (BUG)") + " (uuid=" + redoSrcUuid + ")");
-
-	// Clean up: remove the source items + underlying sources we created, then
-	// destroy both temp canvases, returning the in-memory model to baseline.
-	if (redoItemId) {
-		run("sceneItems.remove", json{{"canvas", destCanvasUuid}, {"id", redoItemId}}, ok);
-		obs_source_t *s = obs_get_source_by_name(redoSrcName.c_str());
-		if (s) {
-			obs_source_remove(s);
-			obs_source_release(s);
-		}
-	}
-	if (srcItemId) {
-		run("sceneItems.remove", json{{"canvas", srcCanvasUuid}, {"id", srcItemId}}, ok);
-		obs_source_t *s = obs_get_source_by_name(srcSrcName.c_str());
-		if (s) {
-			obs_source_remove(s);
-			obs_source_release(s);
-		}
-	}
 	g_multistream->InvalidateCanvasEncoders(destCanvasUuid);
 	g_multistream->InvalidateCanvasEncoders(srcCanvasUuid);
 	g_canvasRuntime->RemoveCanvas(destCanvasUuid);

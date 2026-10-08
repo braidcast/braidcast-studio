@@ -1,14 +1,6 @@
 import { obs, type ObsMethods } from "$lib/api/bridge";
 import { showToast } from "$lib/stores/toastStore.svelte";
 
-// scenes.duplicate and scenes.duplicateToCanvas can return a name other than the one
-// requested, when the requested one collided and the bridge suffixed it. This is the
-// shared " as \"<actual>\"" clause toast messages append to report that -- empty when
-// the names match.
-export function renamedSuffix(requested: string, actual: string): string {
-  return actual !== requested ? ` as "${actual}"` : "";
-}
-
 // overlays.test and events.replay share the same "0 delivered" meaning: the frame reached
 // the overlay server and no eligible widget was listening for it. One place for the
 // wording so the two callers (PreviewPane.svelte, EventsDock.svelte) cannot drift on what

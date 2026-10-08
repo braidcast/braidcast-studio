@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    bridgeErrorText,
     obs,
     type BridgeError,
     type OAuthProvider,
@@ -139,15 +140,6 @@ import { EV } from "$lib/utils/eventNames";
   const PUSH_FAILED = "metadata push failed";
   // And what a local save that reported nothing is called, on the same card strip.
   const SAVE_FAILED = "couldn't be saved on this machine";
-
-  // ONE reading of a BridgeError for the user, wherever this dialog names a failure: the
-  // decoded sentence written for a streamer where the host sent one, otherwise `message`,
-  // which prefixes the method/step chain that named the failing call. An EMPTY reading is
-  // the absent-reason case, which each caller falls back for itself -- the card strip
-  // substitutes a noun for it, the toast helper keeps the empty string.
-  function streamerReason(e: BridgeError | undefined): string {
-    return e?.userMessage ?? e?.message ?? "";
-  }
 
   // And ONE naming of a destination in copy the user reads: the platform where the channel
   // resolved to one, otherwise the profile's own label, otherwise a neutral noun. Never the
@@ -1650,7 +1642,7 @@ import { EV } from "$lib/utils/eventNames";
       const failed = new Map<string, string>();
       rs.forEach((r, i) => {
         if (r.status === "rejected") {
-          failed.set(targets[i].accountId, streamerReason(r.reason as BridgeError) || SAVE_FAILED);
+          failed.set(targets[i].accountId, bridgeErrorText(r.reason as BridgeError) || SAVE_FAILED);
         }
       });
       if (failed.size > 0) {
@@ -1850,14 +1842,14 @@ import { EV } from "$lib/utils/eventNames";
     // next to the arm switch that is the remedy. The toast below is only the
     // attention-getter: it auto-dismisses and the next toast replaces it.
     //
-    // Both render the same reading of the OpError (streamerReason), because the card and
+    // Both render the same reading of the OpError (bridgeErrorText), because the card and
     // the toast are describing one failure to the same person at the same moment.
     //
     // The card treats an EMPTY reading as no reading: a rejected promise can carry a blank
     // message, and a strip whose only job is to name the failure must not render a blank.
     // The toast keeps the empty string, which is the absent-reason case its helper owns.
     channelSaveError = Object.fromEntries(
-      [...failedByChannel].map(([id, f]) => [id, streamerReason(f.reason) || PUSH_FAILED]),
+      [...failedByChannel].map(([id, f]) => [id, bridgeErrorText(f.reason) || PUSH_FAILED]),
     );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the
@@ -1875,9 +1867,9 @@ import { EV } from "$lib/utils/eventNames";
         names: fails.map((v) => v.name),
         // Empty and all: destinationFailureToast owns what an absent reason falls back
         // to, and a second answer here would only be the one that disagrees.
-        reason: streamerReason(fails[0].reason),
+        reason: bridgeErrorText(fails[0].reason),
         lines: fails.map((v) => {
-          const why = streamerReason(v.reason);
+          const why = bridgeErrorText(v.reason);
           return why ? `${v.name} — ${why}` : v.name;
         }),
         singularSuffix: goingLive ? "" : " stream info",

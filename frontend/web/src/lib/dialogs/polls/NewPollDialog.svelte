@@ -21,7 +21,7 @@
 
 <script lang="ts">
   import { tick } from "svelte";
-  import type { PollTemplate } from "$lib/api/bridge";
+  import { bridgeErrorText, type PollTemplate } from "$lib/api/bridge";
   import SavedItemPicker, { type SavedItemCopy } from "$lib/dialogs/SavedItemPicker.svelte";
   import { pollStore } from "$lib/stores/pollStore.svelte";
   import { pollTemplateStore } from "$lib/stores/pollTemplateStore.svelte";
@@ -148,8 +148,7 @@
       if (r.status === "fulfilled") {
         ok.push(batch[i].key);
       } else {
-        const reason = r.reason as { userMessage?: string; message?: string } | undefined;
-        failed[batch[i].key] = reason?.userMessage ?? reason?.message ?? String(r.reason);
+        failed[batch[i].key] = bridgeErrorText(r.reason) || String(r.reason);
       }
     });
     if (Object.keys(failed).length === 0) {

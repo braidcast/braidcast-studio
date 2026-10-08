@@ -45,6 +45,33 @@ export interface SceneInfo {
   current: boolean;
 }
 
+/** How scenes.duplicate treats the original's sources. `copy` gives the new scene
+ * independent copies (recursing into groups; a source used twice becomes one copy used
+ * twice), except that nested scenes stay linked and device/audio inputs (webcams,
+ * capture cards, DeckLink, AJA, system audio) stay shared; on another canvas a copy
+ * that carries audio starts muted, since every canvas feeds the one audio mix. `share`
+ * makes the new scene's items reference the original's sources. */
+export type SceneDuplicateSources = "copy" | "share";
+
+/** Fields accepted by scenes.duplicate. `canvas` is where `name` lives (omitted or
+ * "" = Default); `destCanvas` is the target canvas (omitted = the same canvas; the
+ * Default canvas's own uuid is accepted); `newName` is used verbatim after a trim and
+ * is rejected when empty or already taken on the destination (omitted = the host
+ * picks the free name); `sources` defaults to "copy". */
+export interface SceneDuplicateParams {
+  name: string;
+  canvas?: string;
+  destCanvas?: string;
+  newName?: string;
+  sources?: SceneDuplicateSources;
+}
+
+/** Fields accepted by scenes.freeName: `canvas` omitted or "" = Default. */
+export interface SceneFreeNameParams {
+  name: string;
+  canvas?: string;
+}
+
 /** A scene item's show/hide transition (type + duration), as reported by
  * sceneItems.list and set via sceneItems.setShowTransition/setHideTransition.
  * `type` is a registered transition-type id (see transitionTypes.list). */
@@ -2077,15 +2104,13 @@ export interface ObsMethods {
   "scenes.remove": { removed: string };
   "scenes.setCurrent": { name: string };
   "scenes.rename": { name: string };
-  // Duplicate a scene within its own canvas (shared source refs, matching OBS's own
-  // "Duplicate Scene"). Params: {name, canvas?}; canvas omitted/empty means the
-  // Default canvas. Contrast scenes.duplicateToCanvas below, which deep-copies a
-  // scene onto a DIFFERENT canvas.
-  "scenes.duplicate": { name: string };
-  // Deep-copy a scene (its own scene-level filters + every item's SOURCE, filters
-  // included) from one canvas onto another (or the same one). Params: {name,
-  // canvas?, destCanvas}; canvas omitted/empty means the Default canvas.
-  "scenes.duplicateToCanvas": { name: string; uuid: string };
+  // Duplicate a scene onto its own canvas or another one, as independent copies of
+  // its sources or sharing them (SceneDuplicateParams / SceneDuplicateSources).
+  // Undoable. Returns the new scene's name and uuid.
+  "scenes.duplicate": { name: string; uuid: string };
+  // The name a new scene called `name` would get on a canvas (SceneFreeNameParams):
+  // `name` itself when no scene or source holds it there, else "<name> 2", "<name> 3"…
+  "scenes.freeName": { name: string };
   // Reorder a scene within its canvas's persisted order. Params: {name, canvas?,
   // ...}; canvas omitted/empty means the Default canvas, which is tracked by
   // scene_order while each additional canvas has its own canvas_scene_order entry.
@@ -2974,6 +2999,14 @@ export interface BridgeError extends Error {
   // absent when the failure carries only a diagnostic. `message` always holds the
   // full diagnostic chain, so existing consumers are unaffected.
   userMessage?: string;
+}
+
+/** The one reading of a rejected bridge call for the user: the streamer-facing
+ * sentence where the host sent one, otherwise the diagnostic `message`. Empty when
+ * the rejection carries neither, so each caller picks its own fallback. */
+export function bridgeErrorText(e: unknown): string {
+  const err = e as BridgeError | undefined;
+  return err?.userMessage ?? err?.message ?? "";
 }
 
 export type Unsubscribe = () => void;

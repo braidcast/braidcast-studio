@@ -78,7 +78,7 @@ const std::array<ReadRule, 7> &ReadRules()
 		{RuleKind::Substring, ".get"},
 		{RuleKind::Exact, "stats.get"},
 		{RuleKind::Exact, "display.listMonitors"},
-		{RuleKind::Suffix, ".getCurrent"}, // duplicate keeps array size stable on edits
+		{RuleKind::Exact, "scenes.freeName"},
 	}};
 	return kRules;
 }

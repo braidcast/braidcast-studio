@@ -953,6 +953,15 @@ input[type="color"] {
   color: var(--color-dim);
   font-weight: 500;
 }
+/* Why the field's value is refused; pair it with aria-invalid + aria-describedby. */
+.cv-field__err {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--color-live-text);
+  overflow-wrap: anywhere;
+}
 
 /* --- segmented control --- */
 .cv-seg {

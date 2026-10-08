@@ -11,6 +11,8 @@
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
   import TitleBar from "$lib/ui/TitleBar.svelte";
   import Toast from "$lib/ui/Toast.svelte";
+  import DuplicateSceneDialog from "$lib/dialogs/DuplicateSceneDialog.svelte";
+  import { duplicateSceneOpener, closeDuplicateScene } from "$lib/dialogs/duplicateSceneOpener.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();
@@ -75,6 +77,12 @@
   <TitleBar variant="detached" {title} onRedock={redock} />
   <div class="body" bind:this={host}></div>
 </div>
+
+<!-- A popped-out scene list opens Duplicate… through the same opener as the main window,
+     whose dialog mount is not in this browser. -->
+{#if duplicateSceneOpener.scene}
+  <DuplicateSceneDialog {...duplicateSceneOpener.scene} onClose={closeDuplicateScene} />
+{/if}
 
 <!-- Each window is its own CEF browser with its own module instances, so the toast store
      a detached dock writes to is not the main window's and had nowhere to surface. A

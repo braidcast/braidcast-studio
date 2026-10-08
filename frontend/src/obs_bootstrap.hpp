@@ -384,21 +384,24 @@ void RemoveSelfTestCanvas(const std::string &uuid);
 // the temp canvas afterward; never Saves, so the user's files are untouched. Gated
 // by the caller to the smoke path.
 void RunCanvasSceneSelfTest();
-// Headless proof for scenes.duplicateToCanvas: bring up two temporary additional
-// canvases (source + destination), create a scene with one color source on the
-// source canvas, then drive scenes.duplicateToCanvas onto the destination canvas.
-// Asserts the new scene lands on the destination with exactly one item whose
-// source has a DIFFERENT uuid than the original (a real deep copy, not a shared
-// ref), that Undo() removes the duplicated scene, and that Redo() restores it
-// with the SAME item source uuid captured after the initial duplicate (proving
-// restore-from-snapshot rather than a fresh re-duplicate). Also drives
-// scenes.duplicate on the source canvas and asserts the same-canvas copy is
-// suffixed "<name> 2", is listed on the source canvas but not the Default one,
-// and shares -- not copies -- the original item's source uuid, the shared-ref
-// contrast to the deep copy above. Removes both temp canvases afterward; never
-// Saves explicitly (the bridge calls it drives do their own normal Save,
-// matching the other canvas-scene self-tests). Gated by the caller to the
-// smoke path.
+// Headless proof for scenes.duplicate and canvas.duplicate. On a temporary source
+// canvas, builds a scene holding a color source (hidden and moved), an
+// OBS_SOURCE_DO_NOT_DUPLICATE type (ffmpeg_source when registered), a
+// wasapi_output_capture, a nested scene, a group holding its own color plus the first
+// color, and the first color again. "copy" onto a second temporary canvas must give
+// distinct sources for the color, the flagged type and the group (its own child copied
+// too), keep the wasapi source and the nested scene shared, use ONE copy of the color
+// everywhere it appears (group included), carry the item data, and start the
+// audio-carrying copy muted. Undo must remove the scene and exactly the created
+// sources, never an original; redo must restore the same uuids, group children
+// included. "copy" beside the original must keep the copy's audio. "share" beside the
+// original must hold every original source, and "share" onto the other canvas must give
+// the group a container there over shared children. canvas.duplicate must keep
+// OBS_SCENE_DUP_COPY's semantics (unflagged input copied, flagged type and nested scene
+// shared, group container over shared children). A group copied on the Default canvas
+// must land on the main canvas under a name free there. Also asserts scenes.freeName's
+// two answers and that a taken newName is refused. Removes every canvas, scene and
+// source it created afterward. Gated by the caller to the smoke path.
 void RunSceneDuplicateSelfTest();
 // Headless proof that "Duplicate" always produces a genuinely independent source --
 // its own obs_source_t and its own filter chain -- even for a type libobs flags
