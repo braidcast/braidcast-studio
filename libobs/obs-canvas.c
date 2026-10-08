@@ -626,6 +626,16 @@ static bool enum_move_cb(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
 void obs_canvas_move_scene(obs_scene_t *scene, obs_canvas_t *dst)
 {
 	obs_source_t *source = scene->source;
+
+	/* Already there: re-inserting would be harmless for the scene, but each of its
+	 * groups would be removed from every scene on its "old" canvas -- this scene
+	 * included -- before being put back, leaving the scene without them. */
+	obs_canvas_t *current = obs_weak_canvas_get_canvas(source->canvas);
+	obs_canvas_release(current);
+	if (current == dst) {
+		return;
+	}
+
 	obs_canvas_remove_source(source);
 	obs_canvas_insert_source(dst, source);
 
