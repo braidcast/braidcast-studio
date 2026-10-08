@@ -32,6 +32,9 @@ extern "C" {
 
 extern void hlog(const char *format, ...);
 extern void hlog_hr(const char *text, HRESULT hr);
+/* For a thread that must never block on the log pipe (a game's Present): hands
+ * the line to the capture loop, which writes it within about 40 ms. */
+extern void hlog_deferred(const char *line);
 static inline const char *get_process_name(void);
 static inline HMODULE get_system_module(const char *module);
 static inline HMODULE load_system_library(const char *module);

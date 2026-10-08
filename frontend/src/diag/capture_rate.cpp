@@ -45,8 +45,8 @@ int Bin(double rate)
 	return static_cast<int>(std::lround(rate * 10.0));
 }
 
-// The rate at which half of the recorded seconds were at or below.
-double Median(const std::map<int, double> &hist)
+// The rate at which a share q of the recorded seconds were at or below.
+double Quantile(const std::map<int, double> &hist, double q)
 {
 	double total = 0.0;
 	for (const auto &[bin, sec] : hist) {
@@ -55,12 +55,21 @@ double Median(const std::map<int, double> &hist)
 	double seen = 0.0;
 	for (const auto &[bin, sec] : hist) {
 		seen += sec;
-		if (seen >= total / 2.0) {
+		if (seen >= total * q) {
 			return bin / 10.0;
 		}
 	}
 	return 0.0;
 }
+
+double Median(const std::map<int, double> &hist)
+{
+	return Quantile(hist, 0.5);
+}
+
+// The tag game capture's per-window lines carry too (FGC_STATS_TAG in
+// plugins/win-capture/frame-gen-stats.h), so one grep lines all of them up.
+constexpr const char *kWindowTag = "[10s]";
 
 int MatchFraction(double fraction)
 {
@@ -389,6 +398,9 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 		}
 		sessionRate = r.renderedFps;
 		sessionInput = r.inputFps;
+		if (game && inSession_) {
+			AddGameWindow(e, r, dt, dOffered, dDelivered, dNew);
+		}
 	}
 	if (e.lockedFraction >= 0) {
 		r.lockedFraction = kFractions[e.lockedFraction].label;
@@ -463,6 +475,31 @@ void Tracker::Sample(const SampleInput &in)
 	}
 }
 
+void Tracker::AddGameWindow(Entry &e, const Row &r, double dt, uint32_t presents, uint32_t copies, uint32_t newFrames)
+{
+	GameWindow &w = e.gameWindow;
+	w.sec += dt;
+	w.presents += presents;
+	w.copies += copies;
+	w.newFrames += newFrames;
+	w.belowSec += r.below ? dt : 0.0;
+	if (w.sec < kWindowSec - kEpsilon) {
+		return;
+	}
+	windowLines_.push_back(
+		std::string("[capture-rate] ") + kWindowTag + " '" + e.name + "' game" +
+		Format(" %.1f s: presents %.1f", w.sec, w.presents / w.sec) +
+		Format(" copies %.1f new %.1f /s, below %.1f s", w.copies / w.sec, w.newFrames / w.sec, w.belowSec));
+	w = GameWindow{};
+}
+
+std::vector<std::string> Tracker::TakeWindowLines()
+{
+	std::vector<std::string> lines;
+	lines.swap(windowLines_);
+	return lines;
+}
+
 void Tracker::Pause()
 {
 	rows_.clear();
@@ -490,6 +527,7 @@ void Tracker::SessionBegin(uint64_t nowNs)
 	sessionStartNs_ = nowNs;
 	for (auto &[uuid, e] : entries_) {
 		e.session = Session{};
+		e.gameWindow = GameWindow{};
 	}
 }
 
@@ -530,7 +568,9 @@ std::string Tracker::Summarize(const std::string &name, const Entry &e) const
 		return quoted + " " + LineLabel(s.measuredAs) +
 		       Format(" presents %.1f copies %.1f new %.1f", Median(s.input), Median(s.copies),
 			      Median(s.rate)) +
-		       RefNote(s) + Format(", below %.1f%%", belowPct);
+		       RefNote(s) + Format(", below %.1f%%", belowPct) +
+		       Format(", presents p10 %.1f p25 %.1f", Quantile(s.input, 0.1), Quantile(s.input, 0.25)) +
+		       Format(", new p10 %.1f p25 %.1f", Quantile(s.rate, 0.1), Quantile(s.rate, 0.25));
 	}
 
 	std::string out =
@@ -571,6 +611,7 @@ std::string Tracker::SessionEnd(uint64_t nowNs)
 
 	for (auto it = entries_.begin(); it != entries_.end();) {
 		it->second.session = Session{};
+		it->second.gameWindow = GameWindow{};
 		// Entries kept only for their sums are done with once the line is written.
 		it = it->second.baselined ? std::next(it) : entries_.erase(it);
 	}
@@ -581,6 +622,7 @@ void Tracker::Clear()
 {
 	entries_.clear();
 	rows_.clear();
+	windowLines_.clear();
 	inSession_ = false;
 	sessionStartNs_ = 0;
 }

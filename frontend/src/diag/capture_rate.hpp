@@ -162,11 +162,17 @@ public:
 	void SessionBegin(uint64_t nowNs);
 	// Closes the session and returns its one-line summary ("" without a session).
 	std::string SessionEnd(uint64_t nowNs);
+
+	// The per-window lines finished since the last call, oldest first: one per
+	// game hook source for every kWindowSec of measured time in a session, so a
+	// dip on the stream lines up with the log clock.
+	std::vector<std::string> TakeWindowLines();
 	bool InSession() const { return inSession_; }
 
 	void Clear();
 
 	static constexpr double kMaxSampleGapSec = 2.5;
+	static constexpr double kWindowSec = 10.0;
 
 private:
 	// Rates are binned at 0.1 fps; value = seconds spent at that rate.
@@ -186,6 +192,15 @@ private:
 		bool everUnmeasurable = false;
 	};
 
+	// A game hook's sums over the current window line's measured samples.
+	struct GameWindow {
+		double sec = 0.0;
+		double presents = 0.0;
+		double copies = 0.0;
+		double newFrames = 0.0;
+		double belowSec = 0.0;
+	};
+
 	struct Entry {
 		std::string name;
 		Kind kind = Kind::None;
@@ -199,6 +214,7 @@ private:
 		int lockedFraction = -1;
 		int exitCount = 0;
 		Session session;
+		GameWindow gameWindow;
 		decltype(Row::sinceReset) window;
 	};
 
@@ -210,9 +226,11 @@ private:
 	void NoteSession(Entry &e, const SourceInput &src, Status status);
 	static std::string RefNote(const Session &s);
 	std::string Summarize(const std::string &name, const Entry &e) const;
+	void AddGameWindow(Entry &e, const Row &r, double dt, uint32_t presents, uint32_t copies, uint32_t newFrames);
 
 	std::map<std::string, Entry> entries_;
 	std::vector<Row> rows_;
+	std::vector<std::string> windowLines_;
 	bool inSession_ = false;
 	uint64_t sessionStartNs_ = 0;
 };

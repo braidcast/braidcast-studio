@@ -1,5 +1,6 @@
 #include "diag/capture_rate.hpp"
 #include "hook-frame-relay.h"
+#include "frame-gen-stats.h"
 
 #include <cmath>
 #include <cstring>
@@ -891,6 +892,173 @@ static void test_browser_paint_reports_a_rate_only(void **)
 	assert_null(strstr(line.c_str(), "locked"));
 }
 
+// While live, a game hook source logs one line per 10 s of measured samples with
+// the window's presents, copies and new frames per second, tagged like game
+// capture's own per-window lines. Off air nothing accumulates, and a partial
+// window ends with the session.
+static void test_game_hook_window_lines(void **)
+{
+	Tracker t;
+	Feed game("Game Capture", Kind::GameHook);
+	Prime(t, game);
+	for (int s = 0; s < 12; s++) {
+		StepGame(t, game, 60, 120, 115, 59);
+	}
+	assert_true(t.TakeWindowLines().empty());
+
+	t.SessionBegin(0);
+	for (int s = 0; s < 9; s++) {
+		StepGame(t, game, 60, 120, 115, 59);
+	}
+	assert_true(t.TakeWindowLines().empty());
+	StepGame(t, game, 60, 120, 115, 59);
+	std::vector<std::string> lines = t.TakeWindowLines();
+	assert_int_equal(lines.size(), 1);
+	assert_string_equal(lines[0].c_str(), "[capture-rate] [10s] 'Game Capture' game 10.0 s: presents 120.0 copies "
+					      "115.0 new 59.0 /s, below 0.0 s");
+	assert_non_null(strstr(lines[0].c_str(), FGC_STATS_TAG));
+	assert_true(t.TakeWindowLines().empty());
+
+	for (int s = 0; s < 10; s++) {
+		StepGame(t, game, 60, 60, 60, 40);
+	}
+	lines = t.TakeWindowLines();
+	assert_int_equal(lines.size(), 1);
+	assert_non_null(strstr(lines[0].c_str(), "presents 60.0 copies 60.0 new 40.0 /s, below 10.0 s"));
+
+	for (int s = 0; s < 5; s++) {
+		StepGame(t, game, 60, 120, 115, 59);
+	}
+	t.SessionEnd(25ull * 1000000000ull);
+	t.SessionBegin(0);
+	for (int s = 0; s < 5; s++) {
+		StepGame(t, game, 60, 120, 115, 59);
+	}
+	assert_true(t.TakeWindowLines().empty());
+}
+
+// Clear drops a finished window line nobody took yet, along with the sums.
+static void test_clear_drops_pending_window_lines(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed game("Game Capture", Kind::GameHook);
+	Prime(t, game);
+	for (int s = 0; s < 10; s++) {
+		StepGame(t, game, 60, 120, 115, 59);
+	}
+	t.Clear();
+	assert_true(t.TakeWindowLines().empty());
+}
+
+// The session line adds the 10th and 25th percentile of presents and new frames,
+// so a dip that holds a fifth of the stream shows even when the median hides it.
+static void test_game_hook_session_quantiles(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed game("Game Capture", Kind::GameHook);
+	Prime(t, game);
+	for (int s = 0; s < 4; s++) {
+		StepGame(t, game, 60, 60, 50, 40);
+	}
+	for (int s = 0; s < 16; s++) {
+		StepGame(t, game, 60, 120, 115, 60);
+	}
+	const std::string line = t.SessionEnd(20ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "'Game Capture' game presents 120.0 copies 115.0 new 60.0 (ref 60), below "
+					     "20.0%, presents p10 60.0 p25 120.0, new p10 40.0 p25 60.0"));
+}
+
+// The capture hook's per-window counters: burst sizes with the size cap apart,
+// the extremes, and copy-time percentiles from 25 us bins.
+static void test_fgc_hook_stats_line(void **)
+{
+	struct fgc_hook_stats s;
+	memset(&s, 0, sizeof(s));
+	s.presents = 1198;
+	s.copies = 1150;
+	for (int i = 0; i < 3; i++) {
+		fgc_hook_stats_burst(&s, 1, false);
+	}
+	fgc_hook_stats_burst(&s, 3, false);
+	for (int i = 0; i < 295; i++) {
+		fgc_hook_stats_burst(&s, 4, false);
+	}
+	fgc_hook_stats_burst(&s, 4, true);
+	fgc_hook_stats_burst(&s, 4, true);
+	s.step_resets = 1;
+	s.stamp_clamps = 2;
+	s.bucket_skips = 48;
+	fgc_hook_stats_span(&s, 400000);
+	fgc_hook_stats_span(&s, 620000);
+	fgc_hook_stats_span(&s, 100000);
+	fgc_hook_stats_gap(&s, 30000000);
+	fgc_hook_stats_gap(&s, 24100000);
+	fgc_hook_stats_gap(&s, 33000000);
+	for (int i = 0; i < 98; i++) {
+		fgc_hook_stats_copy_time(&s, 200000);
+	}
+	fgc_hook_stats_copy_time(&s, 900000);
+	fgc_hook_stats_copy_time(&s, 900000);
+
+	char line[512];
+	assert_true(fgc_hook_stats_format(line, sizeof(line), &s, 10003000000ull, 8333000ull) > 0);
+	assert_string_equal(line,
+			    "[10s] hook 10.0 s: presents 119.8/s copies 115.0/s, bursts 1:3 2:0 3:1 4:295 >4:2"
+			    ", step 8333 us, step resets 1, stamp clamps 2, bucket skips 48, slot busy 0"
+			    ", copy fails 0, burst span max 620 us, burst gap min 24100 us, copy p50 225 p99 925 us");
+
+	// Slower than the last bin reads as its upper edge; no copies read 0.
+	struct fgc_hook_stats slow;
+	memset(&slow, 0, sizeof(slow));
+	assert_int_equal(fgc_hook_stats_copy_percentile_us(&slow, 50), 0);
+	fgc_hook_stats_copy_time(&slow, 10000000);
+	assert_int_equal(fgc_hook_stats_copy_percentile_us(&slow, 50), 4000);
+	assert_int_equal(fgc_rate_x10(5, 0), 0);
+}
+
+// The host's ring pick, one count per tick end.
+static void test_fgc_ring_stats_line(void **)
+{
+	struct fgc_ring_stats s = {590, 5, 3, 1, 1};
+	char line[256];
+	assert_true(fgc_ring_stats_format(line, sizeof(line), &s, 10000000000ull) > 0);
+	assert_string_equal(line, "[10s] ring 10.0 s: ticks 600, new slot 590, no due slot 8 (none newer 5, newer "
+				  "not due 3), acquire failed 1, seq changed 1");
+}
+
+// A zero-length window (a clock that did not move) formats as zero rates rather
+// than dividing by it.
+static void test_fgc_formatters_zero_window(void **)
+{
+	struct fgc_hook_stats hook;
+	memset(&hook, 0, sizeof(hook));
+	hook.presents = 5;
+	hook.copies = 4;
+	char line[512];
+	assert_true(fgc_hook_stats_format(line, sizeof(line), &hook, 0, 0) > 0);
+	assert_non_null(strstr(line, "[10s] hook 0.0 s: presents 0.0/s copies 0.0/s, bursts 1:0 2:0 3:0 4:0 >4:0"));
+
+	struct fgc_ring_stats ring = {1, 0, 0, 0, 0};
+	assert_true(fgc_ring_stats_format(line, sizeof(line), &ring, 0) > 0);
+	assert_string_equal(line, "[10s] ring 0.0 s: ticks 1, new slot 1, no due slot 0 (none newer 0, newer not due "
+				  "0), acquire failed 0, seq changed 0");
+}
+
+// The hook, the ring and capture-rate share one window length and one tag.
+static_assert(Tracker::kWindowSec * 1e9 == FGC_STATS_WINDOW_NS, "capture-rate and FGC windows differ");
+
+// The first call opens the window; it is due once its length has run.
+static void test_fgc_stats_window(void **)
+{
+	uint64_t start = 0;
+	assert_false(fgc_stats_window_due(&start, 5000));
+	assert_int_equal(start, 5000);
+	assert_false(fgc_stats_window_due(&start, 5000 + FGC_STATS_WINDOW_NS - 1));
+	assert_true(fgc_stats_window_due(&start, 5000 + FGC_STATS_WINDOW_NS));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -928,6 +1096,13 @@ int main(void)
 		cmocka_unit_test(test_grace_restarts_on_going_live),
 		cmocka_unit_test(test_lock_ends_with_the_broadcast),
 		cmocka_unit_test(test_browser_paint_reports_a_rate_only),
+		cmocka_unit_test(test_game_hook_window_lines),
+		cmocka_unit_test(test_game_hook_session_quantiles),
+		cmocka_unit_test(test_clear_drops_pending_window_lines),
+		cmocka_unit_test(test_fgc_formatters_zero_window),
+		cmocka_unit_test(test_fgc_hook_stats_line),
+		cmocka_unit_test(test_fgc_ring_stats_line),
+		cmocka_unit_test(test_fgc_stats_window),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

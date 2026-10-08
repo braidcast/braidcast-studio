@@ -195,6 +195,9 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 	held_.swap(nextHeld);
 
 	tracker_.Sample(in);
+	for (const std::string &line : tracker_.TakeWindowLines()) {
+		blog(LOG_INFO, "%s", line.c_str());
+	}
 	lastSampleNs_ = nowNs;
 }
 

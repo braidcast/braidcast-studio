@@ -11,6 +11,7 @@
 #include <detours.h>
 
 #include "dxgi-helpers.hpp"
+#include "../frame-gen-stats.h"
 
 #define MAX_BACKBUFFERS 8
 
@@ -20,6 +21,8 @@ constexpr uint32_t kBurstMaxPresents = 4;
 constexpr uint64_t kBurstMaxNs = 2000000;
 /* A burst period this long is a stall, not a display step. */
 constexpr uint64_t kStepMaxPeriodNs = 100000000;
+
+static_assert(kBurstMaxPresents == FGC_BURST_SIZES, "the burst-size histogram labels assume this cap");
 
 typedef HRESULT(STDMETHODCALLTYPE *PFN_ExecuteCommandLists)(ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 
@@ -39,9 +42,13 @@ struct d3d12_ring {
 	bool have_bucket;
 
 	uint64_t burst_start;
+	uint64_t last_present;
 	uint32_t burst_len;
 	uint32_t last_burst_len;
 	uint64_t step;
+
+	uint64_t stats_start;
+	struct fgc_hook_stats stats;
 
 	volatile LONG presenting;
 	bool overlap_logged;
@@ -498,17 +505,22 @@ static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t stamp)
 
 	uint32_t slot;
 	if (!d3d12_ring_acquire_slot(&slot)) {
+		ring.stats.slot_busy++;
 		return false;
 	}
 
 	struct shtex_ring *info = ring.info;
 	InterlockedIncrement((volatile LONG *)&info->seq[slot]);
 
+	const uint64_t copy_start = os_gettime_ns();
 	if (!d3d12_copy_backbuffer(swap, ring.tex[slot], ring.mutex[slot])) {
 		ring.mutex[slot]->ReleaseSync(0);
 		InterlockedIncrement((volatile LONG *)&info->seq[slot]);
+		ring.stats.copy_fails++;
 		return false;
 	}
+	fgc_hook_stats_copy_time(&ring.stats, os_gettime_ns() - copy_start);
+	ring.stats.copies++;
 
 	InterlockedExchange64((volatile LONG64 *)&info->show_ns[slot], (LONG64)stamp);
 	InterlockedExchange64((volatile LONG64 *)&info->frame_no[slot], (LONG64)++ring.frame_no);
@@ -524,6 +536,7 @@ static void d3d12_ring_update_step(uint64_t period, uint32_t size)
 	struct d3d12_ring &ring = data.ring;
 
 	if (size != ring.last_burst_len || period > kStepMaxPeriodNs) {
+		ring.stats.step_resets++;
 		ring.step = 0;
 		ring.last_burst_len = size;
 		return;
@@ -531,6 +544,25 @@ static void d3d12_ring_update_step(uint64_t period, uint32_t size)
 
 	const uint64_t sample = period / size;
 	ring.step = ring.step ? (ring.step * 7 + sample) / 8 : sample;
+}
+
+/* Formats only once a window has run, on the stack, then starts the next. The
+ * line goes out through hlog_deferred: this runs inside the game's Present, which
+ * must never wait on the log pipe. */
+static void d3d12_ring_log_stats(uint64_t now)
+{
+	struct d3d12_ring &ring = data.ring;
+
+	if (!fgc_stats_window_due(&ring.stats_start, now)) {
+		return;
+	}
+
+	char line[512];
+	if (fgc_hook_stats_format(line, sizeof(line), &ring.stats, now - ring.stats_start, ring.step) > 0) {
+		hlog_deferred(line);
+	}
+	memset(&ring.stats, 0, sizeof(ring.stats));
+	ring.stats_start = now;
 }
 
 static void d3d12_ring_capture(IDXGISwapChain *swap)
@@ -547,21 +579,28 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 	}
 
 	const uint64_t t = os_gettime_ns();
+	ring.stats.presents++;
 
 	if (ring.burst_len == 0 || ring.burst_len >= kBurstMaxPresents || t - ring.burst_start > kBurstMaxNs) {
 		if (ring.burst_len > 0) {
+			fgc_hook_stats_burst(&ring.stats, ring.burst_len, t - ring.burst_start <= kBurstMaxNs);
+			fgc_hook_stats_gap(&ring.stats, t - ring.last_present);
 			d3d12_ring_update_step(t - ring.burst_start, ring.burst_len);
 		}
 
 		ring.burst_start = t;
 		ring.burst_len = 0;
+	} else {
+		fgc_hook_stats_span(&ring.stats, t - ring.burst_start);
 	}
 
 	const uint32_t k = ring.burst_len++;
+	ring.last_present = t;
 
 	uint64_t stamp = ring.burst_start + k * ring.step;
 	if (stamp <= ring.last_stamp) {
 		stamp = ring.last_stamp + 1;
+		ring.stats.stamp_clamps++;
 	}
 
 	/* The only rate bound the ring needs: stamps only grow, so each half canvas
@@ -570,10 +609,14 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 	 * display's show times drift in phase against the canvas ticks, and a tick
 	 * then finds no new frame (45 distinct/s at 4x on a 60 fps canvas). */
 	const uint64_t bucket = stamp / (ring.canvas_interval / 2);
-	if ((!ring.have_bucket || bucket > ring.last_bucket) && d3d12_ring_copy(swap, stamp)) {
+	if (ring.have_bucket && bucket <= ring.last_bucket) {
+		ring.stats.bucket_skips++;
+	} else if (d3d12_ring_copy(swap, stamp)) {
 		ring.last_bucket = bucket;
 		ring.have_bucket = true;
 	}
+
+	d3d12_ring_log_stats(t);
 
 	InterlockedDecrement(&ring.presenting);
 }

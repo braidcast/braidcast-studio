@@ -20,6 +20,7 @@
 #include "audio-helpers.h"
 #include "nt-stuff.h"
 #include "hook-frame-relay.h"
+#include "frame-gen-stats.h"
 
 #define do_log(level, format, ...) \
 	blog(level, "[game-capture: '%s'] " format, obs_source_get_name(gc->source), ##__VA_ARGS__)
@@ -209,6 +210,8 @@ struct game_capture {
 	uint64_t ring_frame_no;
 	bool frame_gen_requested;
 	uint64_t ring_read_delay_ns;
+	struct fgc_ring_stats ring_stats;
+	uint64_t ring_stats_start;
 
 	/* The hook's capture-rate counters as last read. Every new hook info
 	 * view and every capture start resets the relay, and a view logs once
@@ -1144,6 +1147,7 @@ static bool target_suspended(struct game_capture *gc)
 }
 
 static bool init_events(struct game_capture *gc);
+static bool connect_hook(struct game_capture *gc, const char *exe);
 
 static bool init_hook(struct game_capture *gc)
 {
@@ -1164,11 +1168,16 @@ static bool init_hook(struct game_capture *gc)
 	if (blacklisted_process) {
 		info("cannot capture %s due to being blacklisted", exe.array);
 	}
-	dstr_free(&exe);
 
-	if (blacklisted_process) {
-		return false;
-	}
+	const bool hooked = !blacklisted_process && connect_hook(gc, exe.array ? exe.array : "(unknown)");
+	dstr_free(&exe);
+	return hooked;
+}
+
+/* exe names the target window's process, which in "any fullscreen" mode is not
+ * the configured executable. */
+static bool connect_hook(struct game_capture *gc, const char *exe)
+{
 	if (target_suspended(gc)) {
 		return false;
 	}
@@ -1194,7 +1203,7 @@ static bool init_hook(struct game_capture *gc)
 	/* An existing hook initializes on the restart signal, so it must see the
 	 * hook info written above. */
 	if (existing_hook) {
-		debug("existing hook found, signaling process: %s", gc->config.executable);
+		debug("existing hook found, signaling process: %s", exe);
 		SetEvent(gc->hook_restart);
 	}
 	if (!init_events(gc)) {
@@ -1809,6 +1818,22 @@ static bool read_ring_slot(const struct shtex_ring *ring, uint32_t slot, LONG *s
 	return false;
 }
 
+/* Logs the last window's tick ends once it has run, then starts the next. */
+static void log_ring_stats(struct game_capture *gc)
+{
+	const uint64_t now = os_gettime_ns();
+	if (!fgc_stats_window_due(&gc->ring_stats_start, now)) {
+		return;
+	}
+
+	char line[256];
+	if (fgc_ring_stats_format(line, sizeof(line), &gc->ring_stats, now - gc->ring_stats_start) > 0) {
+		info("%s", line);
+	}
+	memset(&gc->ring_stats, 0, sizeof(gc->ring_stats));
+	gc->ring_stats_start = now;
+}
+
 /* Draws the newest slot whose show time is at least one canvas interval old,
  * which lets every copy of a frame generation burst become due in order. With
  * nothing drawn yet, the newest published slot is taken at once, so a start or
@@ -1828,10 +1853,13 @@ static void pick_ring_slot(struct game_capture *gc)
 		target = now - gc->ring_read_delay_ns;
 	}
 
+	log_ring_stats(gc);
+
 	uint32_t best = SHTEX_RING_MAX;
 	LONG best_seq = 0;
 	uint64_t best_show_ns = 0;
 	uint64_t best_frame_no = 0;
+	bool newer_not_due = false;
 	for (uint32_t i = 0; i < gc->ring_count; i++) {
 		LONG seq;
 		uint64_t show_ns;
@@ -1839,7 +1867,11 @@ static void pick_ring_slot(struct game_capture *gc)
 		if (gc->ring_tex[i] == gc->texture || !read_ring_slot(gc->ring, i, &seq, &show_ns, &frame_no)) {
 			continue;
 		}
-		if (!show_ns || show_ns > target || frame_no <= gc->ring_frame_no) {
+		if (!show_ns || frame_no <= gc->ring_frame_no) {
+			continue;
+		}
+		if (show_ns > target) {
+			newer_not_due = true;
 			continue;
 		}
 		if (best == SHTEX_RING_MAX || show_ns > best_show_ns) {
@@ -1851,17 +1883,24 @@ static void pick_ring_slot(struct game_capture *gc)
 	}
 
 	if (best == SHTEX_RING_MAX) {
+		if (newer_not_due) {
+			gc->ring_stats.not_due++;
+		} else {
+			gc->ring_stats.none_newer++;
+		}
 		return;
 	}
 
 	gs_texture_t *const texture = gc->ring_tex[best];
 	if (gs_texture_acquire_sync(texture, 0, 0) != 0) {
+		gc->ring_stats.acquire_failed++;
 		return;
 	}
 
 	/* The hook may have rewritten the slot between the read and the acquire. */
 	if (ReadAcquire((const volatile LONG *)&gc->ring->seq[best]) != best_seq) {
 		gs_texture_release_sync(texture, 0);
+		gc->ring_stats.seq_changed++;
 		return;
 	}
 
@@ -1870,6 +1909,7 @@ static void pick_ring_slot(struct game_capture *gc)
 	}
 	gc->texture = texture;
 	gc->ring_frame_no = best_frame_no;
+	gc->ring_stats.new_slot++;
 }
 
 static inline bool init_shtex_capture(struct game_capture *gc)
@@ -1921,6 +1961,8 @@ static inline bool init_shtex_capture(struct game_capture *gc)
 				gc->ring_count = ring_count;
 				gc->ring_frame_no = 0;
 				gc->ring_read_delay_ns = ring_read_delay_ns;
+				memset(&gc->ring_stats, 0, sizeof(gc->ring_stats));
+				gc->ring_stats_start = 0;
 				gc->copy_texture = pick_ring_slot;
 			} else {
 				gc->texture = texture;

@@ -160,7 +160,8 @@ add_test(
 # test_capture_rate: the capture-rate tracker's rules. The tracker is pure (no
 # libobs, no CEF) precisely so it can be driven second by second here; the sampler
 # that feeds it from the live graph is covered by the capture-rate stream self-test.
-# Game capture's hook relay (hook-frame-relay.h) is header-only and pure too.
+# Game capture's hook relay (hook-frame-relay.h) and frame generation capture
+# counters (frame-gen-stats.h) are header-only and pure too.
 set(_target test_capture_rate)
 
 add_executable(${_target} test_capture_rate.cpp "${_fe}/src/diag/capture_rate.cpp" "${_fe}/src/diag/capture_rate.hpp")

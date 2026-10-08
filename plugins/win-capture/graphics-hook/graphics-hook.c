@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <inttypes.h>
+#include <string.h>
 #include "graphics-hook.h"
 #ifdef OBS_LEGACY
 #include "../graphics-hook-ver.h"
@@ -404,6 +405,50 @@ static inline bool attempt_hook(void)
 	return false;
 }
 
+/* hlog_deferred's one-line mailbox. A writer blocked on the pipe (OBS not
+ * reading) must never stall the game, so the posting thread only ever claims the
+ * slot without waiting: a line that finds the slot claimed is dropped, and one
+ * that finds an unwritten line replaces it. The capture loop copies the line out
+ * and frees the slot before it writes, so a stalled write holds nothing the
+ * posting thread needs. Drops are counted and reported with the next line. */
+enum { DEFERRED_EMPTY, DEFERRED_FILLING, DEFERRED_READY, DEFERRED_TAKING };
+static char deferred_line[1024];
+static volatile LONG deferred_state = DEFERRED_EMPTY;
+static volatile LONG deferred_dropped = 0;
+
+void hlog_deferred(const char *line)
+{
+	if (InterlockedCompareExchange(&deferred_state, DEFERRED_FILLING, DEFERRED_EMPTY) != DEFERRED_EMPTY) {
+		if (InterlockedCompareExchange(&deferred_state, DEFERRED_FILLING, DEFERRED_READY) != DEFERRED_READY) {
+			InterlockedIncrement(&deferred_dropped);
+			return;
+		}
+		InterlockedIncrement(&deferred_dropped);
+	}
+
+	const size_t len = strnlen(line, sizeof(deferred_line) - 1);
+	memcpy(deferred_line, line, len);
+	deferred_line[len] = 0;
+	InterlockedExchange(&deferred_state, DEFERRED_READY);
+}
+
+static void flush_deferred_log(void)
+{
+	if (InterlockedCompareExchange(&deferred_state, DEFERRED_TAKING, DEFERRED_READY) != DEFERRED_READY) {
+		return;
+	}
+
+	char line[sizeof(deferred_line)];
+	memcpy(line, deferred_line, sizeof(line));
+	InterlockedExchange(&deferred_state, DEFERRED_EMPTY);
+
+	const LONG dropped = InterlockedExchange(&deferred_dropped, 0);
+	hlog("%s", line);
+	if (dropped) {
+		hlog("%ld deferred log lines dropped since the last one written (slot busy or log pipe slow)", dropped);
+	}
+}
+
 static inline void capture_loop(void)
 {
 	WaitForSingleObject(signal_init, INFINITE);
@@ -418,6 +463,7 @@ static inline void capture_loop(void)
 		if (n % 100 == 0) {
 			attempt_hook();
 		}
+		flush_deferred_log();
 		Sleep(40);
 	}
 }
