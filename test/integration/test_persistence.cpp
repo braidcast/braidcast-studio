@@ -27,6 +27,7 @@ extern "C" {
 #include <cmath>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -412,6 +413,77 @@ static void test_canvas_scene_order_survives_missing_runtime(void **)
 	assert_true(SavedCanvasOrder(Harness::ScenePath(), canvasUuid) == expected);
 }
 
+// --- scene order (degrade): an older save that listed groups as scenes ---------
+//
+// A group is OBS_SOURCE_TYPE_SCENE and shares its canvas's source list, so an older
+// save could carry a group's uuid in "scene_order" or "canvas_scene_order". Load must
+// ignore those uuids, keep the scenes' own order, and not write them back. Have
+// ReconcileSceneOrder enumerate through libobs directly instead of SceneItems::EnumScenes
+// and the group uuids survive into SceneOrder, failing the order assertions.
+static void test_scene_order_ignores_saved_groups(void **)
+{
+	obs_source_t *a = Harness::CreateMainScene("A"); // borrowed; harness owns
+	obs_source_t *b = Harness::CreateMainScene("B");
+	assert_non_null(a);
+	assert_non_null(b);
+	obs_sceneitem_t *mainGroup = obs_scene_add_group2(obs_scene_from_source(a), "MainGroup", false);
+	assert_non_null(mainGroup);
+	const std::string mainGroupUuid = SceneUuid(obs_sceneitem_get_source(mainGroup));
+
+	const std::string canvasUuid = Harness::AddCanvas(1280, 720);
+	assert_true(!canvasUuid.empty());
+	obs_source_t *x = Harness::CreateCanvasScene(canvasUuid, "X"); // borrowed
+	obs_source_t *y = Harness::CreateCanvasScene(canvasUuid, "Y");
+	assert_non_null(x);
+	assert_non_null(y);
+	obs_sceneitem_t *canvasGroup = obs_scene_add_group2(obs_scene_from_source(x), "CanvasGroup", false);
+	assert_non_null(canvasGroup);
+	const std::string canvasGroupUuid = SceneUuid(obs_sceneitem_get_source(canvasGroup));
+
+	const std::vector<std::string> mainExpected = {SceneUuid(a), SceneUuid(b)};
+	const std::vector<std::string> canvasExpected = {SceneUuid(x), SceneUuid(y)};
+
+	Harness::Save();
+
+	// Put each group's uuid at the head of its canvas's saved order, as an older save
+	// that enumerated groups among the scenes would have written it.
+	{
+		OBSDataAutoRelease root = obs_data_create_from_json_file_safe(Harness::ScenePath().c_str(), "bak");
+		assert_non_null(root.Get());
+		OBSDataArrayAutoRelease mainOrder = obs_data_get_array(root, "scene_order");
+		OBSDataAutoRelease perCanvas = obs_data_get_obj(root, "canvas_scene_order");
+		OBSDataArrayAutoRelease canvasOrder = perCanvas ? obs_data_get_array(perCanvas, canvasUuid.c_str())
+								: nullptr;
+		assert_non_null(mainOrder.Get());
+		assert_non_null(canvasOrder.Get());
+		const std::pair<obs_data_array_t *, const std::string *> injections[] = {{mainOrder, &mainGroupUuid},
+											 {canvasOrder,
+											  &canvasGroupUuid}};
+		for (const auto &[order, uuid] : injections) {
+			OBSDataAutoRelease entry = obs_data_create();
+			obs_data_set_string(entry, "uuid", uuid->c_str());
+			obs_data_array_insert(order, 0, entry);
+		}
+		assert_true(SaveJsonAtomic(root, Harness::ScenePath()));
+	}
+
+	Harness::TeardownWorld();
+	assert_true(Harness::Load());
+
+	// Both groups loaded, so the order had a live group to ignore rather than a uuid
+	// that merely failed to resolve.
+	OBSSourceAutoRelease reloadedMainGroup = obs_get_source_by_uuid(mainGroupUuid.c_str());
+	OBSSourceAutoRelease reloadedCanvasGroup = obs_get_source_by_uuid(canvasGroupUuid.c_str());
+	assert_true(obs_source_is_group(reloadedMainGroup));
+	assert_true(obs_source_is_group(reloadedCanvasGroup));
+
+	assert_true(SceneCollection::SceneOrder(std::string()) == mainExpected);
+	assert_true(SceneCollection::SceneOrder(canvasUuid) == canvasExpected);
+
+	Harness::Save();
+	assert_true(SavedCanvasOrder(Harness::ScenePath(), canvasUuid) == canvasExpected);
+}
+
 // --- fixtures ----------------------------------------------------------------
 
 static int group_setup(void **)
@@ -448,6 +520,7 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_canvas_scene_order_legacy_missing_key, test_setup, test_teardown),
 		cmocka_unit_test_setup_teardown(test_canvas_scene_order_survives_missing_runtime, test_setup,
 						test_teardown),
+		cmocka_unit_test_setup_teardown(test_scene_order_ignores_saved_groups, test_setup, test_teardown),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

@@ -343,11 +343,11 @@ bool MethodGetCurrentScene(const json & /*params*/, json &result, std::string & 
 bool MethodListScenes(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	// The frontend-api shim's obs_frontend_get_scenes is an empty stub, so we
-	// enumerate scene sources directly via obs_enum_scenes (obs_enum_sources
-	// only yields OBS_SOURCE_TYPE_INPUT, not scenes). Returns the 4.1.2 test
-	// scene plus any others.
+	// enumerate the main canvas's scenes directly (obs_enum_sources only yields
+	// OBS_SOURCE_TYPE_INPUT, not scenes). Returns the 4.1.2 test scene plus any others.
 	json scenes = json::array();
-	obs_enum_scenes(
+	SceneItems::EnumScenes(
+		nullptr,
 		[](void *param, obs_source_t *source) -> bool {
 			const char *name = obs_source_get_name(source);
 			if (name) {
@@ -1827,7 +1827,8 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 	} ctx;
 	ctx.target = name;
 
-	obs_enum_scenes(
+	SceneItems::EnumScenes(
+		nullptr,
 		[](void *param, obs_source_t *source) -> bool {
 			auto *c = static_cast<Ctx *>(param);
 			c->count++;
@@ -3774,9 +3775,8 @@ const UndoManager::Cb kRemoveItemBySource = [](const std::string &d) {
 
 // Find any scene other than `target` to use as a fallback before removing a scene
 // that might be the active program/channel-0 scene -- `canvas == nullptr` scopes
-// the search to the main canvas (obs_enum_scenes), otherwise to that canvas's own
-// scenes (obs_canvas_enum_scenes). Returned addref'd; null if `target` is the only
-// scene in scope.
+// the search to the main canvas, otherwise to that canvas's own scenes. Returned
+// addref'd; null if `target` is the only scene in scope.
 obs_source_t *FindFallbackScene(obs_canvas_t *canvas, obs_source_t *target)
 {
 	struct Ctx {
@@ -3791,11 +3791,7 @@ obs_source_t *FindFallbackScene(obs_canvas_t *canvas, obs_source_t *target)
 		}
 		return !c->fallback;
 	};
-	if (canvas) {
-		obs_canvas_enum_scenes(canvas, proc, &ctx);
-	} else {
-		obs_enum_scenes(proc, &ctx);
-	}
+	SceneItems::EnumScenes(canvas, proc, &ctx);
 	return ctx.fallback;
 }
 

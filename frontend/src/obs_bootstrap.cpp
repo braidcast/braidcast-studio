@@ -4374,6 +4374,28 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		}
 		return out;
 	};
+	// Whether the canvas's scene list (as the UI and the persisted order see it) names
+	// no group -- a group is OBS_SOURCE_TYPE_SCENE and shares the canvas's source list.
+	auto listsNoGroup = [&run](const std::string &canvasUuid) {
+		bool listOk = false;
+		const json scenes =
+			run("scenes.list", canvasUuid.empty() ? json::object() : json{{"canvas", canvasUuid}}, listOk);
+		obs_canvas_t *canvas = canvasUuid.empty() ? nullptr : g_canvasRuntime->Find(canvasUuid);
+		const bool listClean = listOk && scenes.is_array() &&
+				       std::none_of(scenes.begin(), scenes.end(), [canvas](const json &row) {
+					       const std::string name = row.value("name", std::string());
+					       OBSSourceAutoRelease s =
+						       canvas ? obs_canvas_get_source_by_name(canvas, name.c_str())
+							      : obs_get_source_by_name(name.c_str());
+					       return s && obs_source_is_group(s);
+				       });
+		const std::vector<std::string> &order = SceneCollection::SceneOrder(canvasUuid);
+		const bool orderClean = std::none_of(order.begin(), order.end(), [](const std::string &uuid) {
+			OBSSourceAutoRelease s = obs_get_source_by_uuid(uuid.c_str());
+			return s && obs_source_is_group(s);
+		});
+		return listClean && orderClean;
+	};
 	auto onCanvas = [](obs_source_t *s, obs_canvas_t *canvas) {
 		OBSCanvasAutoRelease c = obs_source_get_canvas(s);
 		return c && c == canvas;
@@ -4451,6 +4473,7 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		}
 		const std::vector<obs_sceneitem_t *> origItems = itemsOf(scene);
 		check("setup items=" + std::to_string(origItems.size()), origItems.size() == 6 && groupSrc);
+		check("source canvas lists no group as a scene", listsNoGroup(srcCanvasUuid));
 		const std::vector<std::string> originals = {uuidOf(color),  uuidOf(media),    uuidOf(audio),
 							    uuidOf(nested), uuidOf(groupSrc), uuidOf(groupChild)};
 		auto originalsAlive = [&]() {
@@ -4524,6 +4547,7 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 
 				check("copy group is its own group on the destination",
 				      g != groupSrc && obs_source_is_group(g) && onCanvas(g, destCanvas));
+				check("destination canvas lists no group as a scene", listsNoGroup(destCanvasUuid));
 				const std::vector<obs_sceneitem_t *> children = itemsOf(obs_group_from_source(g));
 				obs_source_t *child = children.size() == 2 ? obs_sceneitem_get_source(children[0])
 									   : nullptr;
@@ -4689,6 +4713,7 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 				obs_scene_add(obs_sceneitem_group_get_scene(gi), defChild);
 				defGroup = obs_sceneitem_get_source(gi);
 			}
+			check("Default canvas lists no group as a scene", listsNoGroup(std::string()));
 			json defDup = run("scenes.duplicate", json{{"name", kDefaultScene}, {"sources", "copy"}}, ok);
 			const std::string defDupUuid = ok ? defDup.value("uuid", std::string()) : std::string();
 			{

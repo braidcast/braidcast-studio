@@ -37,6 +37,23 @@ std::vector<int64_t> TopLevelIds(const std::vector<SceneItemKey> &keys)
 	return IdsInOwner(keys, std::string());
 }
 
+void EnumScenes(obs_canvas_t *canvas, bool (*proc)(void *param, obs_source_t *scene), void *param)
+{
+	struct Ctx {
+		bool (*proc)(void *, obs_source_t *);
+		void *param;
+	} ctx{proc, param};
+	auto skipGroups = [](void *p, obs_source_t *source) -> bool {
+		const auto *c = static_cast<const Ctx *>(p);
+		return obs_source_is_group(source) || c->proc(c->param, source);
+	};
+	if (canvas) {
+		obs_canvas_enum_scenes(canvas, skipGroups, &ctx);
+	} else {
+		obs_enum_scenes(skipGroups, &ctx);
+	}
+}
+
 obs_source_t *GroupSourceOf(obs_sceneitem_t *item)
 {
 	obs_scene_t *ownerScene = item ? obs_sceneitem_get_scene(item) : nullptr;
@@ -102,13 +119,11 @@ obs_sceneitem_t *GroupItemOf(obs_sceneitem_t *item, obs_scene_t *scene)
 	// Refs taken inside the enumeration and searched outside it, so no scene lock is taken
 	// while the canvas holds its source-list mutex.
 	std::vector<OBSSourceAutoRelease> scenes;
-	obs_canvas_enum_scenes(
+	EnumScenes(
 		canvas,
 		[](void *param, obs_source_t *sceneSource) -> bool {
-			if (!obs_source_is_group(sceneSource)) {
-				static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
-					obs_source_get_ref(sceneSource));
-			}
+			static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
+				obs_source_get_ref(sceneSource));
 			return true;
 		},
 		&scenes);

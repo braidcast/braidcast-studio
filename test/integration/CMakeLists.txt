@@ -27,6 +27,8 @@ endfunction()
 set(
   _fe_sources
   "${_fe}/src/scene/scene_persistence.cpp"
+  # SceneCollection and CanvasRuntime enumerate scenes through SceneItems::EnumScenes.
+  "${_fe}/src/scene/scene_items.cpp"
   # SceneCollection::Load hands the loaded scene to MainChannel::Set.
   "${_fe}/src/scene/main_channel.cpp"
   "${_fe}/src/multistream/CanvasRuntime.cpp"

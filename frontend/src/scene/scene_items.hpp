@@ -8,6 +8,7 @@
 
 // Declared rather than included: <obs.h> brings libobs's nameless-struct math types, which
 // every file including this header (the preview's included) would then have to allow.
+typedef struct obs_canvas obs_canvas_t;
 typedef struct obs_scene obs_scene_t;
 typedef struct obs_scene_item obs_sceneitem_t;
 typedef struct obs_source obs_source_t;
@@ -37,6 +38,15 @@ struct SceneItemKey {
 
 // Scene-item addressing and geometry shared by the bridge and the preview.
 namespace SceneItems {
+
+// Calls `proc` with each scene of `canvas` (the main canvas when null), in libobs's
+// source-list order (creation order, except that a rename moves a scene to the end),
+// until it returns false. THE scene enumeration for anything that lists, counts, orders or
+// falls back to a canvas's scenes: libobs keeps groups in the same source list, so its own
+// obs_canvas_enum_scenes / obs_enum_scenes yield them too, though a group is not a scene
+// (obs_scene_from_source returns null for one). Only teardown that must also reach groups
+// calls libobs directly.
+void EnumScenes(obs_canvas_t *canvas, bool (*proc)(void *param, obs_source_t *scene), void *param);
 
 // The ids of `keys`, in order. A child and a top-level item can share an id, so this can
 // repeat one and is not a way back to the keys.

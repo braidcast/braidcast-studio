@@ -4,6 +4,7 @@
 #include "main_channel.hpp"
 #include "obs_bootstrap.hpp"
 #include "scene_collections.hpp"
+#include "scene_items.hpp"
 #include "transitions.hpp"
 
 #include "multistream/CanvasRuntime.hpp"
@@ -32,7 +33,7 @@ namespace {
 // "canvas_scene_order". Populated on Load(), mutated by ReorderScene(), and
 // serialized back by Save(). libobs has no scene-ordering primitive (unlike scene
 // items), so this map is the only record of the user's chosen order --
-// obs_enum_scenes and obs_canvas_enum_scenes both yield creation order.
+// SceneItems::EnumScenes yields libobs's source-list order.
 std::map<std::string, std::vector<std::string>> g_sceneOrder;
 
 // Whether the last Load kept its file aside as unusable, and the hold HoldFallback arms
@@ -41,7 +42,7 @@ bool g_loadedUnusable = false;
 UnusableStoreHold g_hold;
 
 // Collect a scene's uuid into the std::vector<std::string> passed as `param`. The
-// callback shape both obs_enum_scenes and obs_canvas_enum_scenes take.
+// callback shape SceneItems::EnumScenes takes.
 bool CollectSceneUuid(void *param, obs_source_t *source)
 {
 	auto *out = static_cast<std::vector<std::string> *>(param);
@@ -55,7 +56,8 @@ bool CollectSceneUuid(void *param, obs_source_t *source)
 // Rebuild one canvas's tracked order to exactly match the scenes that currently
 // exist on it: previously-tracked uuids that still resolve keep their relative
 // order, then any scene not yet tracked (new since the last reconcile, or first run
-// before any order was ever saved) is appended in enumeration order. Cheap enough
+// before any order was ever saved) is appended in enumeration order. Groups are not
+// scenes, so a group uuid an older collection saved in its order drops out here. Cheap enough
 // (scene counts are small) to call before every read, so SceneOrder() and
 // ReorderScene() are self-healing without needing a hook in every scene-mutating
 // handler.
@@ -68,9 +70,9 @@ void ReconcileSceneOrder(const std::string &canvasUuid)
 {
 	std::vector<std::string> live;
 	if (canvasUuid.empty()) {
-		obs_enum_scenes(CollectSceneUuid, &live);
+		SceneItems::EnumScenes(nullptr, CollectSceneUuid, &live);
 	} else if (obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(canvasUuid)) {
-		obs_canvas_enum_scenes(canvas, CollectSceneUuid, &live);
+		SceneItems::EnumScenes(canvas, CollectSceneUuid, &live);
 	}
 
 	std::vector<std::string> &tracked = g_sceneOrder[canvasUuid];
@@ -406,7 +408,8 @@ bool Load(const std::string &path)
 	}
 	if (!scene) {
 		obs_source_t *first = nullptr;
-		obs_enum_scenes(
+		SceneItems::EnumScenes(
+			nullptr,
 			[](void *param, obs_source_t *source) -> bool {
 				obs_source_get_ref(source); // keep for the binder below
 				*static_cast<obs_source_t **>(param) = source;
@@ -455,19 +458,30 @@ void ClearCurrent()
 	obs_enum_sources(removeIfOwned, &ctx);
 
 	// obs_enum_scenes is main-canvas-scoped; also sweep each additional canvas's
-	// scenes so a collection switch tears down ALL scene content symmetrically.
+	// scenes so a collection switch tears down ALL scene content symmetrically. Like
+	// the main-canvas sweep, this enumerates through libobs directly so it reaches the
+	// canvas's groups as well as its scenes.
 	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
 		if (def.isDefault) {
 			continue;
 		}
-		if (obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(def.uuid)) {
-			obs_canvas_set_channel(canvas, 0, nullptr); // drop the stale current before removing scenes
+		obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(def.uuid);
+		if (!canvas) {
+			continue;
 		}
-		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(def.uuid)) {
-			OBSSourceAutoRelease scene = obs_get_source_by_uuid(s.uuid.c_str());
-			if (scene) {
-				obs_source_remove(scene);
-			}
+		obs_canvas_set_channel(canvas, 0, nullptr); // drop the stale current before removing scenes
+		// Refs taken inside the enumeration, removed outside it: obs_source_remove unlinks
+		// the source from the canvas's source list the enumeration is walking.
+		std::vector<OBSSource> doomed;
+		obs_canvas_enum_scenes(
+			canvas,
+			[](void *param, obs_source_t *source) -> bool {
+				static_cast<std::vector<OBSSource> *>(param)->emplace_back(source);
+				return true;
+			},
+			&doomed);
+		for (obs_source_t *scene : doomed) {
+			obs_source_remove(scene);
 		}
 	}
 

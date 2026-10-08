@@ -4,6 +4,8 @@
 
 #include "VideoGate.hpp"
 
+#include "scene/scene_items.hpp"
+
 #include <CanvasDefinition.hpp>
 
 #include <string>
@@ -54,7 +56,7 @@ void CanvasRuntime::EnsureScene(obs_canvas_t *canvas)
 	struct Ctx {
 		obs_source_t *first = nullptr;
 	} ctx;
-	obs_canvas_enum_scenes(
+	SceneItems::EnumScenes(
 		canvas,
 		[](void *param, obs_source_t *scene) {
 			static_cast<Ctx *>(param)->first = scene;
@@ -376,7 +378,7 @@ std::vector<CanvasRuntime::SceneInfo> CanvasRuntime::Scenes(const std::string &u
 
 	// The enum callback's source is owned by the canvas for the call's duration;
 	// read its name/uuid in-place (no extra ref needed, mirroring EnsureScene).
-	obs_canvas_enum_scenes(
+	SceneItems::EnumScenes(
 		canvas,
 		[](void *param, obs_source_t *scene) -> bool {
 			auto *c = static_cast<Ctx *>(param);
@@ -456,7 +458,7 @@ bool CanvasRuntime::RemoveScene(const std::string &uuid, const std::string &scen
 		obs_source_t *fallback = nullptr; // addref'd
 	} ctx;
 	ctx.target = sceneName;
-	obs_canvas_enum_scenes(
+	SceneItems::EnumScenes(
 		canvas,
 		[](void *param, obs_source_t *scene) -> bool {
 			auto *c = static_cast<Ctx *>(param);

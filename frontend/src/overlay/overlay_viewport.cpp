@@ -10,6 +10,7 @@
 #include "overlay_store.hpp"
 
 #include "obs_bootstrap.hpp"
+#include "scene/scene_items.hpp"
 #include "scene/scene_persistence.hpp"
 
 #include "UndoManager.hpp"
@@ -117,11 +118,11 @@ vec2 EffectiveScale(obs_sceneitem_t *item)
 }
 
 // One walk over every scene item drawing `src`, across the main canvas and every named
-// canvas, descending into groups. The two enumerations are disjoint: obs_enum_scenes
+// canvas, descending into groups. The two enumerations are disjoint: EnumScenes(nullptr)
 // covers the main canvas only and obs_enum_canvases walks the named ones, so both are
-// required and neither repeats the other. Group scenes are skipped where they surface as
-// scenes of their own -- their items are reached through the group ITEM instead, so each
-// item is visited exactly once, with the group's draw scale carried down to it.
+// required and neither repeats the other. SceneItems::EnumScenes leaves out groups, which
+// libobs lists among the scenes -- their items are reached through the group ITEM instead,
+// so each item is visited exactly once, with the group's draw scale carried down to it.
 //
 // Items are collected under the scene locks and visited after they are released: `fn`
 // mutates transforms, and doing that inside obs_scene_enum_items would run libobs's
@@ -155,16 +156,13 @@ bool CollectItemCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 
 bool CollectSceneCb(void *param, obs_source_t *sceneSource)
 {
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	if (scene != nullptr && !obs_scene_is_group(scene)) {
-		obs_scene_enum_items(scene, CollectItemCb, param);
-	}
+	obs_scene_enum_items(obs_scene_from_source(sceneSource), CollectItemCb, param);
 	return true;
 }
 
 bool CollectCanvasCb(void *param, obs_canvas_t *canvas)
 {
-	obs_canvas_enum_scenes(canvas, CollectSceneCb, param);
+	SceneItems::EnumScenes(canvas, CollectSceneCb, param);
 	return true;
 }
 
@@ -175,7 +173,7 @@ void ForEachItemOfSource(obs_source_t *src, const ItemFn &fn)
 	}
 	std::vector<MeasuredItem> items;
 	Collect ctx{src, &items, {{{1.0f, 1.0f}}}};
-	obs_enum_scenes(CollectSceneCb, &ctx);
+	SceneItems::EnumScenes(nullptr, CollectSceneCb, &ctx);
 	obs_enum_canvases(CollectCanvasCb, &ctx);
 
 	// Every collected item is addref'd, so the releases have to happen even if `fn`

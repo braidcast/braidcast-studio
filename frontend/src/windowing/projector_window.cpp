@@ -14,6 +14,7 @@
 #include "multistream/VideoGate.hpp"
 #include "obs_bootstrap.hpp"
 #include "settings/GeneralSettings.hpp"
+#include "scene/scene_items.hpp"
 #include "scene/transitions.hpp"
 #include "source_render.hpp"
 #include "util/text_encoding.hpp"
@@ -737,8 +738,10 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 	//    channel-0 binding. UI thread; the render thread never does this.
 	std::vector<obs_source_t *> scenes;
 	std::string activeName;
-	if (canvasUuid_.empty()) {
-		obs_enum_scenes(
+	const bool onDefault = canvasUuid_.empty();
+	if (onDefault || canvas_) {
+		SceneItems::EnumScenes(
+			onDefault ? nullptr : canvas_,
 			[](void *param, obs_source_t *source) -> bool {
 				auto *out = static_cast<std::vector<obs_source_t *> *>(param);
 				obs_source_t *ref = obs_source_get_ref(source); // keep past enum
@@ -748,6 +751,8 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 				return true;
 			},
 			&scenes);
+	}
+	if (onDefault) {
 		OBSSourceAutoRelease program = Transitions::GetProgramScene();
 		if (program) {
 			const char *n = obs_source_get_name(program);
@@ -756,17 +761,6 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 			}
 		}
 	} else if (canvas_) {
-		obs_canvas_enum_scenes(
-			canvas_,
-			[](void *param, obs_source_t *source) -> bool {
-				auto *out = static_cast<std::vector<obs_source_t *> *>(param);
-				obs_source_t *ref = obs_source_get_ref(source);
-				if (ref) {
-					out->push_back(ref);
-				}
-				return true;
-			},
-			&scenes);
 		OBSSourceAutoRelease current = obs_canvas_get_channel(canvas_, 0);
 		if (current) {
 			const char *n = obs_source_get_name(current);

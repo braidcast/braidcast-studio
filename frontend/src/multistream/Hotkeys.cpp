@@ -5,6 +5,7 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
+#include "scene/scene_items.hpp"
 #include "VirtualCamManager.hpp"
 #include "util/async_task.hpp"
 
@@ -402,14 +403,15 @@ void SyncSceneHotkeys()
 		return;
 	}
 
-	// Authoritative live set. obs_enum_scenes yields ONLY main/Default-canvas scenes
-	// (additional-canvas scenes live in their own namespace and switch via
-	// CanvasRuntime, not output 0), so these program-switch hotkeys stay scoped to
-	// global scenes.
+	// Authoritative live set: the main/Default canvas's scenes only (additional-canvas
+	// scenes live in their own namespace and switch via CanvasRuntime, not output 0),
+	// so these program-switch hotkeys stay scoped to global scenes. Groups are not
+	// scenes and get no program-switch hotkey.
 	struct Ctx {
 		std::unordered_map<std::string, std::string> live; // uuid -> current name
 	} ctx;
-	obs_enum_scenes(
+	SceneItems::EnumScenes(
+		nullptr,
 		[](void *param, obs_source_t *source) -> bool {
 			auto *c = static_cast<Ctx *>(param);
 			const char *u = obs_source_get_uuid(source);
