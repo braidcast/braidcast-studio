@@ -548,7 +548,15 @@ void CanvasRuntime::DestroyCanvas(obs_canvas_t *canvas)
 		},
 		&ctx);
 	for (obs_source_t *sceneSource : ctx.scenes) {
-		obs_canvas_scene_remove(obs_scene_from_source(sceneSource));
+		// The enumeration yields the canvas's groups too: they are OBS_SOURCE_TYPE_SCENE
+		// and live in the same source list, but obs_scene_from_source refuses them.
+		obs_scene_t *scene = obs_scene_from_source(sceneSource);
+		if (!scene) {
+			scene = obs_group_from_source(sceneSource);
+		}
+		if (scene) {
+			obs_canvas_scene_remove(scene);
+		}
 	}
 
 	obs_canvas_remove(canvas);
