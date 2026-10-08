@@ -104,6 +104,11 @@ export class Scroller {
   /** The reader scrolls: position changes, then the scroll event is delivered. */
   userScroll(top: number): void {
     this.scrollTop = top;
+    this.scrollEvent();
+  }
+  /** A scroll event lands for wherever the box is now: Chromium delivers the one a
+   * programmatic scroll queued at the next frame, after anything that changed meanwhile. */
+  scrollEvent(): void {
     for (const fn of this.#listeners) {
       fn();
     }

@@ -45,6 +45,11 @@ const PATCH_RETAIN_MS = 10_000;
 // until the next load, which reads the host's patched copy.
 const PATCH_MEMORY_MAX = 4096;
 
+// Two scroll offsets closer than this are the same place: Chromium keeps scrollTop in
+// fractions of a pixel, snapped to device pixels, so what reads back is not always exactly
+// what was written.
+const SUBPIXEL = 0.5;
+
 /** What the top row says: a page is loading, older rows are there to load, the window
  * reaches the oldest row the host holds, or the newest page failed and is being asked
  * for again. */
@@ -179,6 +184,9 @@ export class FeedVirtualizer<T> {
   private pending: T[] = [];
   private rafId = 0;
   private anchor: Anchor<T> | null = null;
+  // The scrollTop the view was last pinned to or last reported at: what tells a reader's
+  // scroll up apart from the view merely falling short of a bottom that moved (see scroll).
+  private lastTop = 0;
   // key -> clientKey over `rows`, rebuilt whenever rows are replaced.
   private keys = new Map<string, number>();
   private guard = new RequestGuard();
@@ -229,7 +237,7 @@ export class FeedVirtualizer<T> {
       untrack(() => {
         const a = this.syncAnchor(el);
         const target = this.resolve(a, rows, layout);
-        if (target !== null && target < el.scrollTop - 0.5) {
+        if (target !== null && target < el.scrollTop - SUBPIXEL) {
           el.scrollTop = target;
           this.anchor = this.mark(el.scrollTop, rows, layout);
         }
@@ -251,16 +259,24 @@ export class FeedVirtualizer<T> {
       const rows = this.display;
       const stuck = this.autoStick;
       if (stuck) {
-        el.scrollTop = el.scrollHeight;
-        // Keep the window state coherent without waiting on the async scroll event.
-        this.viewTop = el.scrollTop;
+        this.pin(el);
+        // A row measured in this flush can have grown the layout after the sizer was drawn:
+        // the rows' measure actions run ahead of this effect, and the sizer they grew is
+        // redrawn in a follow-up batch, so el.scrollHeight above may still be the old height.
+        // That batch runs before the flush returns, so pinning again from a microtask lands
+        // on the real bottom before anything paints.
+        queueMicrotask(() => {
+          if (this.autoStick && this.scrollEl === el) {
+            this.pin(el);
+          }
+        });
         untrack(() => this.maybeFetchOlder());
         return;
       }
       untrack(() => {
         const a = this.syncAnchor(el);
         const target = this.resolve(a, rows, layout);
-        if (target !== null && Math.abs(target - el.scrollTop) >= 0.5) {
+        if (target !== null && Math.abs(target - el.scrollTop) >= SUBPIXEL) {
           el.scrollTop = target;
         }
         this.viewTop = el.scrollTop;
@@ -268,6 +284,14 @@ export class FeedVirtualizer<T> {
         this.maybeFetchOlder();
       });
     });
+  }
+
+  // Put the view on the newest row. viewTop follows at once, so the window state stays
+  // coherent without waiting on the async scroll event.
+  private pin(el: HTMLDivElement): void {
+    el.scrollTop = el.scrollHeight;
+    this.viewTop = el.scrollTop;
+    this.lastTop = el.scrollTop;
   }
 
   private heightOf(row: DisplayRow<T>): number {
@@ -419,7 +443,7 @@ export class FeedVirtualizer<T> {
   // layout the anchor was taken on, so it is re-read there.
   private syncAnchor(el: HTMLDivElement): Anchor<T> {
     const a = this.anchor;
-    if (a && Math.abs(a.at - el.scrollTop) < 0.5) {
+    if (a && Math.abs(a.at - el.scrollTop) < SUBPIXEL) {
       return a;
     }
     const next = a ? this.mark(el.scrollTop, a.rows, a.layout) : this.mark(el.scrollTop, this.display, this.layout);
@@ -963,7 +987,7 @@ export class FeedVirtualizer<T> {
     this.autoStick = true;
     this.unseen = 0;
     if (this.scrollEl) {
-      this.scrollEl.scrollTop = this.scrollEl.scrollHeight;
+      this.pin(this.scrollEl);
     }
   };
 
@@ -981,9 +1005,20 @@ export class FeedVirtualizer<T> {
     this.viewH = node.clientHeight;
     const stickPx = this.config.stickPx ?? 24;
     const onScroll = (): void => {
-      this.viewTop = node.scrollTop;
       this.viewH = node.clientHeight;
       const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= stickPx;
+      // Only the reader moving the view up lets go of the bottom. A pin's scroll event lands
+      // at the next frame, ahead of every ResizeObserver, so content that grew or a box that
+      // shrank after the pin (a row outgrowing its measure as text re-wraps, a bar mounting
+      // above) leaves the view short of the bottom without having moved it up: that is
+      // pinned again. A sizer still short at the pin itself is the pin effect's to finish.
+      if (this.autoStick && !atBottom && node.scrollTop >= this.lastTop - SUBPIXEL) {
+        this.pin(node);
+        this.maybeFetchOlder();
+        return;
+      }
+      this.viewTop = node.scrollTop;
+      this.lastTop = node.scrollTop;
       this.anchor = this.mark(node.scrollTop, this.display, this.layout);
       if (this.detached) {
         // The detached tail is stale, so reaching it reloads rather than sticking to it;
@@ -1008,8 +1043,7 @@ export class FeedVirtualizer<T> {
     const ro = new ResizeObserver(() => {
       this.viewH = node.clientHeight;
       if (this.autoStick) {
-        node.scrollTop = node.scrollHeight;
-        this.viewTop = node.scrollTop;
+        this.pin(node);
       }
       this.maybeFetchOlder();
     });

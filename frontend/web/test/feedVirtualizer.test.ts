@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { flushSync as flush } from "svelte";
 import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
-import { FakeHost, NUMBERS, Scroller, frame, harness, items, measure, range, underEye, useFrameMocks } from "./feedHarness";
+import { FakeHost, NUMBERS, Scroller, frame, harness, items, measure, range, settle, underEye, useFrameMocks } from "./feedHarness";
 import { pre, root } from "./harness.svelte";
 
 useFrameMocks();
@@ -92,6 +92,68 @@ describe("FeedVirtualizer anchoring", () => {
     h.stop();
   });
 
+  test("pinned, the box shrinking before the pin's scroll event lands keeps it pinned", async () => {
+    const h = await loaded(range(1, 15));
+    // A bar mounts above the feed after the pin, before its scroll event: no observer has
+    // seen the box shrink yet, and the view now sits 40px short of the bottom.
+    h.el.clientHeight = 60;
+    h.el.scrollEvent();
+    expect(h.v.autoStick).toBe(true);
+    expect(h.el.scrollTop).toBe(h.el.scrollHeight - h.el.clientHeight);
+    h.stop();
+  });
+
+  test("pinned, content growing before the pin's scroll event lands keeps it pinned", async () => {
+    const h = await loaded(range(1, 15));
+    // The newest row outgrew its measure and overflows the sizer by 60px.
+    h.el.domTotal += 60;
+    h.el.scrollEvent();
+    expect(h.v.autoStick).toBe(true);
+    expect(h.el.scrollTop).toBe(h.el.scrollHeight - h.el.clientHeight);
+    h.stop();
+  });
+
+  test("pinned, only the reader scrolling up past stickPx lets go", async () => {
+    const h = await loaded(range(1, 15));
+    const bottom = h.el.scrollHeight - h.el.clientHeight;
+    h.el.userScroll(bottom - 10);
+    expect(h.v.autoStick).toBe(true);
+    h.el.userScroll(bottom - 30);
+    expect(h.v.autoStick).toBe(false);
+    h.el.userScroll(bottom);
+    expect(h.v.autoStick).toBe(true);
+    // Up while the content grows under it is still the reader's.
+    h.el.domTotal += 60;
+    h.el.userScroll(bottom - 5);
+    expect(h.v.autoStick).toBe(false);
+    h.stop();
+  });
+
+  test("pinned, a nudge within stickPx moves where up is measured from", async () => {
+    const h = await loaded(range(1, 15));
+    const bottom = h.el.scrollHeight - h.el.clientHeight;
+    h.el.userScroll(bottom - 10);
+    expect(h.v.autoStick).toBe(true);
+    // Growth then lands an event with the view where the reader left it: not a move up.
+    h.el.domTotal += 60;
+    h.el.scrollEvent();
+    expect(h.v.autoStick).toBe(true);
+    expect(h.el.scrollTop).toBe(h.el.scrollHeight - h.el.clientHeight);
+    h.stop();
+  });
+
+  test("pinned, scrollTop reading back a fraction under the pin is not a move up", async () => {
+    const h = await loaded(range(1, 15));
+    // Chromium snaps scrollTop to device pixels, so the offset it reports can sit a
+    // fraction under the one the pin read back.
+    h.el.scrollTop -= 0.25;
+    h.el.domTotal += 60;
+    h.el.scrollEvent();
+    expect(h.v.autoStick).toBe(true);
+    expect(h.el.scrollTop).toBe(h.el.scrollHeight - h.el.clientHeight);
+    h.stop();
+  });
+
   test("a reload keeps a surviving row's measured height and the reader's place", async () => {
     const h = await loaded(range(1, 15));
     measure(h, 12, 55);
@@ -139,6 +201,39 @@ describe("FeedVirtualizer construction", () => {
     feed.scroll(el as unknown as HTMLDivElement);
     flush();
     expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+    stop();
+  });
+
+  test("rows measured in the flush that pins still land it on the real bottom", async () => {
+    // As in a component: the rows' measure actions run ahead of the feed's pin effect, and
+    // the sizer they grow is redrawn in a follow-up batch, so the pin first meets the old
+    // height. 21px rows against a 20px estimate leave it 15px short: inside stickPx, so the
+    // pin's scroll event reads it as at the bottom and never pins it again.
+    const el = new Scroller();
+    const host = new FakeHost<number>((a, b) => a - b);
+    let feed!: FeedVirtualizer<number>;
+    const stop = root(() => {
+      feed = new FeedVirtualizer<number>({ ...STILL, fetch: host.fetch });
+      pre(() => {
+        el.domTotal = feed.layout.total;
+      });
+      pre(() => {
+        for (const row of feed.display) {
+          if (row.kind === "item") {
+            feed.measureRow({ offsetHeight: 21 } as HTMLElement, row.clientKey);
+          }
+        }
+      });
+    });
+    feed.scroll(el as unknown as HTMLDivElement);
+    flush();
+    host.store = range(1, 15);
+    feed.load();
+    await host.reply();
+    await settle();
+    expect(feed.autoStick).toBe(true);
+    expect(el.scrollHeight).toBe(325);
+    expect(el.scrollTop).toBe(225);
     stop();
   });
 });
