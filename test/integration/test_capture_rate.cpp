@@ -1,7 +1,9 @@
 #include "diag/capture_rate.hpp"
 #include "hook-frame-relay.h"
+#include "frame-gen-pacer.h"
 #include "frame-gen-stats.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -987,8 +989,10 @@ static void test_fgc_hook_stats_line(void **)
 	}
 	fgc_hook_stats_burst(&s, 4, true);
 	fgc_hook_stats_burst(&s, 4, true);
-	s.step_resets = 1;
-	s.stamp_clamps = 2;
+	s.pace_resets = 1;
+	s.lead_clamps = 2;
+	s.lead_resyncs = 3;
+	s.ring_full = 4;
 	s.bucket_skips = 48;
 	fgc_hook_stats_span(&s, 400000);
 	fgc_hook_stats_span(&s, 620000);
@@ -1004,10 +1008,11 @@ static void test_fgc_hook_stats_line(void **)
 
 	char line[512];
 	assert_true(fgc_hook_stats_format(line, sizeof(line), &s, 10003000000ull, 8333000ull) > 0);
-	assert_string_equal(line,
-			    "[10s] hook 10.0 s: presents 119.8/s copies 115.0/s, bursts 1:3 2:0 3:1 4:295 >4:2"
-			    ", step 8333 us, step resets 1, stamp clamps 2, bucket skips 48, slot busy 0"
-			    ", copy fails 0, burst span max 620 us, burst gap min 24100 us, copy p50 225 p99 925 us");
+	assert_string_equal(
+		line,
+		"[10s] hook 10.0 s: presents 119.8/s copies 115.0/s, bursts 1:3 2:0 3:1 4:295 >4:2"
+		", step 8333 us, pace resets 1, lead clamps 2, lead resyncs 3, bucket skips 48, ring full 4"
+		", slot busy 0, copy fails 0, burst span max 620 us, burst gap min 24100 us, copy p50 225 p99 925 us");
 
 	// Slower than the last bin reads as its upper edge; no copies read 0.
 	struct fgc_hook_stats slow;
@@ -1059,6 +1064,902 @@ static void test_fgc_stats_window(void **)
 	assert_true(fgc_stats_window_due(&start, 5000 + FGC_STATS_WINDOW_NS));
 }
 
+// Frame generation capture end to end: the pacer's stamps through the hook's
+// bucket limiter and slot guard into the shared-texture ring, and the host's
+// pick_ring_slot on canvas ticks, over synthetic Present traces. Each trace runs
+// at three tick phases. Times are ns.
+//
+// Nothing here holds heap memory: a failed cmocka assertion leaves by longjmp,
+// which does not reliably run C++ destructors on the way.
+constexpr uint64_t kMs = 1000000;
+constexpr uint64_t kSec = 1000000000;
+constexpr uint64_t kCanvasNs = 16666667;
+// SHTEX_RING_MAX; graphics-hook-info.h needs windows.h, so the model keeps its own.
+constexpr uint32_t kRingSlots = 8;
+constexpr size_t kTraceMax = 4000;
+// Measures skip each trace's first half second, while the window fills.
+constexpr uint64_t kSkipNs = 500000000;
+constexpr uint64_t kBase20 = 50000000;
+constexpr uint64_t kBase30 = 33333333;
+constexpr uint64_t kBase45 = 22222222;
+constexpr uint64_t k60Hz = 16666667;
+
+// Deterministic per seed, unlike rand().
+struct Lcg {
+	uint64_t state;
+	uint64_t Next()
+	{
+		state = state * 6364136223846793005ull + 1442695040888963407ull;
+		return state >> 33;
+	}
+	// Uniform in [lo, hi) ns.
+	uint64_t Uniform(uint64_t lo, uint64_t hi)
+	{
+		return lo + (uint64_t)((double)Next() / 2147483648.0 * (double)(hi - lo));
+	}
+};
+
+struct PresentTrace {
+	uint64_t t[kTraceMax];
+	size_t count;
+	// The first Present after a change of pace; 0 when there is none.
+	uint64_t split;
+	// When the hook restarts: a fresh pacer, bucket limiter and ring; 0 for never.
+	uint64_t restart_at;
+};
+
+static void Clear(PresentTrace *tr)
+{
+	tr->count = 0;
+	tr->split = 0;
+	tr->restart_at = 0;
+}
+
+static void Push(PresentTrace *tr, uint64_t t)
+{
+	assert_true(tr->count < kTraceMax);
+	tr->t[tr->count++] = t;
+}
+
+enum class Fg { Clean, Frag, Even, Rand, Split3Plus1 };
+
+// One real frame per base period (jittered by up to 1 ms, and swung by drift
+// over a 2 s cycle), each with factor Presents clustered as the kind places
+// them, plus up to 0.2 ms of submission noise each. Appends, sorted.
+static void FgTrace(PresentTrace *tr, Fg kind, size_t factor, uint64_t base, uint64_t seed, uint64_t dur = 10 * kSec,
+		    double drift = 0.0, uint64_t start = 10 * kMs)
+{
+	Lcg rng{seed};
+	const size_t first_index = tr->count;
+	uint64_t frame = start;
+	while (frame < start + dur) {
+		uint64_t b = base;
+		if (drift != 0.0) {
+			b = (uint64_t)((double)base * (1.0 + drift * std::sin(2.0 * 3.141592653589793 *
+									      (double)(frame - start) / 2e9)));
+		}
+		const uint64_t period = b - kMs + rng.Uniform(0, 2 * kMs);
+		uint64_t offs[10] = {};
+		assert_true(factor <= 10);
+		switch (kind) {
+		case Fg::Clean:
+			for (size_t i = 1; i < factor; i++) {
+				offs[i] = i * 150000;
+			}
+			break;
+		case Fg::Frag: {
+			const uint64_t first = factor > 1 ? 1 + rng.Next() % (factor - 1) : 1;
+			const uint64_t hi = period - 3 * kMs > 3 * kMs + 1 ? period - 3 * kMs : 3 * kMs + 1;
+			for (size_t i = 1; i < factor; i++) {
+				offs[i] = i < first ? i * 600000 : rng.Uniform(3 * kMs, hi);
+			}
+			break;
+		}
+		case Fg::Even:
+			for (size_t i = 1; i < factor; i++) {
+				offs[i] = i * period / factor;
+			}
+			break;
+		case Fg::Rand: {
+			const uint64_t clusters = 1 + rng.Next() % factor;
+			for (size_t i = 1; i < factor; i++) {
+				const bool new_cluster = i * clusters / factor != (i - 1) * clusters / factor;
+				offs[i] = offs[i - 1] + (new_cluster ? rng.Uniform(3 * kMs, 7 * kMs) : 200000);
+			}
+			break;
+		}
+		case Fg::Split3Plus1:
+			offs[1] = 600000;
+			offs[2] = 1200000;
+			offs[3] = rng.Uniform(3 * kMs, 25 * kMs);
+			break;
+		}
+		for (size_t i = 0; i < factor; i++) {
+			Push(tr, frame + offs[i] + rng.Uniform(0, 200000));
+		}
+		frame += period;
+	}
+	std::sort(tr->t + first_index, tr->t + tr->count);
+}
+
+// Single Presents every interval, each jittered by up to jitter.
+static void Singles(PresentTrace *tr, uint64_t interval, size_t n, uint64_t jitter = 0, uint64_t start = 10 * kMs)
+{
+	Lcg rng{1};
+	uint64_t t = start;
+	for (size_t i = 0; i < n; i++) {
+		Push(tr, t + (jitter ? rng.Uniform(0, jitter) : 0));
+		t += interval;
+	}
+}
+
+// Variable refresh: intervals uniform in [lo, hi).
+static void Vrr(PresentTrace *tr, uint64_t lo, uint64_t hi, size_t n, uint64_t seed)
+{
+	Lcg rng{seed};
+	uint64_t t = 10 * kMs;
+	for (size_t i = 0; i < n; i++) {
+		Push(tr, t);
+		t += rng.Uniform(lo, hi);
+	}
+}
+
+struct Pace {
+	uint64_t interval;
+	size_t count;
+};
+
+// Runs of evenly spaced Presents, back to back: each run's Presents, and then
+// the time to the next run, are its interval apart.
+static void Seq(PresentTrace *tr, const Pace *parts, size_t n, uint64_t start = 10 * kMs)
+{
+	uint64_t t = start;
+	for (size_t p = 0; p < n; p++) {
+		for (size_t i = 0; i < parts[p].count; i++) {
+			Push(tr, t);
+			t += parts[p].interval;
+		}
+	}
+}
+
+static void Seq(PresentTrace *tr, std::initializer_list<Pace> parts, uint64_t start = 10 * kMs)
+{
+	Seq(tr, parts.begin(), parts.size(), start);
+}
+
+// Drops every Present from ns after the first on.
+static void Cut(PresentTrace *tr, uint64_t ns)
+{
+	const uint64_t end = tr->t[0] + ns;
+	size_t n = 0;
+	while (n < tr->count && tr->t[n] < end) {
+		n++;
+	}
+	tr->count = n;
+}
+
+// Appends b after tr, its first Present one of b's own first intervals after
+// tr's last, and marks the change of pace there.
+static void Cat(PresentTrace *tr, const PresentTrace *b)
+{
+	const uint64_t gap = b->t[1] - b->t[0];
+	const uint64_t base = tr->t[tr->count - 1] + gap;
+	tr->split = base;
+	for (size_t i = 0; i < b->count; i++) {
+		Push(tr, base + (b->t[i] - b->t[0]));
+	}
+}
+
+struct RingRun {
+	// Averaged over the tick phases.
+	double distinct_per_s;
+	// The rest are the worst over the phases.
+	uint64_t max_gap_ns;
+	// Waits counted from the change of pace on, so a slow pace before it
+	// does not count.
+	uint64_t max_gap_after_split_ns;
+	uint64_t max_lead_ns;
+	uint64_t max_latency_ns;
+	uint64_t last_lead_ns;
+};
+
+static uint64_t WaitSinceSplit(const PresentTrace *tr, uint64_t tick, uint64_t last_new)
+{
+	if (!tr->split || tick < tr->split) {
+		return 0;
+	}
+	return tick - (last_new > tr->split ? last_new : tr->split);
+}
+
+struct RingSlot {
+	uint64_t show_ns;
+	uint64_t frame_no;
+	uint64_t present_ns;
+};
+
+// One phase. The hook side mirrors d3d12_ring_capture: every Present is
+// stamped, the half-interval bucket limiter passes at most one per bucket, and
+// d3d12_ring_acquire_slot walks round robin from the next slot, skipping slots
+// whose stamp is under two canvas intervals old and the slot the host holds; a
+// copy with no slot leaves the bucket open for the next Present. The host side
+// mirrors pick_ring_slot: each tick takes the newest slot newer than the shown
+// frame whose stamp is a canvas interval old, or the newest at all before the
+// first. Each stamp is checked as it is made: strictly rising, never behind its
+// Present, and at most the lead cap (plus the one ns strict increase may add)
+// ahead of it.
+static RingRun RunRing(const PresentTrace *tr, uint64_t canvas, uint64_t phase)
+{
+	const uint64_t lead_cap = fgc_pacer_lead_cap(canvas, kRingSlots);
+	struct fgc_pacer pacer;
+	fgc_pacer_init(&pacer, lead_cap);
+
+	RingSlot slots[kRingSlots];
+	memset(slots, 0, sizeof(slots));
+	uint32_t next_slot = 0;
+	int shown_slot = -1;
+	uint64_t shown_frame = 0;
+	uint64_t frame_no = 0;
+	uint64_t last_bucket = 0;
+	bool have_bucket = false;
+	uint64_t prev_stamp = 0;
+	bool restarted = false;
+
+	RingRun run = {0.0, 0, 0, 0, 0, 0};
+	const uint64_t t0 = tr->t[0];
+	const uint64_t end = tr->t[tr->count - 1];
+	uint64_t shown = 0;
+	uint64_t tick = t0 + canvas + phase;
+	uint64_t last_new = tick;
+	size_t pi = 0;
+	while (tick < end) {
+		for (; pi < tr->count && tr->t[pi] <= tick; pi++) {
+			const uint64_t t = tr->t[pi];
+			if (tr->restart_at && !restarted && t >= tr->restart_at) {
+				fgc_pacer_init(&pacer, lead_cap);
+				memset(slots, 0, sizeof(slots));
+				next_slot = 0;
+				shown_slot = -1;
+				shown_frame = 0;
+				frame_no = 0;
+				have_bucket = false;
+				prev_stamp = 0;
+				restarted = true;
+			}
+
+			const uint64_t stamp = fgc_pacer_stamp(&pacer, t).stamp;
+			assert_true(stamp > prev_stamp);
+			assert_true(stamp >= t);
+			assert_true(stamp - t <= lead_cap + 1);
+			prev_stamp = stamp;
+			run.last_lead_ns = stamp - t;
+			if (t - t0 >= kSkipNs && stamp - t > run.max_lead_ns) {
+				run.max_lead_ns = stamp - t;
+			}
+
+			const uint64_t bucket = stamp / (canvas / 2);
+			if (have_bucket && bucket <= last_bucket) {
+				continue;
+			}
+			const uint64_t horizon = t > 2 * canvas ? t - 2 * canvas : 0;
+			int slot = -1;
+			for (uint32_t k = 0; k < kRingSlots; k++) {
+				const uint32_t candidate = (next_slot + k) % kRingSlots;
+				const uint64_t show = slots[candidate].show_ns;
+				if ((show && show > horizon) || (int)candidate == shown_slot) {
+					continue;
+				}
+				slot = (int)candidate;
+				break;
+			}
+			if (slot < 0) {
+				continue;
+			}
+			slots[slot] = {stamp, ++frame_no, t};
+			next_slot = (uint32_t)(slot + 1) % kRingSlots;
+			last_bucket = bucket;
+			have_bucket = true;
+		}
+
+		const uint64_t target = shown_slot >= 0 ? tick - canvas : UINT64_MAX;
+		int best = -1;
+		for (int i = 0; i < (int)kRingSlots; i++) {
+			const RingSlot &s = slots[i];
+			if (!s.show_ns || i == shown_slot || s.frame_no <= shown_frame || s.show_ns > target) {
+				continue;
+			}
+			if (best < 0 || s.show_ns > slots[best].show_ns) {
+				best = i;
+			}
+		}
+		if (best >= 0) {
+			shown_slot = best;
+			shown_frame = slots[best].frame_no;
+			if (tick - t0 >= kSkipNs) {
+				shown++;
+				const uint64_t gap = tick - last_new;
+				run.max_gap_ns = gap > run.max_gap_ns ? gap : run.max_gap_ns;
+				const uint64_t wait = WaitSinceSplit(tr, tick, last_new);
+				if (wait > run.max_gap_after_split_ns) {
+					run.max_gap_after_split_ns = wait;
+				}
+				const uint64_t latency = tick - slots[best].present_ns;
+				run.max_latency_ns = latency > run.max_latency_ns ? latency : run.max_latency_ns;
+			}
+			last_new = tick;
+		}
+		tick += canvas;
+	}
+	// A run that ends without a new frame for a while counts that wait too.
+	if (shown && tick > last_new) {
+		const uint64_t gap = tick - last_new;
+		run.max_gap_ns = gap > run.max_gap_ns ? gap : run.max_gap_ns;
+		const uint64_t wait = WaitSinceSplit(tr, tick, last_new);
+		if (wait > run.max_gap_after_split_ns) {
+			run.max_gap_after_split_ns = wait;
+		}
+	}
+	run.distinct_per_s = (double)shown / ((double)(end - t0 - kSkipNs) / 1e9);
+	return run;
+}
+
+static RingRun RunRingPhases(const PresentTrace *tr)
+{
+	RingRun worst = {0.0, 0, 0, 0, 0, 0};
+	for (double f : {0.13, 0.47, 0.81}) {
+		const RingRun r = RunRing(tr, kCanvasNs, (uint64_t)((double)kCanvasNs * f));
+		worst.distinct_per_s += r.distinct_per_s / 3.0;
+		worst.max_gap_ns = r.max_gap_ns > worst.max_gap_ns ? r.max_gap_ns : worst.max_gap_ns;
+		worst.max_gap_after_split_ns = r.max_gap_after_split_ns > worst.max_gap_after_split_ns
+						       ? r.max_gap_after_split_ns
+						       : worst.max_gap_after_split_ns;
+		worst.max_lead_ns = r.max_lead_ns > worst.max_lead_ns ? r.max_lead_ns : worst.max_lead_ns;
+		worst.max_latency_ns = r.max_latency_ns > worst.max_latency_ns ? r.max_latency_ns
+									       : worst.max_latency_ns;
+		worst.last_lead_ns = r.last_lead_ns > worst.last_lead_ns ? r.last_lead_ns : worst.last_lead_ns;
+	}
+	return worst;
+}
+
+// What the design scorecard measured for each case on a 60 fps canvas: its
+// distinct new frames per second less 5%, and its longest wait for a new frame
+// in canvas ticks. Frame generation rows cover both seeds of a case.
+struct RingFloor {
+	const char *name;
+	double distinct_per_s;
+	uint64_t max_gap_ticks;
+};
+
+static const RingFloor kRingFloors[] = {
+	{"fg 2x@20 clean", 38.0, 2},
+	{"fg 2x@20 clean drift", 39.4, 3},
+	{"fg 2x@20 frag", 37.7, 3},
+	{"fg 2x@20 frag drift", 38.7, 4},
+	{"fg 2x@20 even", 38.0, 2},
+	{"fg 2x@20 even drift", 39.1, 2},
+	{"fg 2x@30 clean", 56.6, 2},
+	{"fg 2x@30 clean drift", 51.9, 2},
+	{"fg 2x@30 frag", 55.4, 2},
+	{"fg 2x@30 frag drift", 51.0, 3},
+	{"fg 2x@30 even", 56.8, 2},
+	{"fg 2x@30 even drift", 52.0, 2},
+	{"fg 2x@45 clean", 57.0, 1},
+	{"fg 2x@45 clean drift", 57.0, 1},
+	{"fg 2x@45 frag", 57.0, 1},
+	{"fg 2x@45 frag drift", 56.5, 2},
+	{"fg 2x@45 even", 57.0, 1},
+	{"fg 2x@45 even drift", 57.0, 1},
+	{"fg 3x@20 clean", 55.4, 2},
+	{"fg 3x@20 clean drift", 49.7, 2},
+	{"fg 3x@20 frag", 53.4, 3},
+	{"fg 3x@20 frag drift", 50.0, 3},
+	{"fg 3x@20 even", 56.7, 2},
+	{"fg 3x@20 even drift", 52.0, 2},
+	{"fg 3x@30 clean", 57.0, 1},
+	{"fg 3x@30 clean drift", 56.4, 2},
+	{"fg 3x@30 frag", 56.5, 2},
+	{"fg 3x@30 frag drift", 56.1, 2},
+	{"fg 3x@30 even", 57.0, 1},
+	{"fg 3x@30 even drift", 57.0, 2},
+	{"fg 3x@45 clean", 57.0, 1},
+	{"fg 3x@45 clean drift", 56.9, 2},
+	{"fg 3x@45 frag", 56.8, 2},
+	{"fg 3x@45 frag drift", 56.8, 2},
+	{"fg 3x@45 even", 57.0, 1},
+	{"fg 3x@45 even drift", 57.0, 1},
+	{"fg 4x@20 clean", 57.0, 2},
+	{"fg 4x@20 clean drift", 51.3, 3},
+	{"fg 4x@20 frag", 55.5, 3},
+	{"fg 4x@20 frag drift", 54.5, 3},
+	{"fg 4x@20 even", 57.0, 1},
+	{"fg 4x@20 even drift", 57.0, 1},
+	{"fg 4x@30 clean", 57.0, 2},
+	{"fg 4x@30 clean drift", 56.3, 2},
+	{"fg 4x@30 frag", 56.7, 2},
+	{"fg 4x@30 frag drift", 56.2, 2},
+	{"fg 4x@30 even", 57.0, 1},
+	{"fg 4x@30 even drift", 57.0, 1},
+	{"fg 4x@45 clean", 57.0, 1},
+	{"fg 4x@45 clean drift", 56.8, 2},
+	{"fg 4x@45 frag", 57.0, 1},
+	{"fg 4x@45 frag drift", 56.8, 2},
+	{"fg 4x@45 even", 57.0, 1},
+	{"fg 4x@45 even drift", 57.0, 1},
+	{"fg 5x@20 clean", 55.1, 2},
+	{"fg 5x@20 clean drift", 51.7, 2},
+	{"fg 5x@20 frag", 56.2, 2},
+	{"fg 5x@20 frag drift", 55.4, 3},
+	{"fg 5x@20 even", 57.0, 1},
+	{"fg 5x@20 even drift", 57.0, 1},
+	{"fg 5x@30 clean", 56.9, 2},
+	{"fg 5x@30 clean drift", 55.9, 2},
+	{"fg 5x@30 frag", 56.7, 2},
+	{"fg 5x@30 frag drift", 56.7, 2},
+	{"fg 5x@30 even", 57.0, 1},
+	{"fg 5x@30 even drift", 57.0, 1},
+	{"fg 5x@45 clean", 57.0, 1},
+	{"fg 5x@45 clean drift", 57.0, 1},
+	{"fg 5x@45 frag", 57.0, 1},
+	{"fg 5x@45 frag drift", 57.0, 1},
+	{"fg 5x@45 even", 57.0, 1},
+	{"fg 5x@45 even drift", 57.0, 1},
+	{"fg 6x@20 clean", 56.3, 2},
+	{"fg 6x@20 clean drift", 51.6, 3},
+	{"fg 6x@20 frag", 56.2, 2},
+	{"fg 6x@20 frag drift", 55.9, 3},
+	{"fg 6x@20 even", 57.0, 1},
+	{"fg 6x@20 even drift", 57.0, 1},
+	{"fg 6x@30 clean", 56.9, 2},
+	{"fg 6x@30 clean drift", 56.6, 2},
+	{"fg 6x@30 frag", 56.9, 2},
+	{"fg 6x@30 frag drift", 56.7, 2},
+	{"fg 6x@30 even", 57.0, 1},
+	{"fg 6x@30 even drift", 57.0, 1},
+	{"fg 6x@45 clean", 57.0, 1},
+	{"fg 6x@45 clean drift", 57.0, 1},
+	{"fg 6x@45 frag", 57.0, 1},
+	{"fg 6x@45 frag drift", 57.0, 1},
+	{"fg 6x@45 even", 57.0, 1},
+	{"fg 6x@45 even drift", 57.0, 1},
+	{"fg 8x@20 clean", 56.1, 2},
+	{"fg 8x@20 clean drift", 51.7, 3},
+	{"fg 8x@20 frag", 55.9, 2},
+	{"fg 8x@20 frag drift", 55.9, 2},
+	{"fg 8x@20 even", 57.0, 1},
+	{"fg 8x@20 even drift", 57.0, 1},
+	{"fg 8x@30 clean", 57.0, 2},
+	{"fg 8x@30 clean drift", 56.1, 2},
+	{"fg 8x@30 frag", 56.8, 2},
+	{"fg 8x@30 frag drift", 56.7, 2},
+	{"fg 8x@30 even", 57.0, 1},
+	{"fg 8x@30 even drift", 57.0, 1},
+	{"fg 8x@45 clean", 57.0, 1},
+	{"fg 8x@45 clean drift", 57.0, 1},
+	{"fg 8x@45 frag", 57.0, 1},
+	{"fg 8x@45 frag drift", 56.9, 2},
+	{"fg 8x@45 even", 57.0, 1},
+	{"fg 8x@45 even drift", 57.0, 1},
+	{"fg 10x@20 clean", 51.2, 2},
+	{"fg 10x@20 clean drift", 51.9, 3},
+	{"fg 10x@20 frag", 56.3, 2},
+	{"fg 10x@20 frag drift", 55.9, 3},
+	{"fg 10x@20 even", 57.0, 1},
+	{"fg 10x@20 even drift", 57.0, 1},
+	{"fg 10x@30 clean", 56.7, 2},
+	{"fg 10x@30 clean drift", 56.7, 2},
+	{"fg 10x@30 frag", 56.9, 2},
+	{"fg 10x@30 frag drift", 56.9, 2},
+	{"fg 10x@30 even", 57.0, 1},
+	{"fg 10x@30 even drift", 57.0, 1},
+	{"fg 10x@45 clean", 57.0, 1},
+	{"fg 10x@45 clean drift", 57.0, 1},
+	{"fg 10x@45 frag", 57.0, 1},
+	{"fg 10x@45 frag drift", 57.0, 1},
+	{"fg 10x@45 even", 57.0, 1},
+	{"fg 10x@45 even drift", 57.0, 1},
+	{"fg 4x@30 rand", 57.0, 1},
+	{"fg 4x@30 3p1", 56.9, 2},
+	{"singles 60", 57.0, 1},
+	{"singles 60 jit1ms", 57.0, 1},
+	{"singles 144", 57.0, 1},
+	{"singles 240", 57.0, 1},
+	{"singles vrr 42-100", 53.9, 2},
+	{"singles vrr 70-110", 57.0, 2},
+	{"hitch 60 +80ms", 56.4, 5},
+	{"hitch 144 +50ms", 56.7, 3},
+	{"hitch 60 +95ms", 56.3, 6},
+	{"hitch 60 60ms/2s", 56.0, 4},
+	{"hitch 60 40ms/0.5s", 54.5, 3},
+	{"trans singles 30->120", 46.9, 2},
+	{"trans singles 60->240", 57.1, 1},
+	{"trans singles 60->120", 57.1, 1},
+	{"trans singles ~10->120", 40.3, 6},
+	{"trans singles 30->60", 46.4, 2},
+	{"trans singles 120->60", 57.0, 1},
+	{"trans singles 60->30", 38.3, 2},
+	{"trans singles 240->60", 57.0, 1},
+	{"trans 4x@30 -> 4x@45 frag", 56.8, 2},
+	{"trans 4x@45 -> 4x@30 frag", 56.8, 2},
+	{"trans 4x@40 -> 4x@60 frag", 57.0, 1},
+	{"trans 4x@60 -> 4x@30 clean", 56.6, 2},
+	{"trans 60 -> 2x@60 clean (FG on)", 57.0, 1},
+	{"trans 2x@60 clean -> 60 (FG off)", 56.8, 2},
+	{"trans 60 -> 4x@30 frag (MFG on)", 56.9, 2},
+	{"trans 4x@30 frag -> 30 (MFG off)", 40.9, 3},
+	{"trans 30 -> 60 even", 44.0, 2},
+	{"trans 2x@30 clean -> 4x@30 clean", 56.8, 2},
+	{"trans 4x@30 clean -> 2x@30 clean", 55.9, 2},
+	{"trans 10x@20 clean -> 2x@45 clean", 56.6, 2},
+	{"stall 300ms after 4x lead, burst", 52.6, 17},
+	{"stall 150ms after 6x lead, burst", 53.1, 7},
+	{"stall 500ms singles 60", 50.1, 30},
+	{"restart hook @2s 4x@30 clean", 56.2, 3},
+	{"restart hook @2s 6x@20 frag", 55.5, 2},
+};
+
+static const RingFloor *FindRingFloor(const char *name)
+{
+	for (const RingFloor &floor : kRingFloors) {
+		if (strcmp(floor.name, name) == 0) {
+			return &floor;
+		}
+	}
+	print_error("no floor for '%s'\n", name);
+	fail();
+	return nullptr;
+}
+
+static void Expect(bool ok, const char *name, const char *what, double got, double limit)
+{
+	if (!ok) {
+		print_error("'%s': %s %.3f against %.3f\n", name, what, got, limit);
+	}
+	assert_true(ok);
+}
+
+// Runs a trace through the ring and holds it to its floors.
+static RingRun CheckRing(const char *name, const PresentTrace *tr)
+{
+	const RingFloor *floor = FindRingFloor(name);
+	const RingRun run = RunRingPhases(tr);
+	Expect(run.distinct_per_s >= floor->distinct_per_s, name, "distinct/s", run.distinct_per_s,
+	       floor->distinct_per_s);
+	Expect(run.max_gap_ns <= floor->max_gap_ticks * kCanvasNs + 1, name, "max gap ms", (double)run.max_gap_ns / 1e6,
+	       (double)(floor->max_gap_ticks * kCanvasNs) / 1e6);
+	return run;
+}
+
+static PresentTrace g_trace;
+static PresentTrace g_part;
+
+// 2x to 10x frame generation over 20, 30 and 45 fps games, clustered cleanly,
+// fragmented or evenly paced, with and without a slow swing in frame time. A
+// burst cut at 4 Presents split every clean frame above 4x in two.
+static void test_fgc_ring_frame_gen_matrix(void **)
+{
+	struct Base {
+		uint64_t ns;
+		const char *name;
+	};
+	struct Kind {
+		Fg kind;
+		const char *name;
+	};
+	char name[64];
+	for (size_t factor : {2, 3, 4, 5, 6, 8, 10}) {
+		for (Base base : {Base{kBase20, "20"}, Base{kBase30, "30"}, Base{kBase45, "45"}}) {
+			for (Kind kind : {Kind{Fg::Clean, "clean"}, Kind{Fg::Frag, "frag"}, Kind{Fg::Even, "even"}}) {
+				for (double drift : {0.0, 0.3}) {
+					snprintf(name, sizeof(name), "fg %zux@%s %s%s", factor, base.name, kind.name,
+						 drift != 0.0 ? " drift" : "");
+					for (uint64_t seed : {1, 2}) {
+						Clear(&g_trace);
+						FgTrace(&g_trace, kind.kind, factor, base.ns, seed, 6 * kSec, drift);
+						CheckRing(name, &g_trace);
+					}
+				}
+			}
+		}
+	}
+}
+
+// The 4x shapes seen live, where one frame's Presents arrive in uneven clusters.
+static void test_fgc_ring_fragmented_4x(void **)
+{
+	for (uint64_t seed : {1, 2}) {
+		Clear(&g_trace);
+		FgTrace(&g_trace, Fg::Rand, 4, kBase30, seed, 6 * kSec);
+		CheckRing("fg 4x@30 rand", &g_trace);
+		Clear(&g_trace);
+		FgTrace(&g_trace, Fg::Split3Plus1, 4, kBase30, seed, 6 * kSec);
+		CheckRing("fg 4x@30 3p1", &g_trace);
+	}
+}
+
+// Without frame generation, at fixed and variable refresh.
+static void test_fgc_ring_single_presents(void **)
+{
+	Clear(&g_trace);
+	Singles(&g_trace, k60Hz, 600);
+	CheckRing("singles 60", &g_trace);
+	Clear(&g_trace);
+	Singles(&g_trace, k60Hz, 600, kMs);
+	CheckRing("singles 60 jit1ms", &g_trace);
+	Clear(&g_trace);
+	Singles(&g_trace, 6944444, 1400);
+	CheckRing("singles 144", &g_trace);
+	Clear(&g_trace);
+	Singles(&g_trace, 4166667, 2400);
+	CheckRing("singles 240", &g_trace);
+	Clear(&g_trace);
+	Vrr(&g_trace, 10 * kMs, 24 * kMs, 900, 9);
+	CheckRing("singles vrr 42-100", &g_trace);
+	Clear(&g_trace);
+	Vrr(&g_trace, 9 * kMs, 14 * kMs, 900, 5);
+	CheckRing("singles vrr 70-110", &g_trace);
+}
+
+// A hitch is one long interval in an otherwise steady game. Its lead must clear
+// again, and no frame may wait longer than under the burst stamping, whose worst
+// latency on the same traces is the bound.
+static void test_fgc_ring_hitches(void **)
+{
+	struct Hitch {
+		const char *name;
+		uint64_t interval;
+		size_t before;
+		uint64_t hitch;
+		size_t after;
+		uint64_t burst_latency_ns;
+	};
+	for (const Hitch &h : {Hitch{"hitch 60 +80ms", k60Hz, 100, 80 * kMs, 300, 30166667},
+			       Hitch{"hitch 144 +50ms", 6944444, 300, 50 * kMs, 600, 30166842}}) {
+		Clear(&g_trace);
+		Seq(&g_trace, {{h.interval, h.before}, {h.hitch, 1}, {h.interval, h.after}});
+		const RingRun run = CheckRing(h.name, &g_trace);
+		Expect(run.last_lead_ns == 0, h.name, "last lead ms", (double)run.last_lead_ns / 1e6, 0.0);
+		Expect(run.max_latency_ns <= h.burst_latency_ns, h.name, "max latency ms",
+		       (double)run.max_latency_ns / 1e6, (double)h.burst_latency_ns / 1e6);
+	}
+
+	Clear(&g_trace);
+	Seq(&g_trace, {{k60Hz, 100}, {95 * kMs, 1}, {k60Hz, 300}});
+	CheckRing("hitch 60 +95ms", &g_trace);
+	struct Repeated {
+		const char *name;
+		size_t steady;
+		uint64_t hitch;
+		size_t times;
+	};
+	for (const Repeated &r :
+	     {Repeated{"hitch 60 60ms/2s", 120, 60 * kMs, 5}, Repeated{"hitch 60 40ms/0.5s", 30, 40 * kMs, 10}}) {
+		Pace parts[20];
+		for (size_t i = 0; i < r.times; i++) {
+			parts[2 * i] = {k60Hz, r.steady};
+			parts[2 * i + 1] = {r.hitch, 1};
+		}
+		Clear(&g_trace);
+		Seq(&g_trace, parts, 2 * r.times);
+		CheckRing(r.name, &g_trace);
+	}
+}
+
+// Three canvas ticks, 50 ms on a 60 fps canvas.
+constexpr uint64_t kMaxWaitAfterRiseNs = 3 * kCanvasNs;
+
+static void ExpectNoFreezeAfterRise(const char *name, const RingRun &run)
+{
+	Expect(run.max_gap_after_split_ns <= kMaxWaitAfterRiseNs, name, "max wait after the change ms",
+	       (double)run.max_gap_after_split_ns / 1e6, (double)kMaxWaitAfterRiseNs / 1e6);
+}
+
+// A game whose Present rate changes. The step measured before a rise leads
+// every stamp further ahead until it is re-measured; until then the canvas
+// must keep getting new frames, so after a rise no wait may pass three ticks.
+static void test_fgc_ring_transitions(void **)
+{
+	struct Change {
+		const char *name;
+		uint64_t from;
+		uint64_t to;
+		bool rise;
+	};
+	for (const Change &c : {Change{"trans singles 30->120", kBase30, 8333333, true},
+				Change{"trans singles 60->240", k60Hz, 4166667, true},
+				Change{"trans singles 60->120", k60Hz, 8333333, true},
+				Change{"trans singles ~10->120", 100 * kMs - 1, 8333333, true},
+				Change{"trans singles 30->60", kBase30, k60Hz, true},
+				Change{"trans singles 120->60", 8333333, k60Hz, false},
+				Change{"trans singles 60->30", k60Hz, kBase30, false},
+				Change{"trans singles 240->60", 4166667, k60Hz, false}}) {
+		const size_t before = (size_t)(1500000000ull / c.from);
+		Clear(&g_trace);
+		Seq(&g_trace, {{c.from, before}, {c.to, (size_t)(2 * kSec / c.to)}});
+		g_trace.split = g_trace.t[before];
+		const RingRun run = CheckRing(c.name, &g_trace);
+		if (c.rise) {
+			ExpectNoFreezeAfterRise(c.name, run);
+		}
+	}
+
+	struct FgChange {
+		const char *name;
+		Fg from_kind;
+		size_t from_factor;
+		uint64_t from_base;
+		Fg to_kind;
+		size_t to_factor;
+		uint64_t to_base;
+		bool rise;
+	};
+	for (const FgChange &c : {
+		     FgChange{"trans 4x@30 -> 4x@45 frag", Fg::Frag, 4, kBase30, Fg::Frag, 4, kBase45, true},
+		     FgChange{"trans 4x@45 -> 4x@30 frag", Fg::Frag, 4, kBase45, Fg::Frag, 4, kBase30, false},
+		     FgChange{"trans 4x@40 -> 4x@60 frag", Fg::Frag, 4, 25000000, Fg::Frag, 4, k60Hz, true},
+		     FgChange{"trans 4x@60 -> 4x@30 clean", Fg::Clean, 4, k60Hz, Fg::Clean, 4, kBase30, false},
+		     FgChange{"trans 60 -> 2x@60 clean (FG on)", Fg::Even, 1, k60Hz, Fg::Clean, 2, k60Hz, true},
+		     FgChange{"trans 2x@60 clean -> 60 (FG off)", Fg::Clean, 2, k60Hz, Fg::Even, 1, k60Hz, false},
+		     FgChange{"trans 60 -> 4x@30 frag (MFG on)", Fg::Even, 1, k60Hz, Fg::Frag, 4, kBase30, true},
+		     FgChange{"trans 4x@30 frag -> 30 (MFG off)", Fg::Frag, 4, kBase30, Fg::Even, 1, kBase30, false},
+		     FgChange{"trans 30 -> 60 even", Fg::Even, 1, kBase30, Fg::Even, 1, k60Hz, true},
+		     FgChange{"trans 2x@30 clean -> 4x@30 clean", Fg::Clean, 2, kBase30, Fg::Clean, 4, kBase30, true},
+		     FgChange{"trans 4x@30 clean -> 2x@30 clean", Fg::Clean, 4, kBase30, Fg::Clean, 2, kBase30, false},
+		     FgChange{"trans 10x@20 clean -> 2x@45 clean", Fg::Clean, 10, kBase20, Fg::Clean, 2, kBase45,
+			      false},
+	     }) {
+		Clear(&g_trace);
+		FgTrace(&g_trace, c.from_kind, c.from_factor, c.from_base, 1);
+		Cut(&g_trace, 2 * kSec);
+		Clear(&g_part);
+		FgTrace(&g_part, c.to_kind, c.to_factor, c.to_base, 2, 2 * kSec);
+		Cat(&g_trace, &g_part);
+		const RingRun run = CheckRing(c.name, &g_trace);
+		if (c.rise) {
+			ExpectNoFreezeAfterRise(c.name, run);
+		}
+	}
+}
+
+// A stall after the stamps have built up a lead, then a burst: the stall resets
+// the window, and stamps keep rising through it.
+static void test_fgc_ring_stalls(void **)
+{
+	struct Stall {
+		const char *name;
+		size_t factor;
+		uint64_t base;
+		uint64_t stall;
+		size_t burst;
+	};
+	for (const Stall &s : {Stall{"stall 300ms after 4x lead, burst", 4, kBase30, 300 * kMs, 6},
+			       Stall{"stall 150ms after 6x lead, burst", 6, kBase20, 150 * kMs, 4}}) {
+		Clear(&g_trace);
+		FgTrace(&g_trace, Fg::Clean, s.factor, s.base, 3);
+		Cut(&g_trace, 2 * kSec);
+		const uint64_t t_end = g_trace.t[g_trace.count - 1];
+		for (size_t i = 0; i < s.burst; i++) {
+			Push(&g_trace, t_end + s.stall + i * 100000);
+		}
+		FgTrace(&g_trace, Fg::Clean, s.factor, s.base, 4, 2 * kSec, 0.0, t_end + s.stall + 10 * kMs);
+		CheckRing(s.name, &g_trace);
+	}
+
+	Clear(&g_trace);
+	Seq(&g_trace, {{k60Hz, 200}});
+	Cut(&g_trace, 2 * kSec);
+	Seq(&g_trace, {{k60Hz, 120}}, g_trace.t[g_trace.count - 1] + 500 * kMs);
+	CheckRing("stall 500ms singles 60", &g_trace);
+}
+
+// The hook restarting mid-stream starts a fresh pacer, limiter and ring.
+static void test_fgc_ring_hook_restart(void **)
+{
+	Clear(&g_trace);
+	FgTrace(&g_trace, Fg::Clean, 4, kBase30, 5, 4 * kSec);
+	g_trace.restart_at = g_trace.t[0] + 2 * kSec;
+	CheckRing("restart hook @2s 4x@30 clean", &g_trace);
+	Clear(&g_trace);
+	FgTrace(&g_trace, Fg::Frag, 6, kBase20, 5, 4 * kSec);
+	g_trace.restart_at = g_trace.t[0] + 2 * kSec;
+	CheckRing("restart hook @2s 6x@20 frag", &g_trace);
+}
+
+// A fresh pacer stamps its first Presents at their own times and starts pacing
+// once the window holds FGC_PACER_MIN_INTERVALS.
+static void test_fgc_pacer_fresh(void **)
+{
+	struct fgc_pacer pacer;
+	fgc_pacer_init(&pacer, fgc_pacer_lead_cap(kCanvasNs, kRingSlots));
+	uint64_t t = 50 * kMs;
+	for (uint32_t i = 0; i < FGC_PACER_MIN_INTERVALS; i++) {
+		const struct fgc_pace pace = fgc_pacer_stamp(&pacer, t);
+		assert_int_equal(pace.stamp, t);
+		assert_false(pace.reset);
+		assert_int_equal(fgc_pacer_step(&pacer), 0);
+		t += 8 * kMs;
+	}
+	assert_int_equal(fgc_pacer_stamp(&pacer, t).stamp, t);
+	assert_int_equal(fgc_pacer_step(&pacer), 8 * kMs);
+}
+
+// The cap leaves the ring the slots its guard keeps, and never drops below a
+// 30 fps frame.
+static void test_fgc_pacer_lead_cap(void **)
+{
+	assert_int_equal(fgc_pacer_lead_cap(kCanvasNs, 8), 33333334);
+	assert_int_equal(fgc_pacer_lead_cap(kCanvasNs * 2, 8), 66666668);
+	assert_int_equal(fgc_pacer_lead_cap(kCanvasNs / 2, 8), FGC_PACER_MIN_LEAD_CAP_NS);
+}
+
+// A stall empties the window: the next stamp is the Present's own time and the
+// step stays 0 until the window holds enough intervals again.
+static void test_fgc_pacer_stall_resets(void **)
+{
+	struct fgc_pacer pacer;
+	fgc_pacer_init(&pacer, fgc_pacer_lead_cap(kCanvasNs, kRingSlots));
+	uint64_t t = 10 * kMs;
+	for (int i = 0; i < 100; i++) {
+		assert_false(fgc_pacer_stamp(&pacer, t).reset);
+		t += 8333333;
+	}
+	assert_true(fgc_pacer_step(&pacer) != 0);
+	t += 200 * kMs;
+	const struct fgc_pace after = fgc_pacer_stamp(&pacer, t);
+	assert_true(after.reset);
+	assert_int_equal(after.stamp, t);
+	assert_int_equal(fgc_pacer_step(&pacer), 0);
+	for (uint32_t i = 0; i < FGC_PACER_MIN_INTERVALS; i++) {
+		t += 8333333;
+		assert_false(fgc_pacer_stamp(&pacer, t).reset);
+	}
+	assert_true(fgc_pacer_step(&pacer) != 0);
+}
+
+// A lead that does not clear within FGC_PACER_CLEAR_NS resyncs: the window is
+// cut back to the Presents since it last cleared, stamps hold just past the last
+// one, and the first Present past it is stamped at its own time.
+static void test_fgc_pacer_resync(void **)
+{
+	struct fgc_pacer pacer;
+	fgc_pacer_init(&pacer, fgc_pacer_lead_cap(kCanvasNs, kRingSlots));
+	uint64_t t = 10 * kMs;
+	for (int i = 0; i < 60; i++) {
+		fgc_pacer_stamp(&pacer, t);
+		t += kBase30;
+	}
+	bool resynced = false;
+	uint64_t prev = 0;
+	for (int i = 0; i < 60 && !resynced; i++) {
+		const struct fgc_pace pace = fgc_pacer_stamp(&pacer, t);
+		resynced = pace.resync;
+		prev = pace.stamp;
+		t += 8333333;
+	}
+	assert_true(resynced);
+	assert_true(prev > t - 8333333);
+	assert_true(pacer.count < FGC_PACER_INTERVALS + 1);
+	bool snapped = false;
+	for (int i = 0; i < 10 && !snapped; i++) {
+		const struct fgc_pace pace = fgc_pacer_stamp(&pacer, t);
+		assert_true(pace.stamp > prev);
+		snapped = pace.stamp == t;
+		prev = pace.stamp;
+		t += 8333333;
+	}
+	assert_true(snapped);
+}
+
+// A clock that steps back reads as a zero interval: the stamp still rises.
+static void test_fgc_pacer_clock_step_back(void **)
+{
+	struct fgc_pacer pacer;
+	fgc_pacer_init(&pacer, fgc_pacer_lead_cap(kCanvasNs, kRingSlots));
+	const uint64_t first = fgc_pacer_stamp(&pacer, 50 * kMs).stamp;
+	const struct fgc_pace back = fgc_pacer_stamp(&pacer, 40 * kMs);
+	assert_false(back.reset);
+	assert_int_equal(back.stamp, first + 1);
+	assert_int_equal(fgc_pacer_stamp(&pacer, 60 * kMs).stamp, 60 * kMs);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1103,6 +2004,18 @@ int main(void)
 		cmocka_unit_test(test_fgc_hook_stats_line),
 		cmocka_unit_test(test_fgc_ring_stats_line),
 		cmocka_unit_test(test_fgc_stats_window),
+		cmocka_unit_test(test_fgc_pacer_fresh),
+		cmocka_unit_test(test_fgc_pacer_lead_cap),
+		cmocka_unit_test(test_fgc_pacer_stall_resets),
+		cmocka_unit_test(test_fgc_pacer_resync),
+		cmocka_unit_test(test_fgc_pacer_clock_step_back),
+		cmocka_unit_test(test_fgc_ring_frame_gen_matrix),
+		cmocka_unit_test(test_fgc_ring_fragmented_4x),
+		cmocka_unit_test(test_fgc_ring_single_presents),
+		cmocka_unit_test(test_fgc_ring_hitches),
+		cmocka_unit_test(test_fgc_ring_transitions),
+		cmocka_unit_test(test_fgc_ring_stalls),
+		cmocka_unit_test(test_fgc_ring_hook_restart),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

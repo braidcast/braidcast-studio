@@ -33,9 +33,16 @@ struct fgc_hook_stats {
 	 * capped instead: the game sent more than 4 at once. */
 	uint32_t bursts[FGC_BURST_SIZES];
 	uint32_t bursts_capped;
-	uint32_t step_resets;
-	uint32_t stamp_clamps;
+	/* Stalls that emptied the pacer's window (frame-gen-pacer.h). */
+	uint32_t pace_resets;
+	/* Stamps held to the pacer's lead cap ahead of their Present. */
+	uint32_t lead_clamps;
+	/* Leads that did not clear in time: the pacer re-measured and caught up. */
+	uint32_t lead_resyncs;
 	uint32_t bucket_skips;
+	/* Copies skipped because every writable slot held a frame not yet offered
+	 * to the host; slot busy is every slot held by the host instead. */
+	uint32_t ring_full;
 	uint32_t slot_busy;
 	uint32_t copy_fails;
 	uint64_t span_max_ns;
@@ -138,16 +145,17 @@ static inline int fgc_hook_stats_format(char *buf, size_t size, const struct fgc
 	const uint64_t presents = fgc_rate_x10(s->presents, window_ns);
 	const uint64_t copies = fgc_rate_x10(s->copies, window_ns);
 	return snprintf(buf, size,
-			FGC_STATS_TAG " hook %" PRIu64 ".%" PRIu64 " s: presents %" PRIu64 ".%" PRIu64
-				      "/s copies %" PRIu64 ".%" PRIu64 "/s, bursts 1:%u 2:%u 3:%u 4:%u >4:%u"
-				      ", step %" PRIu64 " us, step resets %u, stamp clamps %u, bucket skips %u"
-				      ", slot busy %u, copy fails %u, burst span max %" PRIu64
-				      " us, burst gap min %" PRIu64 " us, copy p50 %" PRIu64 " p99 %" PRIu64 " us",
+			FGC_STATS_TAG
+			" hook %" PRIu64 ".%" PRIu64 " s: presents %" PRIu64 ".%" PRIu64 "/s copies %" PRIu64
+			".%" PRIu64 "/s, bursts 1:%u 2:%u 3:%u 4:%u >4:%u"
+			", step %" PRIu64 " us, pace resets %u, lead clamps %u, lead resyncs %u"
+			", bucket skips %u, ring full %u, slot busy %u, copy fails %u, burst span max %" PRIu64
+			" us, burst gap min %" PRIu64 " us, copy p50 %" PRIu64 " p99 %" PRIu64 " us",
 			window_x10 / 10, window_x10 % 10, presents / 10, presents % 10, copies / 10, copies % 10,
 			s->bursts[0], s->bursts[1], s->bursts[2], s->bursts[3], s->bursts_capped, step_ns / 1000,
-			s->step_resets, s->stamp_clamps, s->bucket_skips, s->slot_busy, s->copy_fails,
-			s->span_max_ns / 1000, s->gap_min_ns / 1000, fgc_hook_stats_copy_percentile_us(s, 50),
-			fgc_hook_stats_copy_percentile_us(s, 99));
+			s->pace_resets, s->lead_clamps, s->lead_resyncs, s->bucket_skips, s->ring_full, s->slot_busy,
+			s->copy_fails, s->span_max_ns / 1000, s->gap_min_ns / 1000,
+			fgc_hook_stats_copy_percentile_us(s, 50), fgc_hook_stats_copy_percentile_us(s, 99));
 }
 
 static inline int fgc_ring_stats_format(char *buf, size_t size, const struct fgc_ring_stats *s, uint64_t window_ns)

@@ -11,16 +11,16 @@
 #include <detours.h>
 
 #include "dxgi-helpers.hpp"
+#include "../frame-gen-pacer.h"
 #include "../frame-gen-stats.h"
 
 #define MAX_BACKBUFFERS 8
 
-/* Frame generation submits a real frame and its generated ones within about
- * 0.6 ms; 4 is the largest multi frame generation factor. */
+/* Diagnostics only: Presents up to this many and this close to a burst's first
+ * count as one burst, which shows how the game clusters them. 4 is the largest
+ * multi frame generation factor. Stamps come from the pacer, not from bursts. */
 constexpr uint32_t kBurstMaxPresents = 4;
 constexpr uint64_t kBurstMaxNs = 2000000;
-/* A burst period this long is a stall, not a display step. */
-constexpr uint64_t kStepMaxPeriodNs = 100000000;
 
 static_assert(kBurstMaxPresents == FGC_BURST_SIZES, "the burst-size histogram labels assume this cap");
 
@@ -35,7 +35,6 @@ struct d3d12_ring {
 	uint32_t count;
 	uint32_t next_slot;
 	uint64_t frame_no;
-	uint64_t last_stamp;
 
 	uint64_t canvas_interval;
 	uint64_t last_bucket;
@@ -44,8 +43,8 @@ struct d3d12_ring {
 	uint64_t burst_start;
 	uint64_t last_present;
 	uint32_t burst_len;
-	uint32_t last_burst_len;
-	uint64_t step;
+
+	struct fgc_pacer pacer;
 
 	uint64_t stats_start;
 	struct fgc_hook_stats stats;
@@ -233,6 +232,7 @@ static ring_init_result d3d12_ring_init(HWND window, UINT count)
 	data.backbuffer_count = count;
 	ring.count = SHTEX_RING_MAX;
 	ring.canvas_interval = global_hook_info->bc_canvas_interval_ns;
+	fgc_pacer_init(&ring.pacer, fgc_pacer_lead_cap(ring.canvas_interval, ring.count));
 
 	if (!capture_init_shtex_ring(&ring.info, window, data.cx, data.cy, data.format, false, handles, ring.count)) {
 		return ring_init_result::failed;
@@ -484,27 +484,47 @@ static inline void d3d12_shtex_capture(IDXGISwapChain *swap)
 	d3d12_copy_backbuffer(swap, data.copy_tex, nullptr);
 }
 
-static bool d3d12_ring_acquire_slot(uint32_t *slot)
+enum class ring_acquire { ok, full, busy };
+
+/* A slot whose stamp is under two canvas intervals old may hold a frame the host
+ * has not been offered yet. Such a slot is never written: the copy is skipped
+ * instead, dropping the newest, furthest-led frame rather than one still to be
+ * shown, so led-ahead stamps can never leave the ring with nothing due. */
+static ring_acquire d3d12_ring_acquire_slot(uint64_t t, uint32_t *slot)
 {
 	struct d3d12_ring &ring = data.ring;
+	const uint64_t keep = 2 * ring.canvas_interval;
+	const uint64_t horizon = t > keep ? t - keep : 0;
+	bool kept = false;
 
 	for (uint32_t i = 0; i < ring.count; i++) {
 		const uint32_t candidate = (ring.next_slot + i) % ring.count;
+		const uint64_t show = ring.info->show_ns[candidate];
+		if (show && show > horizon) {
+			kept = true;
+			continue;
+		}
 		if (ring.mutex[candidate]->AcquireSync(0, 0) == S_OK) {
 			*slot = candidate;
-			return true;
+			return ring_acquire::ok;
 		}
 	}
 
-	return false;
+	return kept ? ring_acquire::full : ring_acquire::busy;
 }
 
-static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t stamp)
+static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t t, uint64_t stamp)
 {
 	struct d3d12_ring &ring = data.ring;
 
 	uint32_t slot;
-	if (!d3d12_ring_acquire_slot(&slot)) {
+	switch (d3d12_ring_acquire_slot(t, &slot)) {
+	case ring_acquire::ok:
+		break;
+	case ring_acquire::full:
+		ring.stats.ring_full++;
+		return false;
+	case ring_acquire::busy:
 		ring.stats.slot_busy++;
 		return false;
 	}
@@ -526,24 +546,8 @@ static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t stamp)
 	InterlockedExchange64((volatile LONG64 *)&info->frame_no[slot], (LONG64)++ring.frame_no);
 	InterlockedIncrement((volatile LONG *)&info->seq[slot]);
 
-	ring.last_stamp = stamp;
 	ring.next_slot = (slot + 1) % ring.count;
 	return true;
-}
-
-static void d3d12_ring_update_step(uint64_t period, uint32_t size)
-{
-	struct d3d12_ring &ring = data.ring;
-
-	if (size != ring.last_burst_len || period > kStepMaxPeriodNs) {
-		ring.stats.step_resets++;
-		ring.step = 0;
-		ring.last_burst_len = size;
-		return;
-	}
-
-	const uint64_t sample = period / size;
-	ring.step = ring.step ? (ring.step * 7 + sample) / 8 : sample;
 }
 
 /* Formats only once a window has run, on the stack, then starts the next. The
@@ -558,7 +562,8 @@ static void d3d12_ring_log_stats(uint64_t now)
 	}
 
 	char line[512];
-	if (fgc_hook_stats_format(line, sizeof(line), &ring.stats, now - ring.stats_start, ring.step) > 0) {
+	if (fgc_hook_stats_format(line, sizeof(line), &ring.stats, now - ring.stats_start,
+				  fgc_pacer_step(&ring.pacer)) > 0) {
 		hlog_deferred(line);
 	}
 	memset(&ring.stats, 0, sizeof(ring.stats));
@@ -585,7 +590,6 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 		if (ring.burst_len > 0) {
 			fgc_hook_stats_burst(&ring.stats, ring.burst_len, t - ring.burst_start <= kBurstMaxNs);
 			fgc_hook_stats_gap(&ring.stats, t - ring.last_present);
-			d3d12_ring_update_step(t - ring.burst_start, ring.burst_len);
 		}
 
 		ring.burst_start = t;
@@ -594,24 +598,32 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 		fgc_hook_stats_span(&ring.stats, t - ring.burst_start);
 	}
 
-	const uint32_t k = ring.burst_len++;
+	ring.burst_len++;
 	ring.last_present = t;
 
-	uint64_t stamp = ring.burst_start + k * ring.step;
-	if (stamp <= ring.last_stamp) {
-		stamp = ring.last_stamp + 1;
-		ring.stats.stamp_clamps++;
+	/* Every Present advances the pace, copied or not, so a skipped one still
+	 * counts toward the next stamp. */
+	const struct fgc_pace pace = fgc_pacer_stamp(&ring.pacer, t);
+	if (pace.reset) {
+		ring.stats.pace_resets++;
 	}
+	if (pace.lead_clamped) {
+		ring.stats.lead_clamps++;
+	}
+	if (pace.resync) {
+		ring.stats.lead_resyncs++;
+	}
+	const uint64_t stamp = pace.stamp;
 
-	/* The only rate bound the ring needs: stamps only grow, so each half canvas
-	 * interval of show time gets at most one copy however fast the game presents
-	 * (the legacy limiter's rate). One copy per full interval is not enough: the
+	/* The ring's rate bound: stamps only grow, so each half canvas interval of
+	 * show time gets at most one copy however fast the game presents (the
+	 * legacy limiter's rate). One copy per full interval is not enough: the
 	 * display's show times drift in phase against the canvas ticks, and a tick
 	 * then finds no new frame (45 distinct/s at 4x on a 60 fps canvas). */
 	const uint64_t bucket = stamp / (ring.canvas_interval / 2);
 	if (ring.have_bucket && bucket <= ring.last_bucket) {
 		ring.stats.bucket_skips++;
-	} else if (d3d12_ring_copy(swap, stamp)) {
+	} else if (d3d12_ring_copy(swap, t, stamp)) {
 		ring.last_bucket = bucket;
 		ring.have_bucket = true;
 	}
