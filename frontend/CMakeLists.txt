@@ -395,6 +395,8 @@ target_sources(
     src/voice/Recognizer.hpp
     src/voice/VadEndpointer.cpp
     src/voice/VadEndpointer.hpp
+    src/voice/WakeGate.cpp
+    src/voice/WakeGate.hpp
     src/voice/VoiceEngine.cpp
     src/voice/VoiceEngine.hpp
     src/voice/VoiceBridge.cpp

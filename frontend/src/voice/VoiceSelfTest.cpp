@@ -33,6 +33,7 @@
 #include "voice/VoiceResampler.hpp"
 #include "voice/VoiceRing.hpp"
 #include "voice/VoiceSettings.hpp"
+#include "voice/WakeGate.hpp"
 #include "voice/WavFile.hpp"
 
 #include <obs.hpp>
@@ -1279,6 +1280,58 @@ void TestVadEndpointer(Tally &t)
 	t.Check("vad", "stop is idempotent", (vad.Stop(), !vad.Ready()));
 }
 
+void TestWakeGate(Tally &t)
+{
+	using Voice::MatchWakePhrase;
+
+	Voice::WakeResult result = MatchWakePhrase("hey braidcast switch to gameplay", "hey braidcast");
+	t.Check("wake", "an exact wake phrase matches", result.matched && result.remainder == "switch to gameplay");
+
+	result = MatchWakePhrase("Hey, Braidcast! Switch to gameplay.", "hey braidcast");
+	t.Check("wake", "punctuation and capitals do not matter",
+		result.matched && result.remainder == "Switch to gameplay.");
+
+	result = MatchWakePhrase("hey braid cast switch to BRB", "hey braidcast");
+	t.Check("wake", "a split wake phrase still matches", result.matched && result.remainder == "switch to BRB");
+	result = MatchWakePhrase("Hey Braid-cast, switch to BRB", "hey braidcast");
+	t.Check("wake", "so does a hyphenated one", result.matched && result.remainder == "switch to BRB");
+	// A letter slip is not enough, and deliberately: "brate cast" is exactly as far from
+	// "braidcast" as "broadcast" is, and a streamer says "broadcast" all the time.
+	t.Check("wake", "a misspelled wake phrase does not match",
+		!MatchWakePhrase("hey brate cast switch to BRB", "hey braidcast").matched);
+
+	result = MatchWakePhrase("so I was thinking about the raid", "hey braidcast");
+	t.Check("wake", "ordinary speech does not match", !result.matched);
+
+	result = MatchWakePhrase("switch to gameplay hey braidcast", "hey braidcast");
+	t.Check("wake", "the phrase has to come first", !result.matched);
+
+	result = MatchWakePhrase("hey braidcast", "hey braidcast");
+	t.Check("wake", "the phrase alone matches with nothing after it", result.matched && result.remainder.empty());
+
+	result = MatchWakePhrase("", "hey braidcast");
+	t.Check("wake", "empty text does not match", !result.matched);
+
+	result = MatchWakePhrase("hey braidcast switch to gameplay", "");
+	t.Check("wake", "an empty wake phrase never matches", !result.matched);
+
+	// A single-word wake phrase is riskier, and the threshold must not be looser for it.
+	t.Check("wake", "a single-word phrase does not match a similar ordinary word",
+		!MatchWakePhrase("computing the odds now", "computer").matched);
+
+	// The default phrase, as the recognizer is likely to write it.
+	const std::string phrase = VoiceSettings{}.wakePhrase;
+	result = MatchWakePhrase("Braidcast, switch to gameplay.", phrase);
+	t.Check("wake", "the default phrase opens a command",
+		result.matched && result.remainder == "switch to gameplay.");
+	result = MatchWakePhrase("Braid cast switch to BRB", phrase);
+	t.Check("wake", "split in two, it still does", result.matched && result.remainder == "switch to BRB");
+	t.Check("wake", "a similar word does not wake it", !MatchWakePhrase("Broadcast is live now", phrase).matched);
+	// Part of the phrase is not the phrase: one common word must never wake the app.
+	t.Check("wake", "part of a longer phrase does not match",
+		!MatchWakePhrase("hey everyone welcome back", "hey braidcast").matched);
+}
+
 void TestVoiceEngine(Tally &t)
 {
 	Voice::VoiceEngine &engine = Voice::Engine();
@@ -2212,15 +2265,15 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,         &TestLogCategory,   &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,      &TestModelCatalog,  &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,        &TestResampler,     &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener,   &TestWavFile,       &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVadEndpointer,   &TestVoiceEngine,   &TestVoiceHotkeys,
-	&TestVoiceBridge,     &TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher,
-	&TestBridgeSeams,     &TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints,
-	&TestRecentChatters,  &TestChatterFeed,     &TestChatLimits,    &TestChatCommands,
-	&TestChatDrafts,
+	&TestWhisperLinked,   &TestCpuGate,        &TestLogCategory,     &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,     &TestModelCatalog,    &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,       &TestResampler,       &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener,  &TestWavFile,         &TestRecognizerWithoutModel,
+	&TestRecognizer,      &TestVadEndpointer,  &TestWakeGate,        &TestVoiceEngine,
+	&TestVoiceHotkeys,    &TestVoiceBridge,    &TestTextNormalize,   &TestFuzzyMatch,
+	&TestCommandMatcher,  &TestBridgeSeams,    &TestCommandRegistry, &TestVoiceFeedback,
+	&TestAudioEndpoints,  &TestRecentChatters, &TestChatterFeed,     &TestChatLimits,
+	&TestChatCommands,    &TestChatDrafts,
 };
 
 } // namespace
