@@ -45,7 +45,8 @@
 	X(Net, "net")               \
 	X(Cef, "cef")               \
 	X(Render, "render")         \
-	X(RenderGpu, "rendergpu")
+	X(RenderGpu, "rendergpu") \
+	X(Voice, "voice")
 
 enum class LogCat {
 #define BRAIDCAST_LOG_CAT_ENUM(sym, name) sym,

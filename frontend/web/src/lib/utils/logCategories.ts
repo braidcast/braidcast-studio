@@ -21,6 +21,10 @@ export const Cat = {
   mcp: "mcp",
   net: "net",
   cef: "cef",
+  // Voice control: capture bind/unbind, segment start/end, model load, inference
+  // time, match results by command id. Never a transcript unless the separate
+  // transcript opt-in (Settings -> Voice) is also on.
+  voice: "voice",
   // Gate-only: toggles libobs's per-frame render-thread timing ([render-debug]) on
   // the host; excluded from the blanket debug toggle and from the "basic" spec
   // token, included in "all". No web log.dbg uses it.

@@ -46,11 +46,19 @@ void TestCpuGate(Tally &t)
 	t.Check("cpu", "reason set exactly when unsupported", ok == reason.empty());
 }
 
+void TestLogCategory(Tally &t)
+{
+	const Log::DebugComponents c = Log::ParseComponents("voice");
+	t.Check("log", "'voice' token selects only LogCat::Voice", c.logMask == Log::CatBit(LogCat::Voice));
+	t.Check("log", "'basic' includes voice", (Log::kDefaultCats & Log::CatBit(LogCat::Voice)) != 0);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
 	&TestWhisperLinked,
 	&TestCpuGate,
+	&TestLogCategory,
 };
 
 } // namespace
