@@ -1,0 +1,306 @@
+#include "voice/VoiceListener.hpp"
+
+#include <cstddef>
+#include <utility>
+
+namespace Voice {
+
+namespace {
+
+constexpr const char *kCueNames[] = {"start", "accept", "reject", "pending", "cancel"};
+constexpr const char *kStateNames[] = {"disabled", "notReady", "idle", "listening", "thinking", "pending"};
+
+Effect CueEffect(Cue cue)
+{
+	Effect e;
+	e.type = EffectType::PlayCue;
+	e.cue = cue;
+	return e;
+}
+
+} // namespace
+
+const char *CueName(Cue cue)
+{
+	return kCueNames[static_cast<size_t>(cue)];
+}
+
+const char *StateName(State state)
+{
+	return kStateNames[static_cast<size_t>(state)];
+}
+
+VoiceListener::VoiceListener(Interpreter interpret) : interpret_(std::move(interpret)) {}
+
+bool VoiceListener::Ready() const
+{
+	return enabled_ && modelReady_ && micReady_;
+}
+
+void VoiceListener::ClearPending()
+{
+	status_.pending = PendingAction{};
+}
+
+std::vector<Effect> VoiceListener::BeginSegment(int64_t, Trigger trigger)
+{
+	trigger_ = trigger;
+	status_.state = State::Listening;
+	status_.transcript.clear();
+	return {CueEffect(Cue::Start)};
+}
+
+std::vector<Effect> VoiceListener::EndSegment()
+{
+	status_.state = State::Thinking;
+	return {};
+}
+
+std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &interpretation, int64_t nowMs)
+{
+	std::vector<Effect> effects;
+	switch (interpretation.kind) {
+	case Interpretation::Kind::Ignored:
+		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
+		return effects;
+
+	case Interpretation::Kind::Miss:
+	case Interpretation::Kind::Shown:
+		status_.message = interpretation.message;
+		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
+		if (interpretation.kind == Interpretation::Kind::Miss) {
+			effects.push_back(CueEffect(Cue::Reject));
+		}
+		return effects;
+
+	case Interpretation::Kind::Instant: {
+		ClearPending();
+		status_.message = interpretation.action.summary;
+		status_.state = State::Idle;
+		Effect run;
+		run.type = EffectType::Run;
+		run.action = interpretation.action;
+		effects.push_back(run);
+		effects.push_back(CueEffect(Cue::Accept));
+		if (interpretation.action.readBack) {
+			Effect back;
+			back.type = EffectType::ReadBack;
+			back.text = interpretation.action.summary;
+			effects.push_back(back);
+		}
+		return effects;
+	}
+
+	case Interpretation::Kind::Pending: {
+		status_.pending = interpretation.action;
+		status_.message = interpretation.action.summary;
+		status_.state = State::Pending;
+		effects.push_back(CueEffect(Cue::Pending));
+		Effect tick;
+		tick.type = EffectType::ScheduleTick;
+		tick.atMs = nowMs + kPendingTimeoutMs;
+		tick.seq = ++tickSeq_;
+		// One instant, written down once: the tick fires at it and the UI counts down to
+		// it. Two independent notions of "when this expires" is how a countdown and a
+		// timer drift apart.
+		status_.pending.deadlineMs = tick.atMs;
+		effects.push_back(tick);
+		return effects;
+	}
+
+	case Interpretation::Kind::Control:
+		if (interpretation.control == Interpretation::Control::ConfirmPending &&
+		    !status_.pending.commandId.empty()) {
+			Effect run;
+			run.type = EffectType::Run;
+			run.action = status_.pending;
+			const bool readBack = status_.pending.readBack;
+			const std::string summary = status_.pending.summary;
+			ClearPending();
+			status_.message = summary;
+			status_.state = State::Idle;
+			effects.push_back(run);
+			effects.push_back(CueEffect(Cue::Accept));
+			if (readBack) {
+				Effect back;
+				back.type = EffectType::ReadBack;
+				back.text = summary;
+				effects.push_back(back);
+			}
+			return effects;
+		}
+		// Cancel, and a confirmation with nothing pending, both end up here.
+		ClearPending();
+		status_.message.clear();
+		status_.state = State::Idle;
+		effects.push_back(CueEffect(Cue::Cancel));
+		return effects;
+	}
+	return effects;
+}
+
+std::vector<Effect> VoiceListener::Handle(const Event &event)
+{
+	std::vector<Effect> effects;
+
+	switch (event.type) {
+	case EventType::Enable:
+		enabled_ = true;
+		status_.state = Ready() ? State::Idle : State::NotReady;
+		return effects;
+
+	case EventType::Disable:
+		enabled_ = false;
+		ClearPending();
+		status_.state = State::Disabled;
+		status_.transcript.clear();
+		return effects;
+
+	case EventType::ModelReady:
+		modelReady_ = true;
+		if (enabled_ && status_.state == State::NotReady) {
+			status_.state = Ready() ? State::Idle : State::NotReady;
+			status_.message.clear();
+		}
+		return effects;
+
+	case EventType::ModelFailed:
+		modelReady_ = false;
+		status_.message = event.text;
+		if (enabled_) {
+			status_.state = State::NotReady;
+		}
+		return effects;
+
+	case EventType::MicBound:
+		micReady_ = true;
+		if (enabled_ && status_.state == State::NotReady) {
+			status_.state = Ready() ? State::Idle : State::NotReady;
+		}
+		return effects;
+
+	case EventType::MicLost:
+		micReady_ = false;
+		if (!enabled_) {
+			return effects;
+		}
+		if (status_.state == State::Listening) {
+			effects.push_back(CueEffect(Cue::Reject));
+		}
+		ClearPending();
+		status_.state = State::NotReady;
+		return effects;
+
+	case EventType::PttDown:
+	case EventType::WakeMatched:
+		if (!Ready()) {
+			return effects;
+		}
+		if (!event.ok) {
+			status_.message = event.text;
+			status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
+			effects.push_back(CueEffect(Cue::Reject));
+			return effects;
+		}
+		// Only Idle and Pending accept a new segment: a press while Listening or
+		// Thinking is refused rather than queued, so one key press is one command.
+		if (status_.state != State::Idle && status_.state != State::Pending) {
+			return effects;
+		}
+		return BeginSegment(event.nowMs, event.type == EventType::PttDown ? Trigger::Ptt : Trigger::Wake);
+
+	case EventType::PttUp:
+	case EventType::SpeechEnded:
+		if (status_.state != State::Listening) {
+			return effects;
+		}
+		return EndSegment();
+
+	case EventType::Transcript: {
+		if (status_.state != State::Thinking) {
+			return effects;
+		}
+		status_.transcript = event.text;
+		InterpretContext ctx;
+		ctx.pending = status_.pending.commandId.empty() ? nullptr : &status_.pending;
+		ctx.trigger = trigger_;
+		ctx.mutedSeen = event.mutedSeen;
+		return ApplyInterpretation(interpret_(event.text, ctx), event.nowMs);
+	}
+
+	case EventType::TranscribeFailed:
+		if (status_.state != State::Thinking) {
+			return effects;
+		}
+		status_.message = event.text;
+		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
+		effects.push_back(CueEffect(Cue::Reject));
+		return effects;
+
+	case EventType::ActionResult:
+		status_.message = event.text;
+		if (!event.ok) {
+			effects.push_back(CueEffect(Cue::Reject));
+		}
+		return effects;
+
+	case EventType::Cancel:
+		// The cancel hotkey: abandon a segment being recorded, a pending command, or
+		// both. Silent when there was nothing to cancel, so a stray press is not noise.
+		if (status_.state == State::Listening || status_.state == State::Thinking ||
+		    !status_.pending.commandId.empty()) {
+			effects.push_back(CueEffect(Cue::Cancel));
+		}
+		ClearPending();
+		status_.transcript.clear();
+		status_.message.clear();
+		if (status_.state != State::Disabled && status_.state != State::NotReady) {
+			status_.state = State::Idle;
+		}
+		return effects;
+
+	case EventType::Tick:
+		// Only the newest scheduled timeout counts: an older one refers to a command
+		// that was already confirmed, cancelled or replaced.
+		if (status_.pending.commandId.empty() || event.seq != tickSeq_) {
+			return effects;
+		}
+		// The deadline holds even mid-segment (the user pressed the key to answer just as
+		// it ran out). Ignoring the tick there would leave the command pending with no
+		// timer at all once that segment missed; instead it expires now, the segment
+		// carries on, and its answer finds nothing pending.
+		ClearPending();
+		status_.message = "The command timed out.";
+		if (status_.state == State::Pending) {
+			status_.state = State::Idle;
+		}
+		effects.push_back(CueEffect(Cue::Cancel));
+		return effects;
+	}
+	return effects;
+}
+
+nlohmann::json VoiceListener::StatusJson() const
+{
+	nlohmann::json j = {
+		{"state", StateName(status_.state)},
+		{"message", status_.message},
+		{"transcript", status_.transcript},
+		{"device", status_.device},
+	};
+	if (!status_.pending.commandId.empty()) {
+		j["pending"] = {
+			{"commandId", status_.pending.commandId},
+			{"summary", status_.pending.summary},
+			{"needsConfirmWord", status_.pending.needsConfirmWord},
+			// The instant, not a duration. VoiceEngine::PublishState turns it into the
+			// remainingMs the UI actually renders -- this class has no clock, by design.
+			{"deadlineMs", status_.pending.deadlineMs},
+		};
+	} else {
+		j["pending"] = nullptr;
+	}
+	return j;
+}
+
+} // namespace Voice

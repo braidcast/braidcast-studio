@@ -10,6 +10,7 @@
 #include "voice/MicMuteGuard.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
+#include "voice/VoiceListener.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceResampler.hpp"
 #include "voice/VoiceRing.hpp"
@@ -23,6 +24,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -486,12 +488,337 @@ void TestVoiceCapture(Tally &t)
 	t.Check("capture", "still unbound after a redundant unbind", !capture.Bound());
 }
 
+// Collect the effect types a Handle call produced, as a comma-joined string, so a
+// case reads as one comparison.
+std::string EffectNames(const std::vector<Voice::Effect> &effects)
+{
+	std::string out;
+	for (const Voice::Effect &e : effects) {
+		if (!out.empty()) {
+			out += ",";
+		}
+		switch (e.type) {
+		case Voice::EffectType::PlayCue:
+			out += "cue:" + std::string(Voice::CueName(e.cue));
+			break;
+		case Voice::EffectType::Run:
+			out += "run:" + e.action.commandId;
+			break;
+		case Voice::EffectType::ReadBack:
+			out += "readback";
+			break;
+		case Voice::EffectType::ScheduleTick:
+			out += "tick";
+			break;
+		}
+	}
+	return out;
+}
+
+Voice::Event Ev(Voice::EventType type, int64_t nowMs)
+{
+	Voice::Event e;
+	e.type = type;
+	e.nowMs = nowMs;
+	return e;
+}
+
+Voice::Event Transcript(const std::string &text, int64_t nowMs)
+{
+	Voice::Event e = Ev(Voice::EventType::Transcript, nowMs);
+	e.text = text;
+	return e;
+}
+
+// An interpreter that reads the leading word of the transcript, so a case can ask for
+// any outcome: "run ...", "confirm ...", "control cancel", "ignore ...", anything
+// else is a miss.
+Voice::Interpretation TestInterpret(const std::string &text, const Voice::InterpretContext &ctx)
+{
+	Voice::Interpretation out;
+	if (text.rfind("run ", 0) == 0) {
+		out.kind = Voice::Interpretation::Kind::Instant;
+		out.action.commandId = text.substr(4);
+		out.action.summary = "run " + out.action.commandId;
+	} else if (text.rfind("confirm ", 0) == 0) {
+		out.kind = Voice::Interpretation::Kind::Pending;
+		out.action.commandId = text.substr(8);
+		out.action.summary = "confirm " + out.action.commandId;
+		out.action.needsConfirmWord = true;
+	} else if (text == "yes" && ctx.pending) {
+		out.kind = Voice::Interpretation::Kind::Control;
+		out.control = Voice::Interpretation::Control::ConfirmPending;
+	} else if (text == "never mind") {
+		out.kind = Voice::Interpretation::Kind::Control;
+		out.control = Voice::Interpretation::Control::CancelPending;
+	} else if (text.rfind("ignore", 0) == 0) {
+		out.kind = Voice::Interpretation::Kind::Ignored;
+	} else {
+		out.kind = Voice::Interpretation::Kind::Miss;
+		out.message = "I did not catch a command.";
+	}
+	return out;
+}
+
+void TestVoiceListener(Tally &t)
+{
+	using namespace Voice;
+	using S = Voice::State;
+
+	auto fresh = [] {
+		auto listener = std::make_unique<VoiceListener>(&TestInterpret);
+		listener->Handle(Ev(EventType::Enable, 0));
+		listener->Handle(Ev(EventType::ModelReady, 0));
+		listener->Handle(Ev(EventType::MicBound, 0));
+		return listener;
+	};
+
+	// 1. A fresh listener with no model is not ready, and the key does nothing.
+	{
+		VoiceListener l(&TestInterpret);
+		l.Handle(Ev(EventType::Enable, 0));
+		const std::string fx = EffectNames(l.Handle(Ev(EventType::PttDown, 10)));
+		t.Check("listener", "push-to-talk before the model is ready does nothing",
+			l.Current() == S::NotReady && fx.empty());
+	}
+
+	// 2. Disabled ignores everything, including a ready model.
+	{
+		VoiceListener l(&TestInterpret);
+		l.Handle(Ev(EventType::ModelReady, 0));
+		l.Handle(Ev(EventType::MicBound, 0));
+		t.Check("listener", "disabled stays disabled with a ready model", l.Current() == S::Disabled);
+	}
+
+	// 3. The happy path: key down cues and listens, key up thinks, transcript runs.
+	{
+		auto l = fresh();
+		const std::string down = EffectNames(l->Handle(Ev(EventType::PttDown, 100)));
+		t.Check("listener", "key down plays the start cue and listens",
+			down == "cue:start" && l->Current() == S::Listening);
+		l->Handle(Ev(EventType::PttUp, 900));
+		t.Check("listener", "key up moves to thinking", l->Current() == S::Thinking);
+		const std::string done = EffectNames(l->Handle(Transcript("run scenes.setCurrent", 1400)));
+		t.Check("listener", "a matched command runs and cues accept",
+			done == "run:scenes.setCurrent,cue:accept" && l->Current() == S::Idle);
+	}
+
+	// 4. A miss cues reject and shows a message, and runs nothing.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::string fx = EffectNames(l->Handle(Transcript("the weather is nice", 1400)));
+		t.Check("listener", "an unmatched phrase cues reject and runs nothing",
+			fx == "cue:reject" && l->Snapshot().message == "I did not catch a command." &&
+				l->Current() == S::Idle);
+	}
+
+	// 5. An ignored phrase is silent: no cue, no message change.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		t.Check("listener", "an ignored phrase is silent",
+			EffectNames(l->Handle(Transcript("ignore this", 1400))).empty() && l->Current() == S::Idle);
+	}
+
+	// 6. A dangerous command waits for confirmation, with a timeout scheduled.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::string fx = EffectNames(l->Handle(Transcript("confirm streaming.stop", 1400)));
+		t.Check("listener", "a confirmable command waits and schedules a timeout",
+			fx == "cue:pending,tick" && l->Current() == S::Pending &&
+				l->Snapshot().pending.commandId == "streaming.stop");
+	}
+
+	// 7. Confirming runs it.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		l->Handle(Ev(EventType::PttUp, 2400));
+		t.Check("listener", "confirming runs the pending command",
+			EffectNames(l->Handle(Transcript("yes", 2900))) == "run:streaming.stop,cue:accept" &&
+				l->Current() == S::Idle);
+	}
+
+	// 8. Cancelling drops it without running.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		l->Handle(Ev(EventType::PttUp, 2400));
+		t.Check("listener", "cancelling drops the pending command",
+			EffectNames(l->Handle(Transcript("never mind", 2900))) == "cue:cancel" &&
+				l->Current() == S::Idle && l->Snapshot().pending.commandId.empty());
+	}
+
+	// 9. The pending command expires on its own tick.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("confirm streaming.stop", 1400));
+		Event tick = Ev(EventType::Tick, 1400 + VoiceListener::kPendingTimeoutMs);
+		tick.seq = fx.back().seq;
+		t.Check("listener", "a pending command expires",
+			EffectNames(l->Handle(tick)) == "cue:cancel" && l->Current() == S::Idle);
+	}
+
+	// 10. A stale tick (from an older pending command) is ignored.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("confirm streaming.stop", 1400));
+		Event stale = Ev(EventType::Tick, 9000);
+		stale.seq = fx.back().seq - 1;
+		t.Check("listener", "a stale tick is ignored", l->Handle(stale).empty() && l->Current() == S::Pending);
+	}
+
+	// 11. A second key press while thinking is refused, not queued.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		t.Check("listener", "a key press while thinking is refused",
+			l->Handle(Ev(EventType::PttDown, 1000)).empty() && l->Current() == S::Thinking);
+	}
+
+	// 12. A key press the engine refused (PttDown with ok = false) does not listen.
+	{
+		auto l = fresh();
+		Event down = Ev(EventType::PttDown, 100);
+		down.ok = false;
+		down.text = "The microphone is not available.";
+		t.Check("listener", "a refused key press reports why and stays idle",
+			EffectNames(l->Handle(down)) == "cue:reject" && l->Current() == S::Idle &&
+				l->Snapshot().message == "The microphone is not available.");
+	}
+
+	// 13. Key up without key down is harmless.
+	{
+		auto l = fresh();
+		t.Check("listener", "key up with no key down is harmless",
+			l->Handle(Ev(EventType::PttUp, 100)).empty() && l->Current() == S::Idle);
+	}
+
+	// 14. A key held down and released with no transcript coming back still recovers.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		Event failed = Ev(EventType::TranscribeFailed, 1400);
+		failed.text = "Recognition failed.";
+		t.Check("listener", "a failed transcription returns to idle with a message",
+			EffectNames(l->Handle(failed)) == "cue:reject" && l->Current() == S::Idle &&
+				l->Snapshot().message == "Recognition failed.");
+	}
+
+	// 15. An empty transcript is a miss, not a crash.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		t.Check("listener", "an empty transcript is a miss",
+			EffectNames(l->Handle(Transcript("", 1400))) == "cue:reject" && l->Current() == S::Idle);
+	}
+
+	// 16. Losing the microphone mid-listen ends the segment.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		t.Check("listener", "losing the mic while listening ends the segment",
+			EffectNames(l->Handle(Ev(EventType::MicLost, 300))) == "cue:reject" &&
+				l->Current() == S::NotReady);
+	}
+
+	// 17. Disabling mid-listen drops straight to disabled.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::Disable, 200));
+		t.Check("listener", "disabling while listening stops everything",
+			l->Current() == S::Disabled && l->Snapshot().pending.commandId.empty());
+	}
+
+	// 18. Disabling with a command pending drops the pending command too.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		l->Handle(Ev(EventType::Disable, 1500));
+		t.Check("listener", "disabling drops a pending command", l->Snapshot().pending.commandId.empty());
+	}
+
+	// 19. A model that fails to load reports why and is not ready.
+	{
+		VoiceListener l(&TestInterpret);
+		l.Handle(Ev(EventType::Enable, 0));
+		Event failed = Ev(EventType::ModelFailed, 10);
+		failed.text = "Model file is missing.";
+		l.Handle(failed);
+		t.Check("listener", "a failed model load reports why",
+			l.Current() == S::NotReady && l.Snapshot().message == "Model file is missing.");
+	}
+
+	// 20. An action result from a command that already finished updates the message
+	// without changing state.
+	{
+		auto l = fresh();
+		Event result = Ev(EventType::ActionResult, 3000);
+		result.ok = false;
+		result.text = "No scene called BRB.";
+		t.Check("listener", "a failed action reports why without changing state",
+			EffectNames(l->Handle(result)) == "cue:reject" && l->Current() == S::Idle &&
+				l->Snapshot().message == "No scene called BRB.");
+	}
+
+	// 21. The cancel key drops a pending command, and is silent when idle.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		t.Check("listener", "cancel drops a pending command",
+			EffectNames(l->Handle(Ev(EventType::Cancel, 1600))) == "cue:cancel" &&
+				l->Current() == S::Idle && l->Snapshot().pending.commandId.empty());
+		t.Check("listener", "cancel with nothing in flight is silent",
+			l->Handle(Ev(EventType::Cancel, 1700)).empty() && l->Current() == S::Idle);
+	}
+
+	// 22. The timeout still lands when the user has just pressed the key to answer: the
+	// command expires, the segment carries on, and a late "yes" runs nothing.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("confirm streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 9300));
+		Event tick = Ev(EventType::Tick, 1400 + VoiceListener::kPendingTimeoutMs);
+		tick.seq = fx.back().seq;
+		const std::string expired = EffectNames(l->Handle(tick));
+		l->Handle(Ev(EventType::PttUp, 9600));
+		t.Check("listener", "a timeout during the answering segment still expires the command",
+			expired == "cue:cancel" && l->Snapshot().pending.commandId.empty() &&
+				EffectNames(l->Handle(Transcript("yes", 9900))).find("run:") == std::string::npos);
+	}
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
 	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
 	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,    &TestSpscRing,
-	&TestResampler,     &TestMicMuteGuard, &TestVoiceCapture,
+	&TestResampler,     &TestMicMuteGuard, &TestVoiceCapture,         &TestVoiceListener,
 };
 
 } // namespace
