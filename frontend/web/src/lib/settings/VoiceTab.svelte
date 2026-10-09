@@ -12,7 +12,7 @@
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { EV } from "$lib/utils/eventNames";
   import { RequestGuard } from "$lib/utils/requestGuard";
-  import { voiceEnableGate, voiceIndicator, voiceModelLabel } from "$lib/voice/voiceStatus";
+  import { voiceEnableGate, voiceIndicator, voiceModelLabel, wakeModelNote } from "$lib/voice/voiceStatus";
 
   // Voice control settings, live-applied like the General tab: each change pushes only
   // its own key through settings.setVoice and reconciles from the full payload it
@@ -118,6 +118,7 @@
   }
 
   const speechModels = $derived(models.filter((m) => m.selectable));
+  const wakeNote = $derived(wakeModelNote(s, models));
   const selectedKnown = $derived(speechModels.some((m) => m.id === s.model));
   const gate = $derived(voiceEnableGate(s, cpu, models));
 
@@ -129,6 +130,54 @@
   const SEND_MODE_ID = "voice-send-mode";
   const COUNTDOWN_ID = "voice-countdown";
   const SEND_HINT_ID = "voice-send-hint";
+  const TRIGGER_ID = "voice-trigger";
+  const WAKE_ID = "voice-wake";
+  const WAKE_HINT_ID = "voice-wake-hint";
+  const READBACK_HINT_ID = "voice-readback-hint";
+  const LANGUAGE_ID = "voice-language";
+  const LANGUAGE_HINT_ID = "voice-language-hint";
+
+  // How a command starts. Push-to-talk first: nothing is transcribed until the key is held.
+  const TRIGGERS: { value: VoiceSettingsState["triggerMode"]; label: string }[] = [
+    { value: "ptt", label: "Hold a key" },
+    { value: "wake", label: "Listen for a wake phrase" },
+  ];
+
+  // Must match kLanguages in VoiceSettings.cpp: the host refuses anything else.
+  const LANGUAGES = [
+    { code: "en", label: "English" },
+    { code: "de", label: "Deutsch" },
+    { code: "es", label: "Espa\u00f1ol" },
+    { code: "fr", label: "Fran\u00e7ais" },
+    { code: "it", label: "Italiano" },
+    { code: "ja", label: "\u65e5\u672c\u8a9e" },
+    { code: "ko", label: "\ud55c\uad6d\uc5b4" },
+    { code: "nl", label: "Nederlands" },
+    { code: "pl", label: "Polski" },
+    { code: "pt", label: "Portugu\u00eas" },
+    { code: "ru", label: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439" },
+    { code: "sv", label: "Svenska" },
+    { code: "tr", label: "T\u00fcrk\u00e7e" },
+    { code: "uk", label: "\u0423\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430" },
+    { code: "zh", label: "\u4e2d\u6587" },
+  ];
+
+  function applyTrigger(value: string): void {
+    const trigger = TRIGGERS.find((m) => m.value === value);
+    if (trigger) {
+      void apply({ triggerMode: trigger.value });
+    }
+  }
+
+  // An unchanged or blank phrase is not sent; the host refuses one with no word in it.
+  function applyWakePhrase(input: HTMLInputElement): void {
+    const phrase = input.value.trim();
+    if (phrase === "" || phrase === s.wakePhrase) {
+      input.value = s.wakePhrase;
+      return;
+    }
+    void apply({ wakePhrase: phrase });
+  }
 
   // How a dictated chat message goes out, safest first. The host refuses anything else.
   const SEND_MODES: { value: VoiceSettingsState["sendMode"]; label: string }[] = [
@@ -174,14 +223,72 @@
       Enable voice control
     </label>
     <p id={ENABLE_HINT_ID} class="dim note">
-      Hold the push-to-talk key and speak a command; your microphone is muted on stream while you hold it. Recognition
-      runs on this computer, and nothing you say is sent anywhere.
+      {#if s.triggerMode === "wake"}
+        Say the wake phrase, then a command. The push-to-talk key still works too.
+      {:else}
+        Hold the push-to-talk key and speak a command; your microphone is muted on stream while you hold it.
+      {/if}
+      Recognition runs on this computer, and nothing you say is sent anywhere.
       {#if gate.blocked && cpu.supported}{gate.why}{/if}
     </p>
     {#if s.enabled && status.visible}
       <p class="note status" class:dim={status.tone !== "warn"} class:warn={status.tone === "warn"} role="status">
         {status.label}{status.detail ? ` — ${status.detail}` : ""}
       </p>
+    {/if}
+    <div class="field">
+      <label class="flabel" for={TRIGGER_ID}>How a command starts</label>
+      <select id={TRIGGER_ID} value={s.triggerMode} onchange={(e) => applyTrigger(e.currentTarget.value)}>
+        {#each TRIGGERS as m (m.value)}
+          <option value={m.value}>{m.label}</option>
+        {/each}
+      </select>
+    </div>
+    {#if s.triggerMode === "wake"}
+      <div class="field">
+        <label class="flabel" for={WAKE_ID}>Wake phrase</label>
+        <input
+          id={WAKE_ID}
+          class="text"
+          type="text"
+          maxlength="64"
+          spellcheck="false"
+          autocomplete="off"
+          value={s.wakePhrase}
+          aria-describedby={WAKE_HINT_ID}
+          onchange={(e) => applyWakePhrase(e.currentTarget)}
+        />
+      </div>
+      <p id={WAKE_HINT_ID} class="dim note">
+        While this is on, your microphone is transcribed on this computer the whole time, and nothing is acted on until
+        an utterance starts with the wake phrase. Speech without it is dropped: it never reaches chat, and nothing is
+        kept. A muted microphone is not listened to, except to hear the wake phrase and "unmute mic". A distinctive
+        name works best; "chat" would wake it every time you talk to your viewers.
+      </p>
+      {#if wakeNote}
+        <div class="wake-model">
+          <p class="note status warn" role="status">{wakeNote.text}</p>
+          {#if wakeNote.model}
+            {@const m = wakeNote.model}
+            {@const action = m.state === "failed" ? "Retry" : "Download"}
+            <div class="model">
+              <span class="mname">{m.label}</span>
+              <span class="mstate" class:warn={m.state === "failed"}>{voiceModelLabel(m)}</span>
+              {#if m.state === "downloading"}
+                <Button size="xs" onclick={() => void cancelDownload(m.id)}>Cancel</Button>
+                <progress
+                  class="bar"
+                  max={m.bytes}
+                  value={m.received}
+                  aria-label="{m.label} download progress"
+                ></progress>
+              {:else}
+                <Button size="xs" onclick={() => void download(m.id)}>{action}</Button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
     {/if}
     <div class="actions">
       <Button size="sm" onclick={() => setSettingsTab("hotkeys")}>Set the push-to-talk key…</Button>
@@ -215,6 +322,19 @@
     <p id={CUE_HINT_ID} class="dim note">
       A short sound answers each command, so you can keep your eyes on the game. It plays on your monitoring device
       only, never into the stream. Set it to zero for silence.
+    </p>
+    <label class="check">
+      <ToggleSwitch
+        size="sm"
+        checked={s.readBack}
+        ariaDescribedBy={READBACK_HINT_ID}
+        onchange={(v) => void apply({ readBack: v })}
+      />
+      Speak confirmations
+    </label>
+    <p id={READBACK_HINT_ID} class="dim note">
+      Says what happened out loud, so you can keep your eyes on the game; while a command waits, "read that back" says
+      it again. Like the cues, only you hear it, at the cue volume.
     </p>
     {#if cueWarning}
       <p class="note status warn" role="status">{cueWarning}</p>
@@ -260,6 +380,24 @@
 
   <section class="group">
     <h4>Speech model</h4>
+    <div class="field">
+      <label class="flabel" for={LANGUAGE_ID}>Language</label>
+      <select
+        id={LANGUAGE_ID}
+        value={s.language}
+        aria-describedby={LANGUAGE_HINT_ID}
+        onchange={(e) => void apply({ language: e.currentTarget.value })}
+      >
+        {#each LANGUAGES as language (language.code)}
+          <option value={language.code}>{language.label}</option>
+        {/each}
+      </select>
+    </div>
+    <p id={LANGUAGE_HINT_ID} class="dim note">
+      Any language other than English uses the multilingual model, which is a separate download. Spoken commands and
+      their answers ("yes", "cancel", "send") are English only, so in another language voice control is mainly for
+      dictating chat: with push-to-talk, anything that is not an English command goes to chat.
+    </p>
     <div class="field">
       <label class="flabel" for={MODEL_ID}>Model</label>
       <select id={MODEL_ID} value={s.model} onchange={(e) => void apply({ model: e.currentTarget.value })}>
@@ -354,6 +492,7 @@
     cursor: default;
   }
   .num,
+  .text,
   select {
     background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
@@ -367,6 +506,7 @@
     max-width: 120px;
   }
   .num:focus,
+  .text:focus,
   select:focus {
     outline: none;
     border-color: var(--color-accent);
@@ -385,6 +525,10 @@
   }
   .actions {
     margin-top: 10px;
+  }
+  .wake-model {
+    max-width: 480px;
+    margin-bottom: 8px;
   }
   .slider {
     display: flex;

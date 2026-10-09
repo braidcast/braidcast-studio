@@ -83,15 +83,55 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
         detail: readyDetail(state) || state.message,
         confirmable: false,
       };
-    default:
+    default: {
+      // Always-listen says what it is waiting for. Asked for but not running (its models
+      // are missing, or did not load), push-to-talk still works, and the reason comes
+      // first.
+      const wake = state.settings.triggerMode === "wake";
+      if (wake && state.ready.wake) {
+        return {
+          visible: true,
+          tone: "idle",
+          label: `Listening for \u201c${state.settings.wakePhrase}\u201d`,
+          detail: state.message || state.device,
+          confirmable: false,
+        };
+      }
       return {
         visible: true,
         tone: "idle",
         label: "Voice ready",
-        detail: state.message || state.device,
+        detail: (wake && state.ready.wakeReason) || state.message || state.device,
         confirmable: false,
       };
+    }
   }
+}
+
+/** The host's wake model (VoiceModels.hpp kWakeModelId): always-listen checks each
+ * utterance's opening with it. */
+export const WAKE_MODEL_ID = "tiny.en-q5_1";
+
+export interface WakeModelNote {
+  text: string;
+  /** The model to offer a download for here; null when the model list already offers it. */
+  model: VoiceModelStatus | null;
+}
+
+/** In always-listen, what the tab says about the wake model while it is not on disk; null
+ * in push-to-talk or once it is ready. In English the model list below offers it; for any
+ * other language it is not a choice of speech model, so the note carries the download. */
+export function wakeModelNote(settings: VoiceSettingsState, models: VoiceModelStatus[]): WakeModelNote | null {
+  if (settings.triggerMode !== "wake") {
+    return null;
+  }
+  const tiny = models.find((m) => m.id === WAKE_MODEL_ID);
+  if (!tiny || tiny.state === "ready") {
+    return null;
+  }
+  return tiny.selectable
+    ? { text: `Always-listen also needs ${tiny.label} below, for the wake phrase.`, model: null }
+    : { text: `Always-listen also needs ${tiny.label}, for the wake phrase.`, model: tiny };
 }
 
 export function voiceModelLabel(model: VoiceModelStatus): string {

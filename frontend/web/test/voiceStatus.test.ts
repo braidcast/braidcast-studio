@@ -8,6 +8,7 @@ import {
   voiceEnableGate,
   voiceIndicator,
   voiceModelLabel,
+  wakeModelNote,
   type VoiceModelStatus,
   type VoiceState,
 } from "$lib/voice/voiceStatus";
@@ -81,6 +82,45 @@ const off: VoiceSettingsState = {
 };
 
 describe("voiceIndicator", () => {
+  it("says it is listening for the wake phrase when idle in wake mode", () => {
+    const indicator = voiceIndicator(
+      state({
+        ready: { ...READY, wake: true },
+        settings: {
+          enabled: true,
+          model: "base.en-q5_1",
+          logTranscripts: false,
+          cueVolume: 0.6,
+          sendMode: "countdown",
+          countdownSec: 3,
+          triggerMode: "wake",
+          wakePhrase: "hey braidcast",
+          readBack: false,
+          language: "en",
+        },
+      }),
+    );
+    expect(indicator.label).toBe("Listening for \u201chey braidcast\u201d");
+    expect(indicator.tone).toBe("idle");
+  });
+
+  it("in wake mode without always-listen running, is ready for the key and says why", () => {
+    const indicator = voiceIndicator(
+      state({
+        ready: { ...READY, wake: false, wakeReason: "Always-listen needs the Tiny (English) model too." },
+        settings: { ...state().settings, triggerMode: "wake" },
+      }),
+    );
+    expect(indicator.label).toBe("Voice ready");
+    expect(indicator.detail).toBe("Always-listen needs the Tiny (English) model too.");
+  });
+
+  it("ignores always-listen fields in push-to-talk", () => {
+    const indicator = voiceIndicator(state({ ready: { ...READY, wake: true, wakeReason: "stale" } }));
+    expect(indicator.label).toBe("Voice ready");
+    expect(indicator.detail).toBe("Microphone (Yeti)");
+  });
+
   it("is hidden while voice is off", () => {
     expect(voiceIndicator(state({ state: "disabled", settings: off })).visible).toBe(false);
   });
@@ -351,5 +391,37 @@ describe("keptDraftToFill", () => {
 
   it("does nothing without one", () => {
     expect(keptDraftToFill("", "", "")).toBeNull();
+  });
+});
+
+describe("wakeModelNote", () => {
+  const tiny = (overrides: Partial<VoiceModelStatus> = {}) =>
+    model({ id: "tiny.en-q5_1", label: "Tiny (English, fastest)", bytes: 32166155, ...overrides });
+  const wakeMode: VoiceSettingsState = { ...off, enabled: true, triggerMode: "wake" };
+
+  it("says nothing in push-to-talk", () => {
+    expect(wakeModelNote({ ...wakeMode, triggerMode: "ptt" }, [tiny()])).toBeNull();
+  });
+
+  it("says nothing once the wake model is on disk", () => {
+    expect(wakeModelNote(wakeMode, [tiny({ state: "ready" })])).toBeNull();
+  });
+
+  it("points at the model list in English, where the model is offered", () => {
+    expect(wakeModelNote(wakeMode, [tiny()])).toEqual({
+      text: "Always-listen also needs Tiny (English, fastest) below, for the wake phrase.",
+      model: null,
+    });
+  });
+
+  it("carries the download itself in another language, where the list does not offer it", () => {
+    const hidden = tiny({ selectable: false, state: "downloading", received: 1000 });
+    const note = wakeModelNote({ ...wakeMode, language: "de" }, [hidden]);
+    expect(note?.model).toEqual(hidden);
+    expect(note?.text).toBe("Always-listen also needs Tiny (English, fastest), for the wake phrase.");
+  });
+
+  it("says nothing when the catalog has no wake model", () => {
+    expect(wakeModelNote(wakeMode, [model()])).toBeNull();
   });
 });
