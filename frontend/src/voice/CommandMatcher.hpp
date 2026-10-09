@@ -18,9 +18,15 @@ struct CommandCandidates {
 	// when none is bound: what "unmute mic" has to resolve to before it may pass a
 	// muted mic in always-listen mode.
 	std::string micSource;
+	// The people who have spoken in chat lately, as they display, most recent first and one
+	// per name (the chat hub's recent-chatter ring, Chat::DistinctByName), for "reply to ...".
+	std::vector<std::string> people;
+	// The platforms with a live chat, as provider ids ("twitch", "youtube"), for "send to
+	// twitch ..." and for where a message to everyone goes.
+	std::vector<std::string> platforms;
 };
 
-enum class SlotKind { None, Scene, Source, AudioSource };
+enum class SlotKind { None, Scene, Source, AudioSource, Person, Platform };
 
 struct CommandMatch {
 	bool ok = false;
@@ -35,6 +41,9 @@ struct CommandMatch {
 	// mute from unmute, since those share one bridge method. nullptr for the rest.
 	const char *flagKey = nullptr;
 	bool flagValue = false;
+	// A chat command's message: the free-text remainder, in the user's own spelling and
+	// punctuation (Normalized::Original). Empty for every other command.
+	std::string messageText;
 };
 
 // Matches an utterance against the command table. Anchored: the phrase must start the

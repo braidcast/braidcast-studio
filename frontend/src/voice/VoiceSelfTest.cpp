@@ -1716,6 +1716,82 @@ void TestChatLimits(Tally &t)
 	t.Check("limits", "an empty platform list does not fit either", !Chat::FitsEverywhere("hello", {}, offender));
 }
 
+void TestChatCommands(Tally &t)
+{
+	using namespace Voice;
+
+	CommandCandidates candidates;
+	candidates.scenes = {"BRB"};
+	candidates.people = {"DaveTheStreamer", "Sarah_92"};
+	candidates.platforms = {"twitch", "youtube"};
+
+	auto match = [&](const char *text) {
+		return MatchCommand(Normalize(text), candidates);
+	};
+
+	// The message keeps the user's own capitals and punctuation.
+	const CommandMatch toChat = match("send to chat We are back in five minutes!");
+	t.Check("chatcmd", "send to chat takes the rest as the message",
+		toChat.ok && toChat.commandId == "chat.send" && toChat.messageText == "We are back in five minutes!");
+
+	const CommandMatch say = match("say in chat hello everyone");
+	t.Check("chatcmd", "say in chat is the same command",
+		say.ok && say.commandId == "chat.send" && say.messageText == "hello everyone");
+
+	const CommandMatch bare = match("chat hello everyone");
+	t.Check("chatcmd", "chat followed by a message is the same command",
+		bare.ok && bare.commandId == "chat.send" && bare.slot == SlotKind::None &&
+			bare.messageText == "hello everyone");
+
+	// One platform, in each of the spec's forms.
+	const CommandMatch toTwitch = match("send to Twitch thanks for the raid");
+	t.Check("chatcmd", "a named platform narrows the target",
+		toTwitch.ok && toTwitch.commandId == "chat.send" && toTwitch.slot == SlotKind::Platform &&
+			toTwitch.slotValue == "twitch" && toTwitch.messageText == "thanks for the raid");
+	const CommandMatch only = match("YouTube only thanks for watching");
+	t.Check("chatcmd", "'<platform> only' narrows the target",
+		only.ok && only.slotValue == "youtube" && only.messageText == "thanks for watching");
+	const CommandMatch tell = match("tell twitch I'll be right back");
+	t.Check("chatcmd", "'tell <platform>' narrows the target",
+		tell.ok && tell.slotValue == "twitch" && tell.messageText == "I'll be right back");
+	t.Check("chatcmd", "'tell' and a word that is no platform is not a command",
+		match("tell them I'll be right back").commandId.empty());
+
+	// A reply resolves the person, by a word of their handle, and keeps the message. It is
+	// chat.send too: a reply is a message addressed to one chat.
+	const CommandMatch reply = match("reply to Dave good question, I will cover that next");
+	t.Check("chatcmd", "a reply resolves the person",
+		reply.ok && reply.commandId == "chat.send" && reply.slot == SlotKind::Person &&
+			reply.slotValue == "DaveTheStreamer" &&
+			reply.messageText == "good question, I will cover that next");
+
+	// A reply to nobody in particular fails with a reason rather than sending to chat.
+	const CommandMatch unknown = match("reply to Gareth are you there");
+	t.Check("chatcmd", "an unknown person is reported, not guessed",
+		!unknown.ok && unknown.message.find("Gareth") != std::string::npos);
+	CommandCandidates twins = candidates;
+	twins.people = {"Dave_K", "Dave_J"};
+	const CommandMatch either = MatchCommand(Normalize("reply to Dave hello"), twins);
+	t.Check("chatcmd", "two people matching a name are reported, not guessed",
+		!either.ok && either.ambiguous && either.message.find("Dave_K") != std::string::npos &&
+			either.message.find("Dave_J") != std::string::npos);
+
+	// Empty messages are not commands.
+	t.Check("chatcmd", "send to chat with no message is not a command", !match("send to chat").ok);
+	t.Check("chatcmd", "reply with no message is not a command", !match("reply to Dave").ok);
+
+	// Anchoring still applies: talking about chat is not a chat command.
+	t.Check("chatcmd", "talking about sending is not sending",
+		match("I should send to chat later when the raid ends").commandId.empty());
+
+	// Studio commands still come first.
+	t.Check("chatcmd", "a studio command is not read as chat",
+		match("switch to BRB").commandId == "scenes.setCurrent");
+
+	// Chat messages never ask for confirmation at match time; the send mode decides.
+	t.Check("chatcmd", "a chat message is not a confirm-at-match command", !toChat.needsConfirm);
+}
+
 void TestVoiceFeedback(Tally &t)
 {
 	Voice::VoiceFeedback feedback;
