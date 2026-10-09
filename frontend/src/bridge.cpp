@@ -117,6 +117,9 @@
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
 #include "overlay/overlay_viewport.hpp"
+#include "voice/VoiceBridge.hpp"
+#include "voice/VoiceEngine.hpp"
+#include "voice/VoiceModels.hpp"
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <graphics/vec2.h>
@@ -131,6 +134,21 @@ namespace Bridge {
 // here so MethodStreamProfileRemove (anonymous namespace, above the definition) can call
 // it. Bridge scope so all three call sites resolve to the same function.
 void TeardownAccount(const std::string &accountId);
+
+// Turn a store save that returned false (disk full / permission -- already logged by
+// ReportSaveResult with the path) into the handler's caller-visible failure, so the
+// web's window.obs.call rejects instead of resolving on a silently-dropped edit. A
+// handler keeps its post-save side effects, then `return PersistOrFail(saved, error)`
+// at its existing terminal return: on success (saved==true) `error` is untouched and
+// the same true is returned, so the success path is unchanged. Declared in bridge.hpp
+// so handlers outside this file (voice/VoiceBridge.cpp) reuse it.
+bool PersistOrFail(bool saved, std::string &error)
+{
+	if (!saved) {
+		error = "failed to save the change to disk; it may be lost on restart";
+	}
+	return saved;
+}
 
 namespace {
 
@@ -300,20 +318,6 @@ json UndoStateJson()
 void EmitUndoChanged()
 {
 	EmitEvent(EventNames::kUndoChanged, UndoStateJson());
-}
-
-// Turn a store save that returned false (disk full / permission -- already logged by
-// ReportSaveResult with the path) into the handler's caller-visible failure, so the
-// web's window.obs.call rejects instead of resolving on a silently-dropped edit. A
-// handler keeps its post-save side effects, then `return PersistOrFail(saved, error)`
-// at its existing terminal return: on success (saved==true) `error` is untouched and
-// the same true is returned, so the success path is unchanged.
-bool PersistOrFail(bool saved, std::string &error)
-{
-	if (!saved) {
-		error = "failed to save the change to disk; it may be lost on restart";
-	}
-	return saved;
 }
 
 // --- method bodies ----------------------------------------------------------
@@ -1261,6 +1265,10 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 			error = "obs_reset_audio failed (audio may be active)";
 			return false;
 		}
+
+		// The mix sample rate or layout changed, and the voice capture read the old one
+		// when it bound (its callback may not ask libobs): rebind it.
+		Voice::Engine().OnAudioReset();
 
 		// obs_reset_audio tears the whole obs_core_audio down and obs_init_audio re-seeds
 		// the monitoring device to Default/default, so a rate or layout change silently
@@ -15557,6 +15565,13 @@ void Init()
 		{"update.ack", MethodUpdateAck},
 		{"settings.getGeneral", MethodSettingsGetGeneral},
 		{"settings.setGeneral", MethodSettingsSetGeneral},
+		// Voice control (voice/VoiceBridge.cpp).
+		{"settings.getVoice", Voice::BridgeMethods::SettingsGetVoice},
+		{"settings.setVoice", Voice::BridgeMethods::SettingsSetVoice},
+		{"voice.state", Voice::BridgeMethods::VoiceState},
+		{"voice.model.status", Voice::BridgeMethods::ModelStatus},
+		{"voice.model.download", Voice::BridgeMethods::ModelDownload},
+		{"voice.model.cancel", Voice::BridgeMethods::ModelCancel},
 		{"settings.getAdvanced", MethodSettingsGetAdvanced},
 		{"settings.setAdvanced", MethodSettingsSetAdvanced},
 		{"settings.snapshot", MethodSettingsSnapshot},
@@ -15818,6 +15833,10 @@ void Shutdown()
 	Fx::Rates().Stop();
 	Update::Checker().Stop();
 	Events::Hub().StopAll();
+	// A model download is a worker holding a transfer of up to 200 MB; cancel it before
+	// the drain rather than making shutdown wait out the whole download. The cancel also
+	// lands mid-connect (the transfer's progress poll reads it).
+	Voice::Downloads().CancelAll();
 
 	// Now give the signaled workers a bounded window to actually unwind before the
 	// hubs/statics they may still be mid-call on are torn down below. With the loops

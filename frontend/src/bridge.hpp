@@ -74,6 +74,13 @@ bool DispatchAsync(const std::string &method, const json &params,
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
 
+// Turn a store save that returned false (disk full / permission -- already logged by
+// ReportSaveResult with the path) into the handler's caller-visible failure, so the
+// web's window.obs.call rejects instead of resolving on a silently-dropped edit. A
+// handler keeps its post-save side effects, then `return PersistOrFail(saved, error)`
+// at its existing terminal return.
+bool PersistOrFail(bool saved, std::string &error);
+
 // Register an in-process observer of every event as it is pushed to JS: the event name
 // and the serialized payload, on the CEF UI thread. For the headless self-tests, which
 // have no page to receive events on. One slot; pass nullptr to clear.

@@ -16,6 +16,7 @@
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
+#include "voice/VoiceEngine.hpp"
 
 #include <obs.h>
 #include <obs.hpp>
@@ -567,6 +568,9 @@ bool ApplyAudio(const AudioInfo &a, std::string &error)
 		error = "obs_reset_audio failed (audio may be active)";
 		return false;
 	}
+	// The voice capture read the old mix format when it bound; rebind it, as
+	// MethodSettingsSetAudio does.
+	Voice::Engine().OnAudioReset();
 
 	// obs_reset_audio re-seeds the monitoring device to Default, so an import would
 	// silently discard the user's own choice along with the profile it is applying.

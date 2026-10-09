@@ -386,6 +386,8 @@ target_sources(
     src/voice/Recognizer.hpp
     src/voice/VoiceEngine.cpp
     src/voice/VoiceEngine.hpp
+    src/voice/VoiceBridge.cpp
+    src/voice/VoiceBridge.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -770,6 +772,8 @@ set_source_files_properties(
   src/voice/VoiceCapture.cpp
   src/voice/Recognizer.cpp
   src/voice/VoiceEngine.cpp
+  src/voice/VoiceBridge.cpp
+  src/voice/VoiceModels.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 

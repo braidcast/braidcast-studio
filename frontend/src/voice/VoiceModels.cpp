@@ -9,6 +9,7 @@
 #include "util/http_client.hpp"
 #include "util/sha256.hpp"
 #include "util/time_util.hpp"
+#include "voice/VoiceEngine.hpp"
 #include "voice/VoiceP0Defaults.hpp"
 
 #include <filesystem>
@@ -218,6 +219,9 @@ void ModelDownloader::Run(std::vector<const ModelInfo *> queue, std::shared_ptr<
 	for (const ModelInfo *m : queue) {
 		Emit(*m);
 	}
+	// A model that just arrived may be the one an enabled engine is waiting for. Posted:
+	// the engine lives on the UI thread, and this is a download worker.
+	AsyncTask::PostToUi([] { Engine().NoteModelsChanged(); });
 }
 
 bool ModelDownloader::DownloadOne(const ModelInfo &m, const std::shared_ptr<std::atomic<bool>> &cancel)

@@ -1,5 +1,6 @@
 #include "obs_bootstrap.hpp"
 
+#include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/StorePaths.hpp"
@@ -1161,6 +1162,81 @@ void TestVoiceHotkeys(Tally &t)
 	t.Check("hotkeys", "cancel defaults to Escape", bound.escape);
 }
 
+// Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
+bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
+{
+	result = nlohmann::json();
+	error.clear();
+	return Bridge::Dispatch(method, params, result, error);
+}
+
+void TestVoiceBridge(Tally &t)
+{
+	const VoiceSettings original = Voice::Engine().Settings();
+	nlohmann::json result;
+	std::string error;
+
+	t.Check("bridge", "settings.getVoice answers",
+		Dispatch("settings.getVoice", nlohmann::json::object(), result, error) && result.contains("settings") &&
+			result.contains("models") && result.contains("cpu"));
+	const bool modelsListed = result["models"].is_array() && !result["models"].empty() &&
+				  result["models"][0].contains("selectable");
+	t.Check("bridge", "the catalog comes with the settings", modelsListed);
+
+	// An unknown model id is refused rather than stored and failing later at load.
+	const bool badModel = Dispatch("settings.setVoice", nlohmann::json{{"model", "not-a-model"}}, result, error);
+	t.Check("bridge", "an unknown model id is refused", !badModel && !error.empty());
+
+	// A known one is accepted and comes back in the response.
+	const bool goodModel =
+		Dispatch("settings.setVoice", nlohmann::json{{"model", Voice::P0::kDefaultModelId}}, result, error);
+	t.Check("bridge", "a known model id is accepted",
+		goodModel && result["settings"]["model"] == Voice::P0::kDefaultModelId);
+
+	// Enabling on a CPU that cannot run voice is refused with the CPU's own reason, and
+	// enabling before the model is on disk is refused too. Both apply to turning voice
+	// ON, so start from off (a settings change while already on is not refused, or a CPU
+	// that lost support could never be switched back off).
+	Dispatch("settings.setVoice", nlohmann::json{{"enabled", false}}, result, error);
+	std::string cpuReason;
+	const Voice::ModelInfo *model = Voice::FindModel(Voice::P0::kDefaultModelId);
+	if (!Voice::Engine().CanEnable(cpuReason)) {
+		t.Check("bridge", "enabling on an unsupported CPU is refused",
+			!Dispatch("settings.setVoice", nlohmann::json{{"enabled", true}}, result, error) &&
+				error == cpuReason);
+	} else {
+		t.Skip("bridge", "enabling on an unsupported CPU is refused", "this CPU supports voice");
+		if (model && !Voice::ModelFilePresent(*model)) {
+			t.Check("bridge", "enabling before the model is downloaded is refused",
+				!Dispatch("settings.setVoice", nlohmann::json{{"enabled", true}}, result, error) &&
+					!error.empty() && !Voice::Engine().Settings().enabled);
+		} else {
+			t.Skip("bridge", "enabling before the model is downloaded is refused", "the model is present");
+		}
+	}
+
+	t.Check("bridge", "voice.state answers",
+		Dispatch("voice.state", nlohmann::json::object(), result, error) && result.contains("state") &&
+			result.contains("ready"));
+
+	t.Check("bridge", "voice.model.status lists the catalog",
+		Dispatch("voice.model.status", nlohmann::json::object(), result, error) && result["models"].is_array());
+
+	t.Check("bridge", "downloading an unknown model is refused",
+		!Dispatch("voice.model.download", nlohmann::json{{"id", "not-a-model"}}, result, error));
+
+	t.Check("bridge", "cancelling a download that is not running is refused",
+		!Dispatch("voice.model.cancel", nlohmann::json{{"id", Voice::kVadModelId}}, result, error));
+
+	// The settings file round-trips through the store, not just through memory.
+	VoiceSettings persisted;
+	persisted.Load();
+	t.Check("bridge", "setVoice persisted the model", persisted.model == Voice::P0::kDefaultModelId);
+
+	// Put back what the run found, in memory and on disk.
+	Dispatch("settings.setVoice", SettingsFields::ToJson(VoiceSettingsTable(), original), result, error);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
@@ -1168,7 +1244,7 @@ const Case kCases[] = {
 	&TestSha256,          &TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit,
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,
+	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys, &TestVoiceBridge,
 };
 
 } // namespace
