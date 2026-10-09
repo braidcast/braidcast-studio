@@ -464,8 +464,17 @@ export interface VoiceState {
   /** The last dictated chat message refused as too long, kept for the Multichat composer to
    * take over; "" when there is none. Cleared at the next utterance. */
   keptDraft: string;
-  /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic. */
-  ready: { cpu: boolean; cpuReason: string; model: boolean; mic: boolean };
+  /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic; and in
+   * always-listen, whether it is running (`wake`) and, when it is not, why (`wakeReason`,
+   * "" otherwise). Push-to-talk works either way. */
+  ready: {
+    cpu: boolean;
+    cpuReason: string;
+    model: boolean;
+    mic: boolean;
+    wake: boolean;
+    wakeReason: string;
+  };
   settings: VoiceSettingsState;
 }
 

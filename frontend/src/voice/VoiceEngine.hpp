@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_VOICE_ENGINE_HPP_
 
 #include "voice/MicMuteGuard.hpp"
+#include "voice/Recognizer.hpp"
 #include "voice/VoiceFeedback.hpp"
 #include "voice/VoiceListener.hpp"
 #include "voice/VoiceSettings.hpp"
@@ -113,7 +114,8 @@ private:
 	void StopRuntime(bool block);
 	void Retire(std::shared_ptr<Runtime> runtime);
 	void WaitForRetired();
-	void LoadModel(uint64_t generation, const std::string &path, int threads);
+	void LoadModel(uint64_t generation, const std::string &path, int threads,
+		       const Recognizer::Continuous &continuous, const std::string &wakeReason);
 	void BindMic(Runtime &runtime);
 	void ReconcileMic();
 	static void OnChannelChange(void *param, calldata_t *data);
@@ -139,6 +141,10 @@ private:
 	PromptSource prompt_;
 	std::string cpuReason_;
 	ModelState modelState_ = ModelState::Unloaded;
+	// Always-listen is running (the recognizer brought its models up); and, when it was
+	// asked for and is not, why. UI thread.
+	bool alwaysListen_ = false;
+	std::string wakeReason_;
 	bool started_ = false;
 
 	// Bumped whenever the runtime is torn down or rebuilt.

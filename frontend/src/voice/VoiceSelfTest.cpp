@@ -1367,6 +1367,41 @@ void TestContinuousRecognizer(Tally &t)
 	t.Check("continuous", "stop joins cleanly with continuous mode on", !rec.Ready() && !rec.ContinuousActive());
 }
 
+void TestAlwaysListenWiring(Tally &t)
+{
+	VoiceSettings settings = Voice::Engine().Settings();
+	const VoiceSettings original = settings;
+
+	settings.triggerMode = "wake";
+	Voice::Engine().ApplySettings(settings);
+	nlohmann::json state = Voice::Engine().StateJson();
+	t.Check("alwayslisten", "the state reports the trigger mode", state["settings"]["triggerMode"] == "wake");
+	t.Check("alwayslisten", "switching modes does not wedge the engine",
+		state["state"] == "disabled" || state["state"] == "notReady" || state["state"] == "idle");
+	t.Check("alwayslisten", "the state says whether always-listen runs",
+		state["ready"].contains("wake") && state["ready"].contains("wakeReason"));
+
+	// A wake phrase change must restart the runtime rather than be ignored until the
+	// next launch.
+	settings.wakePhrase = "hey studio";
+	Voice::Engine().ApplySettings(settings);
+	t.Check("alwayslisten", "a wake phrase change is applied",
+		Voice::Engine().StateJson()["settings"]["wakePhrase"] == "hey studio");
+
+	// The speech model is biased toward the phrase, last, where whisper keeps it.
+	const std::string prompt = Voice::PromptBiasFor(Voice::CommandCandidates{}, "Braidcast");
+	t.Check("alwayslisten", "the wake phrase closes the whisper prompt",
+		prompt.size() >= 9 && prompt.compare(prompt.size() - 9, 9, "Braidcast") == 0);
+
+	Voice::Engine().ApplySettings(original);
+	state = Voice::Engine().StateJson();
+	t.Check("alwayslisten", "settings restore",
+		Voice::Engine().Settings().triggerMode == original.triggerMode &&
+			Voice::Engine().Settings().wakePhrase == original.wakePhrase);
+	t.Check("alwayslisten", "push-to-talk reports no always-listen reason",
+		original.triggerMode != "ptt" || state["ready"]["wakeReason"] == "");
+}
+
 void TestWakeGate(Tally &t)
 {
 	using Voice::MatchWakePhrase;
@@ -2352,15 +2387,24 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,        &TestLogCategory,    &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,     &TestModelCatalog,   &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,       &TestResampler,      &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener,  &TestWavFile,        &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVadEndpointer,  &TestWakeGate,       &TestContinuousRecognizer,
-	&TestVoiceEngine,     &TestVoiceHotkeys,   &TestVoiceBridge,    &TestTextNormalize,
-	&TestFuzzyMatch,      &TestCommandMatcher, &TestBridgeSeams,    &TestCommandRegistry,
-	&TestVoiceFeedback,   &TestAudioEndpoints, &TestRecentChatters, &TestChatterFeed,
-	&TestChatLimits,      &TestChatCommands,   &TestChatDrafts,
+	&TestWhisperLinked,   &TestCpuGate,
+	&TestLogCategory,     &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,
+	&TestModelCatalog,    &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,
+	&TestResampler,       &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener,
+	&TestWavFile,         &TestRecognizerWithoutModel,
+	&TestRecognizer,      &TestVadEndpointer,
+	&TestWakeGate,        &TestContinuousRecognizer,
+	&TestVoiceEngine,     &TestAlwaysListenWiring,
+	&TestVoiceHotkeys,    &TestVoiceBridge,
+	&TestTextNormalize,   &TestFuzzyMatch,
+	&TestCommandMatcher,  &TestBridgeSeams,
+	&TestCommandRegistry, &TestVoiceFeedback,
+	&TestAudioEndpoints,  &TestRecentChatters,
+	&TestChatterFeed,     &TestChatLimits,
+	&TestChatCommands,    &TestChatDrafts,
 };
 
 } // namespace

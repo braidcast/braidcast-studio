@@ -374,7 +374,7 @@ CommandCandidates CurrentCandidates()
 	return candidates;
 }
 
-std::string PromptBiasFor(const CommandCandidates &candidates)
+std::string PromptBiasFor(const CommandCandidates &candidates, const std::string &wakePhrase)
 {
 	// Least important first. A name that appears twice keeps its later (more important)
 	// place.
@@ -389,6 +389,7 @@ std::string PromptBiasFor(const CommandCandidates &candidates)
 	     {&candidates.audioSources, &candidates.sources, &candidates.scenes}) {
 		parts.insert(parts.end(), list->begin(), list->end());
 	}
+	parts.push_back(wakePhrase); // last: the one name every always-listen command opens with
 
 	// Walk from the most important end and stop at the first part that no longer fits,
 	// so what is dropped is always a prefix: the same cut whisper itself would make.
@@ -420,7 +421,8 @@ std::string PromptBiasFor(const CommandCandidates &candidates)
 
 std::string PromptBias()
 {
-	return PromptBiasFor(CurrentCandidates());
+	const VoiceSettings &settings = Engine().Settings();
+	return PromptBiasFor(CurrentCandidates(), settings.triggerMode == "wake" ? settings.wakePhrase : std::string());
 }
 
 Interpretation Interpret(const std::string &text, const InterpretContext &ctx, const CommandCandidates &candidates,

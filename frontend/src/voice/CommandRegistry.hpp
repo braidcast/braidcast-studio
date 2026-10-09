@@ -21,12 +21,13 @@ CommandCandidates CurrentCandidates();
 // The whisper prompt: command phrases plus the studio's own names, so "BRB" and
 // "Gameplay Cam" come back spelled the way the user named them. Least important first
 // and most important last (command phrases, the kPromptPeople most recent chatters
-// oldest first, audio channels, the current scene's items, scenes), and bounded by
-// kMaxPromptChars by dropping from the FRONT, because whisper keeps the tail of an
-// over-long prompt too (Recognizer::SetPrompt). UI thread.
+// oldest first, audio channels, the current scene's items, scenes, and in always-listen
+// the wake phrase, so the speech model spells it the way the wake gate strips it), and
+// bounded by kMaxPromptChars by dropping from the FRONT, because whisper keeps the tail
+// of an over-long prompt too (Recognizer::SetPrompt). UI thread.
 std::string PromptBias();
-// The same, for a given studio. Pure.
-std::string PromptBiasFor(const CommandCandidates &candidates);
+// The same, for a given studio and wake phrase ("" in push-to-talk). Pure.
+std::string PromptBiasFor(const CommandCandidates &candidates, const std::string &wakePhrase = std::string());
 
 // How many of the most recent chatters' names go into the whisper prompt. Enough for the
 // people a streamer is likely to answer; more would push the command phrases out of a

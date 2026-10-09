@@ -12,6 +12,8 @@ import {
   type VoiceState,
 } from "$lib/voice/voiceStatus";
 
+const READY: VoiceState["ready"] = { cpu: true, cpuReason: "", model: true, mic: true, wake: false, wakeReason: "" };
+
 function state(overrides: Partial<VoiceState> = {}): VoiceState {
   return {
     state: "idle",
@@ -20,7 +22,7 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     device: "Microphone (Yeti)",
     pending: null,
     keptDraft: "",
-    ready: { cpu: true, cpuReason: "", model: true, mic: true },
+    ready: READY,
     settings: {
       enabled: true,
       model: "base.en-q5_1",
@@ -149,7 +151,7 @@ describe("voiceIndicator", () => {
     const indicator = voiceIndicator(
       state({
         state: "notReady",
-        ready: { cpu: false, cpuReason: "Voice control needs a CPU with AVX2 support.", model: false, mic: true },
+        ready: { ...READY, cpu: false, cpuReason: "Voice control needs a CPU with AVX2 support.", model: false },
       }),
     );
     expect(indicator.tone).toBe("warn");
@@ -159,19 +161,16 @@ describe("voiceIndicator", () => {
 
   it("names the missing piece when not ready", () => {
     expect(
-      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: true, mic: false } }))
-        .detail,
+      voiceIndicator(state({ state: "notReady", ready: { ...READY, mic: false } })).detail,
     ).toBe("No microphone on the Mic/Aux channel");
     expect(
-      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: false, mic: true } }))
-        .detail,
+      voiceIndicator(state({ state: "notReady", ready: { ...READY, model: false } })).detail,
     ).toBe("The speech model is not ready");
   });
 
   it("names the mic before the model when both are missing", () => {
     expect(
-      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: false, mic: false } }))
-        .detail,
+      voiceIndicator(state({ state: "notReady", ready: { ...READY, model: false, mic: false } })).detail,
     ).toBe("No microphone on the Mic/Aux channel");
   });
 
@@ -181,7 +180,7 @@ describe("voiceIndicator", () => {
         state({
           state: "notReady",
           message: "Base (English) model is not downloaded",
-          ready: { cpu: true, cpuReason: "", model: false, mic: true },
+          ready: { ...READY, model: false },
         }),
       ).detail,
     ).toBe("Base (English) model is not downloaded");

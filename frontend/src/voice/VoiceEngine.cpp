@@ -23,9 +23,19 @@ namespace Voice {
 
 namespace {
 
-// Sized for the pre-roll plus a couple of seconds of slack; the recognizer worker keeps
-// it drained, so it never has to hold a whole segment.
-constexpr size_t kRingSamples = static_cast<size_t>(kVoiceSampleRate) * 3;
+// What the ring has to hold is what arrives while the worker is busy in whisper. With
+// push-to-talk that audio is not wanted anyway, but always-listen hears all of it: a
+// wake check and a transcription take seconds, and a ring that overflowed meanwhile
+// would splice the stream the voice activity detector is following. Ten seconds is
+// 640 KB.
+constexpr size_t kRingSamples = static_cast<size_t>(kVoiceSampleRate) * 10;
+
+// The wake phrase needs a model of its own and the detector; without both, always-listen
+// cannot run and push-to-talk carries on.
+constexpr const char *kWakeModelsMissing =
+	"Always-listen needs the Tiny (English) model too. Download it in Settings, Voice; push-to-talk works "
+	"meanwhile.";
+constexpr const char *kWakeDidNotStart = "Always-listen could not start; push-to-talk still works.";
 
 // The interpreter until one is installed: show what was heard, act on nothing. The
 // command registry (Voice::InstallCommands) replaces it at startup.
@@ -54,13 +64,16 @@ struct VoiceEngine::Runtime {
 	Runtime() : capture(ring), recognizer(ring, [this] { return TakeUserMutedSeen(); }) {}
 
 	// Recognizer worker, once per segment as it closes (Recognizer::Transcribe takes
-	// the flag before it delivers that segment's result). libobs reports our own
-	// push-to-talk mute as muted too, so the capture's flag alone would mark every
-	// push-to-talk segment muted; only a mute the guard did not make is the user's.
+	// the flag before it delivers that segment's result), and as an always-listen
+	// utterance starts. libobs reports our own push-to-talk mute as muted too, so the
+	// capture's flag alone would mark every push-to-talk segment muted; only a mute the
+	// guard did not make is the user's. The guard's flag is consumed here: it belongs to
+	// the one segment it was set for, and an always-listen utterance after it must not
+	// inherit it (that would hide the user's own mute from the muted-mic rule).
 	bool TakeUserMutedSeen()
 	{
 		const bool seen = capture.TakeMutedSeen();
-		segmentPttMuted = pttMutedSegment.load(std::memory_order_acquire);
+		segmentPttMuted = pttMutedSegment.exchange(false, std::memory_order_acq_rel);
 		return seen && !segmentPttMuted;
 	}
 
@@ -230,13 +243,18 @@ void VoiceEngine::StartRuntime()
 	}
 	BindMic(*runtime);
 
-	// Verifying and loading the model both take seconds, so they happen off the UI
-	// thread; the outcome comes back as a listener event.
+	// Verifying and loading the models take seconds, so they happen off the UI thread;
+	// the outcome comes back as a listener event. Always-listen's two models are verified
+	// on the same worker: hashing a hand-copied one on the UI thread would freeze it.
 	const std::string modelId = settings_.model;
 	const int threads = ThreadCount();
+	const bool wantWake = settings_.triggerMode == "wake";
+	const std::string wakePhrase = settings_.wakePhrase;
+	alwaysListen_ = false;
+	wakeReason_.clear();
 	std::shared_ptr<std::atomic<bool>> cancel = runtime->verifyCancel;
 	try {
-		AsyncTask::RunAsync([this, generation, modelId, threads, cancel] {
+		AsyncTask::RunAsync([this, generation, modelId, threads, cancel, wantWake, wakePhrase] {
 			const ModelInfo *info = FindModel(modelId);
 			std::string error;
 			if (!info) {
@@ -250,9 +268,30 @@ void VoiceEngine::StartRuntime()
 				PostEvent(failed, generation);
 				return;
 			}
+			Recognizer::Continuous continuous;
+			std::string wakeReason;
+			if (wantWake) {
+				const ModelInfo *vad = FindModel(kVadModelId);
+				const ModelInfo *wake = FindModel(kWakeModelId);
+				std::string why;
+				if (vad && wake && EnsureModelVerified(*vad, why, cancel.get()) &&
+				    EnsureModelVerified(*wake, why, cancel.get())) {
+					continuous.enabled = true;
+					continuous.wakePhrase = wakePhrase;
+					continuous.vadModelPath = ModelPath(*vad);
+					continuous.wakeModelPath = ModelPath(*wake);
+				} else {
+					// Missing pieces fall back to push-to-talk rather than silently
+					// doing nothing; the Voice tab offers the download.
+					HostLog("[voice] always-listen needs the voice activity and tiny models (" +
+						why + "); staying in push-to-talk");
+					wakeReason = kWakeModelsMissing;
+				}
+			}
 			const std::string path = ModelPath(*info);
-			AsyncTask::PostToUi(
-				[this, generation, path, threads] { LoadModel(generation, path, threads); });
+			AsyncTask::PostToUi([this, generation, path, threads, continuous, wakeReason] {
+				LoadModel(generation, path, threads, continuous, wakeReason);
+			});
 		});
 	} catch (...) {
 		Event failed = MakeEvent(EventType::ModelFailed);
@@ -262,11 +301,13 @@ void VoiceEngine::StartRuntime()
 	UpdateArmed();
 }
 
-void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int threads)
+void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int threads,
+			    const Recognizer::Continuous &continuous, const std::string &wakeReason)
 {
 	if (generation != generation_.load(std::memory_order_acquire)) {
 		return; // voice was turned off, or the model changed, while it was being verified
 	}
+	wakeReason_ = wakeReason;
 	std::shared_ptr<Runtime> runtime = CurrentRuntime();
 	if (!runtime) {
 		return;
@@ -279,13 +320,24 @@ void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int th
 		}
 		PostEvent(event, generation);
 	});
+	runtime->recognizer.SetWakeCallback([this, generation] {
+		// The wake phrase opened an utterance: the listener starts a segment, so the
+		// indicator lights while the user is still speaking.
+		PostEvent(MakeEvent(EventType::WakeMatched), generation);
+	});
 	runtime->recognizer.SetResultCallback([this, generation, raw](Recognizer::Result result) {
+		if (result.wake) {
+			// The detector closed the utterance; the listener still thinks it is
+			// recording. Posted first, so it arrives first.
+			PostEvent(MakeEvent(EventType::SpeechEnded), generation);
+		}
 		Event event = MakeEvent(result.ok ? EventType::Transcript : EventType::TranscribeFailed);
 		event.text = result.ok ? std::move(result.text) : std::move(result.error);
 		event.mutedSeen = result.mutedSeen;
 		event.pttMuted = raw->segmentPttMuted;
 		PostEvent(event, generation);
 	});
+	runtime->recognizer.SetContinuous(continuous);
 	runtime->recognizer.Start(path, threads);
 }
 
@@ -325,6 +377,7 @@ void VoiceEngine::StopRuntime(bool block)
 	// noticing).
 	feedback_.Stop();
 	modelState_ = ModelState::Unloaded;
+	alwaysListen_ = false;
 	listener_->Handle(MakeEvent(EventType::Disable));
 	UpdateArmed();
 	PublishState();
@@ -410,7 +463,11 @@ void VoiceEngine::OnChannelChange(void *param, calldata_t *)
 
 void VoiceEngine::ApplySettings(const VoiceSettings &next)
 {
-	const std::string oldModel = settings_.model;
+	// The fields the runtime is built from. The detector and the wake model are loaded
+	// on the worker with the speech model, so a change to any of these rebuilds it, as a
+	// model change always has. The cue volume, the send mode and read-back apply live.
+	const bool runtimeChanged = settings_.model != next.model || settings_.triggerMode != next.triggerMode ||
+				    settings_.wakePhrase != next.wakePhrase || settings_.language != next.language;
 	settings_ = next;
 	if (!started_) {
 		return;
@@ -424,7 +481,7 @@ void VoiceEngine::ApplySettings(const VoiceSettings &next)
 		PublishState();
 		return;
 	}
-	if (!running || oldModel != settings_.model) {
+	if (!running || runtimeChanged) {
 		if (running) {
 			StopRuntime(false);
 		}
@@ -447,7 +504,11 @@ void VoiceEngine::NoteModelsChanged()
 	// Only a runtime whose model failed (typically: not downloaded yet) starts over. One
 	// that is loading or loaded is left alone, so an unrelated download never cuts off a
 	// command being recognized.
-	if (started_ && modelState_ == ModelState::Failed && CurrentRuntime()) {
+	// Likewise a runtime that is up in push-to-talk only because always-listen's models
+	// were missing, once nothing is in flight: the download may be the one it lacked.
+	const bool wakeMissing = settings_.triggerMode == "wake" && modelState_ == ModelState::Ready &&
+				 !alwaysListen_ && listener_->Current() == State::Idle;
+	if (started_ && (modelState_ == ModelState::Failed || wakeMissing) && CurrentRuntime()) {
 		StopRuntime(false);
 		StartRuntime();
 		PublishState();
@@ -522,6 +583,11 @@ void VoiceEngine::HandleOnUi(const Event &event, uint64_t generation)
 	}
 	if (event.type == EventType::ModelReady) {
 		modelState_ = ModelState::Ready;
+		std::shared_ptr<Runtime> runtime = CurrentRuntime();
+		alwaysListen_ = runtime && runtime->recognizer.ContinuousActive();
+		if (settings_.triggerMode == "wake" && !alwaysListen_ && wakeReason_.empty()) {
+			wakeReason_ = kWakeDidNotStart; // its models are there but did not load
+		}
 	} else if (event.type == EventType::ModelFailed) {
 		modelState_ = ModelState::Failed;
 	}
@@ -616,6 +682,10 @@ nlohmann::json VoiceEngine::StateJson() const
 		{"cpuReason", cpuReason_},
 		{"model", modelState_ == ModelState::Ready},
 		{"mic", micBound},
+		// Always-listen: whether it is running, and why not when it was asked for and is
+		// not (push-to-talk still works then).
+		{"wake", alwaysListen_},
+		{"wakeReason", settings_.triggerMode == "wake" ? wakeReason_ : std::string()},
 	};
 	state["settings"] = SettingsFields::ToJson(VoiceSettingsTable(), settings_);
 	// The listener reports the deadline; only here is there a clock to measure it
