@@ -19,6 +19,14 @@ struct VoiceSettings {
 	// How loud the command cues are, 0 (silent) to 1. Cues are monitored, not mixed into
 	// the stream, so this is a private volume.
 	double cueVolume = 0.6;
+	// How a dictated chat message goes out:
+	//   "countdown" - shown for countdownSec, then sent unless cancelled (the default,
+	//                 because a chat message cannot be unsent)
+	//   "say"       - held until the user says "send"
+	//   "instant"   - sent as soon as it is recognized
+	std::string sendMode = "countdown";
+	// How long the countdown runs, in seconds (1 to 10).
+	double countdownSec = 3.0;
 
 	void Load();
 	bool Save() const;

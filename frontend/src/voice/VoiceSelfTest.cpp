@@ -143,6 +143,19 @@ void TestVoiceSettingsTable(Tally &t)
 	t.Check("settings", "cue volume is on the wire and in the file",
 		SettingsFields::ToJson(table, VoiceSettings{}).contains("cueVolume") &&
 			obs_data_has_user_value(data, "cue_volume"));
+
+	VoiceSettings modes;
+	std::string modeError;
+	t.Check("settings", "the send mode defaults to countdown", modes.sendMode == "countdown");
+	t.Check("settings", "countdown defaults to three seconds", modes.countdownSec == 3.0);
+	t.Check("settings", "a known send mode applies",
+		SettingsFields::ApplyPatch(table, nlohmann::json{{"sendMode", "instant"}}, modes, modeError) &&
+			modes.sendMode == "instant");
+	t.Check("settings", "an unknown send mode is refused",
+		!SettingsFields::ApplyPatch(table, nlohmann::json{{"sendMode", "telepathy"}}, modes, modeError) &&
+			modes.sendMode == "instant");
+	SettingsFields::ApplyPatch(table, nlohmann::json{{"countdownSec", 60.0}}, modes, modeError);
+	t.Check("settings", "the countdown clamps", modes.countdownSec <= 10.0);
 }
 
 void TestSha256(Tally &t)

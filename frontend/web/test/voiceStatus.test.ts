@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { VoicePendingAction } from "$lib/api/bridge";
+import type { VoicePendingAction, VoiceSettingsState } from "$lib/api/bridge";
 import {
   voiceEnableGate,
   voiceIndicator,
@@ -16,7 +16,14 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     device: "Microphone (Yeti)",
     pending: null,
     ready: { cpu: true, cpuReason: "", model: true, mic: true },
-    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 },
+    settings: {
+      enabled: true,
+      model: "base.en-q5_1",
+      logTranscripts: false,
+      cueVolume: 0.6,
+      sendMode: "countdown",
+      countdownSec: 3,
+    },
     ...overrides,
   };
 }
@@ -46,7 +53,14 @@ function model(overrides: Partial<VoiceModelStatus> = {}): VoiceModelStatus {
   };
 }
 
-const off = { enabled: false, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 };
+const off: VoiceSettingsState = {
+  enabled: false,
+  model: "base.en-q5_1",
+  logTranscripts: false,
+  cueVolume: 0.6,
+  sendMode: "countdown",
+  countdownSec: 3,
+};
 
 describe("voiceIndicator", () => {
   it("is hidden while voice is off", () => {
@@ -193,7 +207,14 @@ describe("voiceModelLabel", () => {
 
 describe("voiceEnableGate", () => {
   const cpuOk = { supported: true, reason: "" };
-  const offBase = { enabled: false, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 };
+  const offBase: VoiceSettingsState = {
+    enabled: false,
+    model: "base.en-q5_1",
+    logTranscripts: false,
+    cueVolume: 0.6,
+    sendMode: "countdown",
+    countdownSec: 3,
+  };
 
   it("allows turning on once the chosen model is on disk", () => {
     expect(voiceEnableGate(offBase, cpuOk, [model({ state: "ready" })])).toEqual({ blocked: false, why: "" });

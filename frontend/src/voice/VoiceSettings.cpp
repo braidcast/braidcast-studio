@@ -10,6 +10,7 @@ namespace {
 
 constexpr const char *kVoiceFile = "voice.json";
 constexpr size_t kModelIdMaxLen = 64;
+constexpr const char *kSendModes[] = {"countdown", "say", "instant"};
 
 constexpr SettingsFields::BoolField<VoiceSettings> kBools[] = {
 	{"enabled", "enabled", &VoiceSettings::enabled},
@@ -18,10 +19,12 @@ constexpr SettingsFields::BoolField<VoiceSettings> kBools[] = {
 
 constexpr SettingsFields::StringField<VoiceSettings> kStrings[] = {
 	{"model", "model", &VoiceSettings::model, nullptr, 0, kModelIdMaxLen},
+	{"sendMode", "send_mode", &VoiceSettings::sendMode, kSendModes, std::size(kSendModes), 0},
 };
 
 constexpr SettingsFields::DoubleField<VoiceSettings> kDoubles[] = {
 	{"cueVolume", "cue_volume", &VoiceSettings::cueVolume, 0.0, 1.0},
+	{"countdownSec", "countdown_sec", &VoiceSettings::countdownSec, 1.0, 10.0},
 };
 
 constexpr SettingsFields::Table<VoiceSettings> kTable = {

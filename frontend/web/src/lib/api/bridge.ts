@@ -396,6 +396,12 @@ export interface VoiceSettingsState {
   /** How loud the command cues play, 0 (silent) to 1. They play on the monitoring
    * device only, never into the stream mix. */
   cueVolume: number;
+  /** How a dictated chat message goes out: shown for countdownSec and then sent unless
+   * cancelled ("countdown", the default), held until the user says "send" ("say"), or
+   * sent as soon as it is recognized ("instant"). */
+  sendMode: "countdown" | "say" | "instant";
+  /** The countdown's length in seconds, 1 to 10. */
+  countdownSec: number;
 }
 
 /** One catalog entry and its download state (voice.model.status). */

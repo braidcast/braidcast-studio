@@ -18,7 +18,14 @@
   // its own key through settings.setVoice and reconciles from the full payload it
   // answers. settings.voiceChanged keeps this in sync with any other window, and each
   // download step arrives as one model's voice.model.status.
-  const DEFAULTS: VoiceSettingsState = { enabled: false, model: "", logTranscripts: false, cueVolume: 0.6 };
+  const DEFAULTS: VoiceSettingsState = {
+    enabled: false,
+    model: "",
+    logTranscripts: false,
+    cueVolume: 0.6,
+    sendMode: "countdown",
+    countdownSec: 3,
+  };
 
   let s = $state<VoiceSettingsState>({ ...DEFAULTS });
   let models = $state<VoiceModelStatus[]>([]);
