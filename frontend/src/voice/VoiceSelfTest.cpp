@@ -22,6 +22,7 @@
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceEngine.hpp"
+#include "voice/VoiceFeedback.hpp"
 #include "voice/VoiceListener.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceResampler.hpp"
@@ -1519,6 +1520,35 @@ void TestCommandRegistry(Tally &t)
 	t.Check("registry", "an unknown method fails with a reason", fails("no.such.method", nlohmann::json::object()));
 }
 
+void TestVoiceFeedback(Tally &t)
+{
+	Voice::VoiceFeedback feedback;
+	std::string error;
+	const bool started = feedback.Start(error);
+	t.Check("feedback", "the cue source starts", started);
+	if (!started) {
+		HostLog("[selftest] voice-feedback start error: " + error);
+		return;
+	}
+	t.Check("feedback", "all five cues loaded", feedback.LoadedCues() == Voice::kCueCount);
+
+	OBSSourceAutoRelease source = obs_get_source_by_name(Voice::kFeedbackSourceName);
+	t.Check("feedback", "the source is private, so it is not in the user's source list", !source);
+
+	// Playing must not block: the caller is the UI thread.
+	const int64_t before = TimeUtil::NowMs();
+	feedback.Play(Voice::Cue::Accept, 0.0); // silent, so the smoke run makes no noise
+	t.Check("feedback", "playing returns immediately", TimeUtil::NowMs() - before < 50);
+
+	feedback.Stop();
+	t.Check("feedback", "stop is idempotent", (feedback.Stop(), true));
+
+	Voice::VoiceFeedback nowhere;
+	t.Check("feedback", "a directory without cues is refused with a reason",
+		!nowhere.StartFrom(RundirRoot() + "/no-such-cue-directory", error) && !error.empty() &&
+			nowhere.LoadedCues() == 0);
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1603,7 +1633,7 @@ const Case kCases[] = {
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
-	&TestCommandRegistry,
+	&TestCommandRegistry, &TestVoiceFeedback,
 };
 
 } // namespace

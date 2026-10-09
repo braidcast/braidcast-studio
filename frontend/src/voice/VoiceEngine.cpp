@@ -77,7 +77,12 @@ struct VoiceEngine::Runtime {
 	Recognizer recognizer;
 };
 
-VoiceEngine::VoiceEngine() : interpreter_(&ShowOnly), listener_(std::make_unique<VoiceListener>(interpreter_)) {}
+VoiceEngine::VoiceEngine()
+	: interpreter_(&ShowOnly),
+	  listener_(std::make_unique<VoiceListener>(interpreter_)),
+	  playCue_([this](Cue cue) { feedback_.Play(cue, settings_.cueVolume); })
+{
+}
 
 VoiceEngine::~VoiceEngine()
 {
@@ -202,6 +207,13 @@ void VoiceEngine::StartRuntime()
 		runtime_ = runtime;
 	}
 
+	// Cues are feedback, not function: without them voice still works, so a failure is
+	// logged and nothing more.
+	std::string cueError;
+	if (!feedback_.Start(cueError)) {
+		HostLog("[voice] command cues unavailable: " + cueError);
+	}
+
 	// The capture follows its own channel's source; the engine follows the mic to
 	// another channel (ReconcileMic). Both act on the UI thread, never on the signal's
 	// stack, which holds libobs's channel mutex.
@@ -308,6 +320,10 @@ void VoiceEngine::StopRuntime(bool block)
 			Retire(std::move(runtime));
 		}
 	}
+	// Last, as the index's teardown order has it: the player is joined and the private
+	// source released, here on the UI thread (a cue is at most one 20 ms block away from
+	// noticing).
+	feedback_.Stop();
 	modelState_ = ModelState::Unloaded;
 	listener_->Handle(MakeEvent(EventType::Disable));
 	UpdateArmed();

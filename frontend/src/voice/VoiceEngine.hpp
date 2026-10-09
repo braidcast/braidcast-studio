@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_VOICE_ENGINE_HPP_
 
 #include "voice/MicMuteGuard.hpp"
+#include "voice/VoiceFeedback.hpp"
 #include "voice/VoiceListener.hpp"
 #include "voice/VoiceSettings.hpp"
 
@@ -24,7 +25,8 @@ namespace Voice {
 // P2's command registry supplies the real one. `done` reports back to the listener.
 using ActionRunner =
 	std::function<void(const PendingAction &action, std::function<void(bool ok, std::string message)> done)>;
-// Plays a feedback sound (P2) and speaks a confirmation (P4).
+// Plays a feedback sound and speaks a confirmation (P4). The engine's own cue sink
+// plays through its VoiceFeedback at the cue volume; SetCueSink replaces it.
 using CueSink = std::function<void(Cue)>;
 using SpeechSink = std::function<void(const std::string &)>;
 // Builds whisper's initial prompt from what the user is likely to say (P2's command
@@ -120,6 +122,8 @@ private:
 	bool watchingChannels_ = false;
 
 	MicMuteGuard micGuard_;
+	// The private monitor-only cue source; it exists while the runtime does.
+	VoiceFeedback feedback_;
 	VoiceSettings settings_;
 	Interpreter interpreter_;
 	std::unique_ptr<VoiceListener> listener_;
