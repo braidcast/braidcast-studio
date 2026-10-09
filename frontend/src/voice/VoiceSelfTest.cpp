@@ -2,6 +2,7 @@
 
 #include "log.hpp"
 #include "util/file_util.hpp"
+#include "util/async_task.hpp"
 #include "util/http_client.hpp"
 #include "util/sha256.hpp"
 #include "util/time_util.hpp"
@@ -202,11 +203,26 @@ void TestModelVerifyAndCommit(Tally &t)
 	fs::remove_all(dir, ec);
 }
 
+// Ordering note: the delayed callback logs its own line after this whole self-test
+// run has finished, so it appears in the log below the "voice overall" verdict.
+void TestPostToUiDelayed(Tally &t)
+{
+	static std::atomic<bool> ran{false};
+	ran.store(false, std::memory_order_release);
+	AsyncTask::PostToUiDelayed(
+		[] {
+			ran.store(true, std::memory_order_release);
+			HostLog("[selftest] voice-async delayed callback ran -> OK");
+		},
+		50);
+	t.Check("async", "PostToUiDelayed defers even on the UI thread", !ran.load(std::memory_order_acquire));
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked, &TestCpuGate,    &TestLogCategory,  &TestVoiceSettingsTable,
-	&TestSha256,        &TestHttpCancel, &TestModelCatalog, &TestModelVerifyAndCommit,
+	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
+	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,
 };
 
 } // namespace

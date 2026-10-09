@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_ASYNC_TASK_HPP_
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
@@ -28,6 +29,12 @@ void PostToUi(std::function<void()> fn);
 // workers and needs delivery in the order it posted -- an inline run would overtake a
 // worker's already-queued task. Same alive-guard as PostToUi.
 void QueueOnUi(std::function<void()> fn);
+
+// QueueOnUi with a delay: `fn` runs from the UI message loop no sooner than `delayMs`
+// later, never inline. For a timer on the UI thread (voice control's pending-action
+// countdown), or a deferral out of a lock the callback would re-enter (a libobs signal
+// handler) that also wants time to pass. Dropped, like PostToUi, once shutdown has begun.
+void PostToUiDelayed(std::function<void()> fn, int64_t delayMs);
 
 // Toggle the alive-guard. Called with false during bridge teardown (on the UI
 // thread) so any in-flight PostToUi no-ops thereafter.

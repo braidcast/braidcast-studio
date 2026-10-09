@@ -100,6 +100,14 @@ void QueueOnUi(std::function<void()> fn)
 	CefPostTask(TID_UI, base::BindOnce(&InvokeOnUi, std::move(fn)));
 }
 
+void PostToUiDelayed(std::function<void()> fn, int64_t delayMs)
+{
+	if (!fn || !g_alive.load(std::memory_order_acquire)) {
+		return;
+	}
+	CefPostDelayedTask(TID_UI, base::BindOnce(&InvokeOnUi, std::move(fn)), delayMs);
+}
+
 void SetAlive(bool alive)
 {
 	g_alive.store(alive, std::memory_order_release);
