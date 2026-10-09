@@ -23,6 +23,7 @@
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
 #include "voice/TextNormalize.hpp"
+#include "voice/Tts.hpp"
 #include "voice/VadEndpointer.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
@@ -633,6 +634,15 @@ Voice::Interpretation TestInterpret(const std::string &text, const Voice::Interp
 		out.action.timeoutMs = 3000;
 		out.action.needsConfirmWord = false;
 		out.action.params = {{"text", "hello"}};
+	} else if (text.rfind("ask ", 0) == 0) {
+		// A confirm-tier command as the registry words it: a question, read back if asked.
+		out.kind = Voice::Interpretation::Kind::Pending;
+		out.action.commandId = text.substr(4);
+		out.action.summary = "Do " + out.action.commandId + "?";
+		out.action.readBack = true;
+	} else if (text == "read that back" && ctx.pending) {
+		out.kind = Voice::Interpretation::Kind::Control;
+		out.control = Voice::Interpretation::Control::ReadBackPending;
 	} else if (text == "yes" && ctx.pending) {
 		out.kind = Voice::Interpretation::Kind::Control;
 		out.control = Voice::Interpretation::Control::ConfirmPending;
@@ -1037,6 +1047,38 @@ void TestVoiceListener(Tally &t)
 			sent == "run:chat.send,cue:accept" && stillListening &&
 				EffectNames(l->Handle(Transcript("yes", 4900))) == "cue:reject");
 	}
+
+	// 32. "Read that back" speaks the pending command again and leaves it waiting, on the
+	// same deadline: its tick still expires it.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> pending = l->Handle(Transcript("ask streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		l->Handle(Ev(EventType::PttUp, 2600));
+		const std::vector<Effect> back = l->Handle(Transcript("read that back", 3000));
+		const bool spoken = EffectNames(back) == "readback" && back.back().text == "Do streaming.stop?";
+		const bool waiting = l->Current() == S::Pending && l->Snapshot().pending.commandId == "streaming.stop";
+		Event tick = Ev(EventType::Tick, 9400);
+		tick.seq = pending.back().seq;
+		t.Check("listener", "read that back speaks the pending command and keeps it on its deadline",
+			spoken && waiting && EffectNames(l->Handle(tick)) == "cue:cancel" && l->Current() == S::Idle);
+	}
+
+	// 33. A confirmed command with read-back says what it did, not the question.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("ask streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		l->Handle(Ev(EventType::PttUp, 2600));
+		const std::vector<Effect> fx = l->Handle(Transcript("yes", 3000));
+		t.Check("listener", "a confirmed command reads back without its question mark",
+			EffectNames(fx) == "run:streaming.stop,cue:accept,readback" &&
+				fx.back().text == "Do streaming.stop");
+	}
 }
 
 std::string VoiceDataPath(const char *relative)
@@ -1400,6 +1442,54 @@ void TestAlwaysListenWiring(Tally &t)
 			Voice::Engine().Settings().wakePhrase == original.wakePhrase);
 	t.Check("alwayslisten", "push-to-talk reports no always-listen reason",
 		original.triggerMode != "ptt" || state["ready"]["wakeReason"] == "");
+}
+
+void TestTts(Tally &t)
+{
+	Voice::WavData spoken;
+	std::string error;
+	const bool ok = Voice::Synthesize("Switched to gameplay", spoken, error);
+	t.Check("tts", "synthesis produces audio", ok && spoken.sampleRate > 0 && spoken.samples.size() > 1000);
+	if (!ok) {
+		HostLog("[selftest] voice-tts error: " + error);
+		return;
+	}
+	t.Check("tts", "the audio is not silence", Rms(spoken.samples.data(), spoken.samples.size()) > 0.005);
+	t.Check("tts", "a duration in the right ballpark",
+		spoken.samples.size() < static_cast<size_t>(spoken.sampleRate) * 10);
+
+	Voice::WavData empty;
+	t.Check("tts", "empty text is refused", !Voice::Synthesize("", empty, error) && !error.empty());
+
+	// Very long text is refused rather than read out for a minute.
+	Voice::WavData capped;
+	t.Check("tts", "over-long text is refused",
+		!Voice::Synthesize(std::string(5000, 'a'), capped, error) && !error.empty());
+
+	// Angle brackets are a scene name's, not markup.
+	Voice::WavData bracketed;
+	t.Check("tts", "angle brackets are read as text", Voice::Synthesize("Switched to <BRB>", bracketed, error));
+}
+
+void TestReadBackWords(Tally &t)
+{
+	using namespace Voice;
+	CommandCandidates studio;
+	studio.scenes = {"BRB"};
+	studio.platforms = {"twitch"};
+	PendingAction waiting;
+	waiting.commandId = "streaming.stop";
+	waiting.summary = "Stop streaming?";
+	InterpretContext pending;
+	pending.pending = &waiting;
+	const Interpretation again = Interpret("Read that back.", pending, studio);
+	t.Check("readback", "read that back answers a pending command",
+		again.kind == Interpretation::Kind::Control &&
+			again.control == Interpretation::Control::ReadBackPending);
+	// With nothing pending it is no command, and push-to-talk does not post it to chat.
+	const Interpretation idle = Interpret("read that back", InterpretContext{}, studio);
+	t.Check("readback", "with nothing pending it is a miss, not a chat message",
+		idle.kind == Interpretation::Kind::Miss);
 }
 
 void TestWakeGate(Tally &t)
@@ -2387,24 +2477,44 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,
-	&TestLogCategory,     &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,
-	&TestModelCatalog,    &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,
-	&TestResampler,       &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener,
-	&TestWavFile,         &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVadEndpointer,
-	&TestWakeGate,        &TestContinuousRecognizer,
-	&TestVoiceEngine,     &TestAlwaysListenWiring,
-	&TestVoiceHotkeys,    &TestVoiceBridge,
-	&TestTextNormalize,   &TestFuzzyMatch,
-	&TestCommandMatcher,  &TestBridgeSeams,
-	&TestCommandRegistry, &TestVoiceFeedback,
-	&TestAudioEndpoints,  &TestRecentChatters,
-	&TestChatterFeed,     &TestChatLimits,
-	&TestChatCommands,    &TestChatDrafts,
+	&TestWhisperLinked,
+	&TestCpuGate,
+	&TestLogCategory,
+	&TestVoiceSettingsTable,
+	&TestSha256,
+	&TestHttpCancel,
+	&TestModelCatalog,
+	&TestModelVerifyAndCommit,
+	&TestPostToUiDelayed,
+	&TestSpscRing,
+	&TestResampler,
+	&TestMicMuteGuard,
+	&TestVoiceCapture,
+	&TestVoiceListener,
+	&TestWavFile,
+	&TestRecognizerWithoutModel,
+	&TestRecognizer,
+	&TestVadEndpointer,
+	&TestWakeGate,
+	&TestContinuousRecognizer,
+	&TestVoiceEngine,
+	&TestAlwaysListenWiring,
+	&TestVoiceHotkeys,
+	&TestVoiceBridge,
+	&TestTextNormalize,
+	&TestFuzzyMatch,
+	&TestCommandMatcher,
+	&TestBridgeSeams,
+	&TestCommandRegistry,
+	&TestVoiceFeedback,
+	&TestTts,
+	&TestAudioEndpoints,
+	&TestRecentChatters,
+	&TestChatterFeed,
+	&TestChatLimits,
+	&TestChatCommands,
+	&TestChatDrafts,
+	&TestReadBackWords,
 };
 
 } // namespace

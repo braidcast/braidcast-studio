@@ -52,6 +52,12 @@ public:
 	// happened, and two cues at once are noise.
 	void Play(Cue cue, double volume);
 
+	// Plays arbitrary samples (a spoken confirmation) through the same monitor-only
+	// source, so read-back reaches the user and not the stream. It waits for a cue that
+	// is playing to finish (the accept cue comes first, then the words); a newer cue or
+	// newer samples cut it short.
+	void PlaySamples(WavData audio, double volume);
+
 	size_t LoadedCues() const { return loaded_; }
 
 private:
@@ -67,6 +73,12 @@ private:
 	bool quit_ = false;
 	int queued_ = -1; // the Cue waiting to play, or -1
 	double volume_ = 0.0;
+	// Samples waiting to play (PlaySamples), and the ones playing; the second is the
+	// player thread's alone.
+	bool speechWaiting_ = false;
+	WavData speechQueued_;
+	double speechVolume_ = 0.0;
+	WavData speechPlaying_;
 };
 
 } // namespace Voice

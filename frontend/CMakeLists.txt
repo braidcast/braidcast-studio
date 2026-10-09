@@ -411,6 +411,8 @@ target_sources(
     src/voice/CommandRegistry.hpp
     src/voice/VoiceFeedback.cpp
     src/voice/VoiceFeedback.hpp
+    src/voice/Tts.cpp
+    src/voice/Tts.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -788,7 +790,8 @@ set_source_files_properties(
 # conversion is the Detours API's own calling convention.
 set_source_files_properties(src/util/win_dll_blocklist.c PROPERTIES COMPILE_OPTIONS "/wd4201;/wd4152")
 
-# Voice TUs that include obs.h, whose math headers use nameless structs (C4201).
+# Voice TUs that include obs.h, whose math headers use nameless structs (C4201), and Tts.cpp,
+# whose sapi.h does too (SPPHRASEPROPERTY).
 set_source_files_properties(
   src/voice/VoiceSelfTest.cpp
   src/voice/VoiceSettings.cpp
@@ -801,6 +804,7 @@ set_source_files_properties(
   src/voice/VoiceModels.cpp
   src/voice/CommandRegistry.cpp
   src/voice/VoiceFeedback.cpp
+  src/voice/Tts.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 

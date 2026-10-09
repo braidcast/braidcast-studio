@@ -26,8 +26,9 @@ namespace Voice {
 // P2's command registry supplies the real one. `done` reports back to the listener.
 using ActionRunner =
 	std::function<void(const PendingAction &action, std::function<void(bool ok, std::string message)> done)>;
-// Plays a feedback sound and speaks a confirmation (P4). The engine's own cue sink
-// plays through its VoiceFeedback at the cue volume; SetCueSink replaces it.
+// Plays a feedback sound and speaks a confirmation (P4). The engine's own sinks play
+// through its VoiceFeedback at the cue volume (speech synthesized with SAPI first, off
+// the UI thread); SetCueSink and SetSpeechSink replace them.
 using CueSink = std::function<void(Cue)>;
 using SpeechSink = std::function<void(const std::string &)>;
 // Builds whisper's initial prompt from what the user is likely to say (P2's command
@@ -124,6 +125,7 @@ private:
 	void Deliver(const std::vector<Effect> &effects, uint64_t generation);
 	void UpdateArmed();
 	void RefreshPrompt();
+	void SpeakBack(const std::string &text);
 
 	mutable std::mutex runtimeMutex_; // guards runtime_ for the hotkey thread's reads
 	std::shared_ptr<Runtime> runtime_;

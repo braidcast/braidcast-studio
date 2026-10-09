@@ -18,6 +18,21 @@ Effect CueEffect(Cue cue)
 	return e;
 }
 
+Effect ReadBackEffect(std::string text)
+{
+	Effect e;
+	e.type = EffectType::ReadBack;
+	e.text = std::move(text);
+	return e;
+}
+
+// A pending action's summary asks ("Stop streaming?"); once it has been confirmed, the
+// spoken confirmation says it ("Stop streaming").
+std::string Said(const std::string &summary)
+{
+	return !summary.empty() && summary.back() == '?' ? summary.substr(0, summary.size() - 1) : summary;
+}
+
 // A pending action's "text" parameter (a chat draft's message), or "".
 std::string TextParam(const nlohmann::json &params)
 {
@@ -92,10 +107,7 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 		effects.push_back(run);
 		effects.push_back(CueEffect(Cue::Accept));
 		if (interpretation.action.readBack) {
-			Effect back;
-			back.type = EffectType::ReadBack;
-			back.text = interpretation.action.summary;
-			effects.push_back(back);
+			effects.push_back(ReadBackEffect(interpretation.action.summary));
 		}
 		return effects;
 	}
@@ -119,6 +131,18 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 	}
 
 	case Interpretation::Kind::Control:
+		if (interpretation.control == Interpretation::Control::ReadBackPending) {
+			// Asked for, so spoken whatever the read-back setting; the command keeps
+			// waiting, on the same deadline. Nothing pending: nothing to read.
+			if (status_.pending.commandId.empty()) {
+				status_.state = State::Idle;
+				effects.push_back(CueEffect(Cue::Reject));
+				return effects;
+			}
+			status_.state = State::Pending;
+			effects.push_back(ReadBackEffect(status_.pending.summary));
+			return effects;
+		}
 		if (interpretation.control == Interpretation::Control::ConfirmPending &&
 		    !status_.pending.commandId.empty()) {
 			Effect run;
@@ -132,10 +156,7 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 			effects.push_back(run);
 			effects.push_back(CueEffect(Cue::Accept));
 			if (readBack) {
-				Effect back;
-				back.type = EffectType::ReadBack;
-				back.text = summary;
-				effects.push_back(back);
+				effects.push_back(ReadBackEffect(Said(summary)));
 			}
 			return effects;
 		}

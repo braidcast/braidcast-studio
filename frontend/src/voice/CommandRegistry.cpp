@@ -27,6 +27,8 @@ namespace {
 // waiting; and while one is, nothing else does (see Interpret).
 constexpr const char *kConfirmWords[] = {"yes", "yeah", "yep", "confirm", "send", "do it", "go ahead"};
 constexpr const char *kCancelWords[] = {"no", "nope", "cancel", "never mind", "stop", "forget it"};
+// Asks for the pending command or draft to be spoken again (the spec's "read that back").
+constexpr const char *kReadBackWords[] = {"read that back", "read it back", "say that again"};
 
 // "Unmute" is the one command that must still work while the mic is muted: it is the
 // way back out. It shares audio.setMuted with "mute" now that command ids are bridge
@@ -457,6 +459,9 @@ Interpretation Interpret(const std::string &text, const InterpretContext &ctx, c
 		if (Matches(said.text, kCancelWords)) {
 			return ControlOf(Interpretation::Control::CancelPending);
 		}
+		if (Matches(said.text, kReadBackWords)) {
+			return ControlOf(Interpretation::Control::ReadBackPending);
+		}
 		return Miss(IsChatDraft(*ctx.pending) ? "Say send to post it, or cancel."
 						      : "Say yes to " + Done(ctx.pending->summary) + ", or cancel.");
 	}
@@ -467,7 +472,8 @@ Interpretation Interpret(const std::string &text, const InterpretContext &ctx, c
 		// where ambient speech must never reach chat; not a lone yes or cancel with
 		// nothing waiting; and with no chat live it is the ordinary miss, so a studio with
 		// no chat hears "I did not catch a command" rather than a lecture about chat.
-		const bool controlWord = Matches(said.text, kConfirmWords) || Matches(said.text, kCancelWords);
+		const bool controlWord = Matches(said.text, kConfirmWords) || Matches(said.text, kCancelWords) ||
+					 Matches(said.text, kReadBackWords);
 		if (match.commandId.empty() && ctx.trigger == Trigger::Ptt && !controlWord &&
 		    !candidates.platforms.empty()) {
 			DBG(LogCat::Voice, "no command matched; dictating to chat");
@@ -509,7 +515,12 @@ Interpretation Interpret(const std::string &text, const InterpretContext &ctx, c
 Interpretation InterpretTranscript(const std::string &text, const InterpretContext &ctx)
 {
 	const VoiceSettings &settings = Engine().Settings();
-	return Interpret(text, ctx, CurrentCandidates(), SendPolicy{settings.sendMode, settings.countdownSec});
+	Interpretation out =
+		Interpret(text, ctx, CurrentCandidates(), SendPolicy{settings.sendMode, settings.countdownSec});
+	// Spoken back when it runs, if the user asked for read-back; decided here, as the
+	// action is made, so a confirmation later speaks what was asked for then.
+	out.action.readBack = settings.readBack;
+	return out;
 }
 
 void RunCommand(const PendingAction &action, const std::function<void(bool ok, std::string message)> &done)

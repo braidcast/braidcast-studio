@@ -7,6 +7,7 @@
 #include "util/async_task.hpp"
 #include "util/time_util.hpp"
 #include "voice/Recognizer.hpp"
+#include "voice/Tts.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceModels.hpp"
@@ -93,8 +94,39 @@ struct VoiceEngine::Runtime {
 VoiceEngine::VoiceEngine()
 	: interpreter_(&ShowOnly),
 	  listener_(std::make_unique<VoiceListener>(interpreter_)),
-	  playCue_([this](Cue cue) { feedback_.Play(cue, settings_.cueVolume); })
+	  playCue_([this](Cue cue) { feedback_.Play(cue, settings_.cueVolume); }),
+	  speak_([this](const std::string &text) { SpeakBack(text); })
 {
+}
+
+// The engine's own speech sink: synthesize off the UI thread (SAPI takes tens of
+// milliseconds and is synchronous), then play on the cue source at the cue volume, so it
+// reaches the monitoring device only. Whether to speak was decided earlier: a ReadBack
+// effect exists only for an action interpreted while read-back was on, or for the user
+// saying "read that back".
+void VoiceEngine::SpeakBack(const std::string &text)
+{
+	const double volume = settings_.cueVolume;
+	const uint64_t generation = generation_.load(std::memory_order_acquire);
+	try {
+		AsyncTask::RunAsync([this, text, volume, generation] {
+			auto spoken = std::make_shared<WavData>();
+			std::string error;
+			if (!Synthesize(text, *spoken, error)) {
+				HostLog("[voice] read-back failed: " + error); // the reason, never the words
+				return;
+			}
+			AsyncTask::PostToUi([this, spoken, volume, generation] {
+				// Voice turned off (or the runtime rebuilt) meanwhile: the source it
+				// would play on is gone or someone else's.
+				if (started_ && generation == generation_.load(std::memory_order_acquire)) {
+					feedback_.PlaySamples(std::move(*spoken), volume);
+				}
+			});
+		});
+	} catch (...) {
+		HostLog("[voice] read-back failed: no worker to synthesize on");
+	}
 }
 
 VoiceEngine::~VoiceEngine()

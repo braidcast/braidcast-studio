@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 #include <vector>
 
 namespace Voice {
@@ -103,6 +104,8 @@ bool VoiceFeedback::StartFrom(const std::string &cueDir, std::string &error)
 		std::lock_guard<std::mutex> lock(mutex_);
 		quit_ = false;
 		queued_ = -1;
+		speechWaiting_ = false;
+		speechQueued_ = WavData{};
 	}
 	player_ = std::thread(&VoiceFeedback::PlayerMain, this);
 	DBG(LogCat::Voice, "cue source up, %zu of %zu cues", loaded_, cues_.size());
@@ -139,24 +142,48 @@ void VoiceFeedback::Play(Cue cue, double volume)
 	cv_.notify_all();
 }
 
+void VoiceFeedback::PlaySamples(WavData audio, double volume)
+{
+	if (!(volume > 0.0) || !source_ || audio.samples.empty() || audio.sampleRate <= 0) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		speechQueued_ = std::move(audio);
+		speechVolume_ = std::min(volume, 1.0);
+		speechWaiting_ = true;
+	}
+	cv_.notify_all();
+}
+
 void VoiceFeedback::PlayerMain()
 {
 	std::vector<float> block;
 	for (;;) {
 		size_t cue = 0;
 		double volume = 0.0;
+		bool speech = false;
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
-			cv_.wait(lock, [this] { return quit_ || queued_ >= 0; });
+			cv_.wait(lock, [this] { return quit_ || queued_ >= 0 || speechWaiting_; });
 			if (quit_) {
 				return;
 			}
-			cue = static_cast<size_t>(queued_);
-			volume = volume_;
-			queued_ = -1;
+			// A cue first when both wait: it is short, and the words follow it.
+			if (queued_ >= 0) {
+				cue = static_cast<size_t>(queued_);
+				volume = volume_;
+				queued_ = -1;
+			} else {
+				speech = true;
+				speechPlaying_ = std::move(speechQueued_);
+				speechQueued_ = WavData{};
+				volume = speechVolume_;
+				speechWaiting_ = false;
+			}
 		}
 
-		const WavData &wav = cues_[cue];
+		const WavData &wav = speech ? speechPlaying_ : cues_[cue];
 		const size_t blockFrames = static_cast<size_t>(wav.sampleRate) * kBlockMs / 1000;
 		block.assign(blockFrames, 0.f);
 		obs_source_set_volume(source_, static_cast<float>(volume));
@@ -175,10 +202,12 @@ void VoiceFeedback::PlayerMain()
 			audio.timestamp = os_gettime_ns();
 			obs_source_output_audio(source_, &audio);
 
-			// Paced in real time, and woken at once by a newer cue or by Stop.
+			// Paced in real time, and woken at once by Stop or a newer cue; newer
+			// samples cut short only samples, never a cue.
 			std::unique_lock<std::mutex> lock(mutex_);
-			if (cv_.wait_for(lock, std::chrono::milliseconds(kBlockMs),
-					 [this] { return quit_ || queued_ >= 0; })) {
+			if (cv_.wait_for(lock, std::chrono::milliseconds(kBlockMs), [this, speech] {
+				    return quit_ || queued_ >= 0 || (speech && speechWaiting_);
+			    })) {
 				break;
 			}
 		}

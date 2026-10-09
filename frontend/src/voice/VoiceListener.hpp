@@ -60,7 +60,9 @@ struct Interpretation {
 		Control, // yes / cancel, acting on the pending command
 		Ignored, // deliberately silent (background speech, self-talk)
 	};
-	enum class Control { None, ConfirmPending, CancelPending };
+	// ReadBackPending: speak the pending command or draft again ("read that back") and
+	// leave it waiting, its window unchanged.
+	enum class Control { None, ConfirmPending, CancelPending, ReadBackPending };
 
 	Kind kind = Kind::Miss;
 	Control control = Control::None;
