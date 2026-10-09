@@ -66,7 +66,12 @@ enum class Trigger { Ptt, Wake };
 struct InterpretContext {
 	const PendingAction *pending = nullptr; // non-null while a command awaits confirmation
 	Trigger trigger = Trigger::Ptt;
-	bool mutedSeen = false; // the mic was muted by the user during the segment
+	// The mic was muted by the USER during the segment. Never our own push-to-talk mute:
+	// libobs reports that as muted too, so the engine leaves it out (see pttMuted).
+	bool mutedSeen = false;
+	// Our push-to-talk mute (MicMuteGuard) held the mic for this segment. A mute the user
+	// made during the hold cannot be seen under it, so mutedSeen is then false.
+	bool pttMuted = false;
 };
 
 // std::function, not a raw function pointer, and deliberately: ActionRunner beside it is
@@ -95,9 +100,10 @@ enum class EventType {
 
 struct Event {
 	EventType type = EventType::Tick;
-	std::string text; // transcript, or the reason for a failure
-	bool ok = true;   // PttDown accepted / ActionResult succeeded
-	bool mutedSeen = false;
+	std::string text;       // transcript, or the reason for a failure
+	bool ok = true;         // PttDown accepted / ActionResult succeeded
+	bool mutedSeen = false; // Transcript: as InterpretContext::mutedSeen
+	bool pttMuted = false;  // Transcript: as InterpretContext::pttMuted
 	int64_t nowMs = 0;
 	uint64_t seq = 0; // Tick only: which scheduled tick this is
 };

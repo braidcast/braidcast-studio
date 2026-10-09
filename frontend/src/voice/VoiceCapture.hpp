@@ -45,7 +45,9 @@ public:
 
 	// Watches the global channel_change signal and rebinds when the bound channel's
 	// source is swapped. `onChanged` runs on the UI thread after a rebind (check
-	// Bound() there: the new source may be none).
+	// Bound() there: the new source may be none). Only this channel is watched; moving
+	// to another channel (the mic moved) is the caller's Bind, which a rebind queued
+	// for the old channel then leaves alone.
 	void WatchChannelChanges(std::function<void()> onChanged);
 	void StopWatchingChannelChanges();
 

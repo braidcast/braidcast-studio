@@ -10,10 +10,13 @@ MicMuteGuard::~MicMuteGuard()
 	Release();
 }
 
-void MicMuteGuard::Engage(obs_source_t *mic)
+bool MicMuteGuard::Engage(obs_source_t *mic)
 {
-	if (Engaged() || !mic) {
-		return;
+	if (Engaged()) {
+		return !wasMuted_;
+	}
+	if (!mic) {
+		return false;
 	}
 	weak_ = OBSGetWeakRef(mic);
 	wasMuted_ = obs_source_muted(mic);
@@ -24,6 +27,7 @@ void MicMuteGuard::Engage(obs_source_t *mic)
 	}
 	engaged_.store(true, std::memory_order_release);
 	DBG(LogCat::Voice, "mic mute guard engaged (was %s)", wasMuted_ ? "muted" : "unmuted");
+	return !wasMuted_;
 }
 
 void MicMuteGuard::Release()

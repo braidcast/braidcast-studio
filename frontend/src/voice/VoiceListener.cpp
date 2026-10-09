@@ -150,7 +150,12 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		return effects;
 
 	case EventType::Disable:
+		// Disabling tears the engine's runtime down: the model is unloaded and the mic
+		// unbound, so a later Enable waits for both to be reported again rather than
+		// claiming Idle on the old runtime's word.
 		enabled_ = false;
+		modelReady_ = false;
+		micReady_ = false;
 		ClearPending();
 		status_.state = State::Disabled;
 		status_.transcript.clear();
@@ -197,6 +202,12 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 			return effects;
 		}
 		if (!event.ok) {
+			// A press the engine refused because a segment is still in flight (the
+			// recognizer is busy) leaves that segment alone: moving to Idle here would
+			// make its transcript arrive to a listener no longer waiting for it.
+			if (status_.state == State::Listening || status_.state == State::Thinking) {
+				return effects;
+			}
 			status_.message = event.text;
 			status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
 			effects.push_back(CueEffect(Cue::Reject));
@@ -225,6 +236,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ctx.pending = status_.pending.commandId.empty() ? nullptr : &status_.pending;
 		ctx.trigger = trigger_;
 		ctx.mutedSeen = event.mutedSeen;
+		ctx.pttMuted = event.pttMuted;
 		return ApplyInterpretation(interpret_(event.text, ctx), event.nowMs);
 	}
 

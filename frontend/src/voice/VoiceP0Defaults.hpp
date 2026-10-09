@@ -6,7 +6,9 @@
 // loopback probe). Change a value only by rerunning that probe.
 //
 // Until the P0 probes have run, every value here is the spec's default
-// (specs/2026-09-18-voice-control-design.md), not a measurement.
+// (specs/2026-09-18-voice-control-design.md), not a measurement. P1 Task 15 was to
+// replace them with the measured numbers; it shipped without them, so they are still
+// pending P0.
 namespace Voice::P0 {
 
 // D1: the default speech model id (a VoiceModels catalog id).

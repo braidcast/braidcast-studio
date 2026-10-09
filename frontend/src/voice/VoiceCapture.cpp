@@ -116,7 +116,10 @@ void VoiceCapture::OnChannelChange(void *param, calldata_t *data)
 	const uint32_t ch = static_cast<uint32_t>(channel);
 	std::weak_ptr<int> token = self->watchToken_;
 	AsyncTask::QueueOnUi([self, ch, token] {
-		if (token.expired()) {
+		// Also dropped when the capture was bound to another channel after this was
+		// queued (the engine follows the mic to whichever channel holds it now): binding
+		// `ch` again would undo that.
+		if (token.expired() || self->channel_.load(std::memory_order_acquire) != ch) {
 			return;
 		}
 		self->Bind(ch);

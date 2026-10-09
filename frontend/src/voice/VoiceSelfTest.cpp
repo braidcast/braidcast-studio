@@ -14,6 +14,7 @@
 #include "voice/Recognizer.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
+#include "voice/VoiceEngine.hpp"
 #include "voice/VoiceListener.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceResampler.hpp"
@@ -410,8 +411,9 @@ void TestMicMuteGuard(Tally &t)
 	obs_source_set_muted(src, false);
 
 	Voice::MicMuteGuard guard;
-	guard.Engage(src);
+	const bool ours = guard.Engage(src);
 	t.Check("mic", "engage mutes an unmuted mic", obs_source_muted(src));
+	t.Check("mic", "engage reports the mute as its own", ours);
 	t.Check("mic", "persisted state stays unmuted while held", !GlobalAudio::PersistedMuteOverride(src, true));
 	guard.Release();
 	t.Check("mic", "release restores unmuted", !obs_source_muted(src));
@@ -425,8 +427,9 @@ void TestMicMuteGuard(Tally &t)
 
 	// Already muted before the guard: release must not unmute it.
 	obs_source_set_muted(src, true);
-	guard.Engage(src);
+	const bool userMute = !guard.Engage(src);
 	t.Check("mic", "engage on an already muted mic is a no-op", obs_source_muted(src));
+	t.Check("mic", "a mute the user made is not reported as the guard's", userMute);
 	guard.Release();
 	t.Check("mic", "release keeps a mic that was already muted", obs_source_muted(src));
 
@@ -820,6 +823,58 @@ void TestVoiceListener(Tally &t)
 			expired == "cue:cancel" && l->Snapshot().pending.commandId.empty() &&
 				EffectNames(l->Handle(Transcript("yes", 9900))).find("run:") == std::string::npos);
 	}
+
+	// 23. Disabling forgets the model and the mic: the engine unloads and unbinds both,
+	// so turning voice back on waits until they are reported again.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::Disable, 100));
+		l->Handle(Ev(EventType::Enable, 200));
+		t.Check("listener", "re-enabling waits for the model and the mic again",
+			l->Current() == S::NotReady && l->Handle(Ev(EventType::PttDown, 300)).empty());
+	}
+
+	// 24. The engine refuses a press while the recognizer is still busy; that must not
+	// abandon the segment whose transcript is on its way.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		Event busy = Ev(EventType::PttDown, 1000);
+		busy.ok = false;
+		busy.text = "Still working on the last command.";
+		const bool quiet = l->Handle(busy).empty() && l->Current() == S::Thinking;
+		t.Check("listener", "a refused press while thinking leaves the segment alone",
+			quiet && EffectNames(l->Handle(Transcript("run scenes.setCurrent", 1400))) ==
+					 "run:scenes.setCurrent,cue:accept");
+	}
+
+	// 25. The interpreter is told the user's mute and our push-to-talk mute apart.
+	{
+		InterpretContext seen;
+		VoiceListener l([&seen](const std::string &, const InterpretContext &ctx) {
+			seen = ctx;
+			Interpretation out;
+			out.kind = Interpretation::Kind::Shown;
+			return out;
+		});
+		l.Handle(Ev(EventType::Enable, 0));
+		l.Handle(Ev(EventType::ModelReady, 0));
+		l.Handle(Ev(EventType::MicBound, 0));
+		l.Handle(Ev(EventType::PttDown, 100));
+		l.Handle(Ev(EventType::PttUp, 900));
+		Event heard = Transcript("hello", 1400);
+		heard.pttMuted = true;
+		l.Handle(heard);
+		const bool oursOnly = !seen.mutedSeen && seen.pttMuted;
+		l.Handle(Ev(EventType::PttDown, 2000));
+		l.Handle(Ev(EventType::PttUp, 2900));
+		heard = Transcript("hello", 3400);
+		heard.mutedSeen = true;
+		l.Handle(heard);
+		t.Check("listener", "the interpreter tells the user's mute from ours",
+			oursOnly && seen.mutedSeen && !seen.pttMuted);
+	}
 }
 
 std::string VoiceDataPath(const char *relative)
@@ -992,6 +1047,59 @@ void TestRecognizer(Tally &t)
 	t.Check("recognizer", "stop is idempotent", (rec.Stop(), true));
 }
 
+void TestVoiceEngine(Tally &t)
+{
+	Voice::VoiceEngine &engine = Voice::Engine();
+	const VoiceSettings original = engine.Settings();
+
+	// The smoke run starts the engine with voice disabled (the shipping default), so
+	// nothing is bound and the state is reportable.
+	const nlohmann::json state = engine.StateJson();
+	t.Check("engine", "state has the documented shape",
+		state.contains("state") && state.contains("ready") && state["ready"].contains("cpu") &&
+			state["ready"].contains("model") && state["ready"].contains("mic") &&
+			state.contains("settings") && state.contains("pending") && state.contains("device"));
+	t.Check("engine", "disabled by default", state["state"] == "disabled" && !state["settings"]["enabled"]);
+
+	// A key press while disabled must be inert, from the hotkey thread as in real use:
+	// no state change and no mute.
+	OBSSourceAutoRelease mic = obs_get_output_source(GlobalAudio::PrimaryMicChannel());
+	const bool mutedBefore = mic && obs_source_muted(mic);
+	std::thread hotkey([&] {
+		engine.OnPtt(true);
+		engine.OnPtt(false);
+		engine.OnCancelKey();
+	});
+	hotkey.join();
+	t.Check("engine", "push-to-talk while disabled does nothing",
+		engine.StateJson()["state"] == "disabled" && (!mic || obs_source_muted(mic) == mutedBefore));
+
+	// CanEnable explains itself rather than failing silently.
+	std::string reason;
+	const bool can = engine.CanEnable(reason);
+	t.Check("engine", "CanEnable gives a reason when it refuses", can == reason.empty());
+
+	// Thread count comes from the P0 cap and the machine, and is at least 1.
+	t.Check("engine", "thread count is capped by the P0 measurement",
+		engine.ThreadCount() >= 1 && engine.ThreadCount() <= Voice::P0::kThreadCap);
+
+	// Enabling without a downloaded model must not throw, and must report not-ready
+	// rather than pretending to listen. A CPU that cannot run voice stays disabled.
+	VoiceSettings enabled = original;
+	enabled.enabled = true;
+	engine.ApplySettings(enabled);
+	const nlohmann::json after = engine.StateJson();
+	t.Check("engine", "enabling with no model reports not ready",
+		can ? (after["state"] == "notReady" || after["state"] == "idle") : after["state"] == "disabled");
+	VoiceSettings off = original;
+	off.enabled = false;
+	engine.ApplySettings(off);
+	t.Check("engine", "disabling returns to disabled",
+		engine.StateJson()["state"] == "disabled" && !engine.StateJson()["ready"]["mic"]);
+
+	engine.ApplySettings(original);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
@@ -999,7 +1107,7 @@ const Case kCases[] = {
 	&TestSha256,          &TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit,
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
-	&TestRecognizer,
+	&TestRecognizer,      &TestVoiceEngine,
 };
 
 } // namespace

@@ -17,6 +17,10 @@ namespace Voice {
 // wins. While engaged the persisted mute state is overridden (see
 // GlobalAudio::SetPersistedMuteOverride) so a save mid-hold cannot store "muted".
 // The source is held weakly, so a mic removed mid-hold simply ends the guard.
+//
+// libobs reports the guard's own mute to every audio capture callback, VoiceCapture's
+// included, exactly as it reports the user's. Engage says whether the guard holds a mute
+// of its own, so the engine can tell the two apart.
 class MicMuteGuard {
 public:
 	MicMuteGuard() = default;
@@ -24,7 +28,9 @@ public:
 	MicMuteGuard(const MicMuteGuard &) = delete;
 	MicMuteGuard &operator=(const MicMuteGuard &) = delete;
 
-	void Engage(obs_source_t *mic);
+	// True when, after the call, the mic is muted by the guard rather than by the user:
+	// false for no mic, and for a mic that was muted already (the guard then leaves it).
+	bool Engage(obs_source_t *mic);
 	void Release();
 	bool Engaged() const { return engaged_.load(std::memory_order_acquire); }
 

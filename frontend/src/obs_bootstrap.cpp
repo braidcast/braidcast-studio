@@ -111,6 +111,7 @@
 #include "scene/scene_persistence.hpp"
 #include "scene/transitions.hpp"
 #include "target_destinations.hpp"
+#include "voice/VoiceEngine.hpp"
 #include "UndoManager.hpp"
 
 // kSelfTestOutputChannel is a bare literal whose whole justification is that it sits inside the
@@ -1943,6 +1944,11 @@ bool ObsBootstrap::Start()
 	g_audioMonitor->Rebuild();
 	ConnectAudioSourceSignals();
 	HostLog("[obs] audio monitor up; active audio sources=" + std::to_string(g_audioMonitor->List().size()));
+
+	// Voice control: after the global audio channels are seeded (it binds the mic slot)
+	// and after the frontend hotkeys exist (push-to-talk drives it). Disabled by default
+	// (voice.json enabled=false), so this only loads a model when the user opted in.
+	Voice::Engine().Start();
 
 	// Bring up the embedded MCP server last (after the bridge + stores + audio are
 	// all live, so any tool call lands on a fully-up engine). Disabled by default
@@ -12154,6 +12160,13 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	// engine they drive is torn down below. Saved bindings already persisted on every
 	// hotkeys.set/clear, so no save is needed here.
 	Hotkeys::UnregisterFrontendHotkeys();
+
+	// Voice control, now that no push-to-talk press can arrive, and before Transitions
+	// and the audio teardown below: this releases a held mute, removes the audio capture
+	// callback and joins the recognizer worker, so neither can touch libobs while the
+	// rest of the shutdown runs, let alone after obs_shutdown. It blocks for at most one
+	// encoder pass or model load, which is acceptable at shutdown only.
+	Voice::Engine().Stop();
 
 	// Unbind channel 0 and destroy the program transition while libobs is still up,
 	// before the scene-removal pass below, so the transition releases its wrapped
