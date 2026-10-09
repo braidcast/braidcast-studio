@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { VoicePendingAction } from "$lib/api/bridge";
-import { voiceIndicator, voiceModelLabel, type VoiceModelStatus, type VoiceState } from "$lib/voice/voiceStatus";
+import {
+  voiceEnableGate,
+  voiceIndicator,
+  voiceModelLabel,
+  type VoiceModelStatus,
+  type VoiceState,
+} from "$lib/voice/voiceStatus";
 
 function state(overrides: Partial<VoiceState> = {}): VoiceState {
   return {
@@ -161,5 +167,33 @@ describe("voiceModelLabel", () => {
       "Failed: hash mismatch",
     );
     expect(voiceModelLabel(model({ state: "failed" }))).toBe("Failed: unknown error");
+  });
+});
+
+describe("voiceEnableGate", () => {
+  const cpuOk = { supported: true, reason: "" };
+  const offBase = { enabled: false, model: "base.en-q5_1", logTranscripts: false };
+
+  it("allows turning on once the chosen model is on disk", () => {
+    expect(voiceEnableGate(offBase, cpuOk, [model({ state: "ready" })])).toEqual({ blocked: false, why: "" });
+  });
+
+  it("blocks turning on before the chosen model is downloaded, and says so", () => {
+    const gate = voiceEnableGate(offBase, cpuOk, [
+      model({ state: "downloading" }),
+      model({ id: "tiny.en-q5_1", state: "ready" }),
+    ]);
+    expect(gate.blocked).toBe(true);
+    expect(gate.why).toBe("Download the selected model to turn voice control on.");
+  });
+
+  it("blocks turning on with the CPU's own reason", () => {
+    const gate = voiceEnableGate(offBase, { supported: false, reason: "Needs AVX2." }, [model({ state: "ready" })]);
+    expect(gate).toEqual({ blocked: true, why: "Needs AVX2." });
+  });
+
+  it("never blocks turning off", () => {
+    const on = { ...offBase, enabled: true };
+    expect(voiceEnableGate(on, { supported: false, reason: "Needs AVX2." }, [])).toEqual({ blocked: false, why: "" });
   });
 });

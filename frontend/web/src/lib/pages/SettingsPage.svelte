@@ -6,6 +6,7 @@
   import AppearanceTab from "$lib/settings/AppearanceTab.svelte";
   import AdvancedTab from "$lib/settings/AdvancedTab.svelte";
   import DiagnosticsTab from "$lib/settings/DiagnosticsTab.svelte";
+  import VoiceTab from "$lib/settings/VoiceTab.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import { settingsNav, setSettingsTab, type SettingsTab } from "$lib/dialogs/settingsOpener.svelte";
 
@@ -18,6 +19,7 @@
     { id: "general", label: "General" },
     { id: "audio", label: "Audio" },
     { id: "hotkeys", label: "Hotkeys" },
+    { id: "voice", label: "Voice" },
     { id: "browserDocks", label: "Browser Docks" },
     { id: "appearance", label: "Appearance" },
     { id: "advanced", label: "Advanced" },
@@ -46,6 +48,8 @@
         <AudioTab />
       {:else if settingsNav.tab === "hotkeys"}
         <HotkeysTab />
+      {:else if settingsNav.tab === "voice"}
+        <VoiceTab />
       {:else if settingsNav.tab === "browserDocks"}
         <BrowserDocksTab />
       {:else if settingsNav.tab === "appearance"}

@@ -1,7 +1,7 @@
 // How voice control reads in the UI: one pure function per surface, so the wording and
 // the tone are decided in tests rather than in markup. The Settings tab and the status
 // indicator only render what these return.
-import type { VoiceModelStatus, VoiceState } from "$lib/api/bridge";
+import type { VoicePayload, VoiceModelStatus, VoiceSettingsState, VoiceState } from "$lib/api/bridge";
 
 export type { VoiceModelStatus, VoiceState };
 
@@ -69,4 +69,31 @@ export function voiceModelLabel(model: VoiceModelStatus): string {
     default:
       return `${Math.max(1, Math.round(model.bytes / MEGABYTE))} MB download`;
   }
+}
+
+export interface VoiceEnableGate {
+  /** The switch cannot be turned on. */
+  blocked: boolean;
+  /** Why, for the line under it; "" when nothing blocks. */
+  why: string;
+}
+
+/** Whether the Settings switch may turn voice ON: the host refuses it on a CPU without
+ * AVX2 and before the chosen model is on disk. Turning it OFF is never blocked, or a
+ * model deleted (or a CPU swapped) under an enabled setting would lock voice on. */
+export function voiceEnableGate(
+  settings: VoiceSettingsState,
+  cpu: VoicePayload["cpu"],
+  models: VoiceModelStatus[],
+): VoiceEnableGate {
+  if (settings.enabled) {
+    return { blocked: false, why: "" };
+  }
+  if (!cpu.supported) {
+    return { blocked: true, why: cpu.reason };
+  }
+  if (!models.some((m) => m.id === settings.model && m.state === "ready")) {
+    return { blocked: true, why: "Download the selected model to turn voice control on." };
+  }
+  return { blocked: false, why: "" };
 }
