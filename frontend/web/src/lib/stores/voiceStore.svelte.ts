@@ -19,6 +19,7 @@ export const VOICE_STATE_EMPTY: VoiceState = {
   transcript: "",
   device: "",
   pending: null,
+  keptDraft: "",
   ready: { cpu: true, cpuReason: "", model: false, mic: false },
   settings: { enabled: false, model: "", logTranscripts: false, cueVolume: 0, sendMode: "countdown", countdownSec: 3 },
 };

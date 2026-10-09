@@ -1,7 +1,13 @@
 // How voice control reads in the UI: one pure function per surface, so the wording and
 // the tone are decided in tests rather than in markup. The Settings tab and the status
 // indicator only render what these return.
-import type { VoicePayload, VoiceModelStatus, VoiceSettingsState, VoiceState } from "$lib/api/bridge";
+import type {
+  VoicePayload,
+  VoiceModelStatus,
+  VoicePendingAction,
+  VoiceSettingsState,
+  VoiceState,
+} from "$lib/api/bridge";
 
 export type { VoiceModelStatus, VoiceState };
 
@@ -17,6 +23,23 @@ export interface VoiceIndicator {
 }
 
 const MEGABYTE = 1024 * 1024;
+
+/** The bridge method a dictated chat message is, reply or not. */
+const CHAT_SEND = "chat.send";
+
+/** True for a pending dictated chat message rather than a studio command. */
+function isChatDraft(pending: VoicePendingAction | null): boolean {
+  return pending !== null && pending.commandId === CHAT_SEND;
+}
+
+// What a pending item asks of the user. A draft is not confirmed the way a command is: in
+// the countdown mode it goes on its own unless cancelled, and otherwise it waits for "send".
+function pendingDetail(pending: VoicePendingAction | null): string {
+  if (pending && isChatDraft(pending)) {
+    return pending.runOnTimeout ? "Sends unless you cancel" : "Say send to post it";
+  }
+  return pending?.needsConfirmWord ? "Say yes to confirm" : "Press the key again to confirm";
+}
 
 // What is missing, most fundamental first: a CPU that cannot run voice outranks
 // everything, and a mic is named before the model because it is the user's to fix in
@@ -49,7 +72,7 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
         visible: true,
         tone: "warn",
         label: state.pending?.summary || "Waiting for confirmation",
-        detail: state.pending?.needsConfirmWord ? "Say yes to confirm" : "Press the key again to confirm",
+        detail: pendingDetail(state.pending),
         confirmable: state.pending !== null,
       };
     case "notReady":
@@ -111,4 +134,58 @@ export function voiceEnableGate(
     return { blocked: true, why: "Download the selected model to turn voice control on." };
   }
   return { blocked: false, why: "" };
+}
+
+export interface VoiceDraft {
+  /** The message exactly as it will be posted (a reply carries its "@name "). */
+  text: string;
+  summary: string;
+  /**
+   * Milliseconds LEFT until it sends itself, as of the host's last emit, or 0 when it is
+   * waiting for a word. Deliberately not the configured duration: the window is measured
+   * from a fixed deadline on the host, so anything that delays the draft reaching here
+   * has already spent part of it. Rendering the duration instead would show a full
+   * take-it-back window over one that is nearly, or entirely, gone.
+   */
+  countdownMs: number;
+  waitingForWord: boolean;
+}
+
+/** The dictated chat message waiting to go out, if there is one. */
+export function voiceDraft(state: VoiceState): VoiceDraft | null {
+  const pending = state.pending;
+  if (state.state !== "pending" || !pending || !isChatDraft(pending)) {
+    return null;
+  }
+  return {
+    text: pending.text,
+    summary: pending.summary,
+    countdownMs: pending.runOnTimeout ? Math.max(0, pending.remainingMs) : 0,
+    waitingForWord: !pending.runOnTimeout,
+  };
+}
+
+/** Whole seconds left of a draft's countdown, `elapsedMs` after the host said `countdownMs`
+ * were left: rounded up, so "1" shows until the very end, and never below 0. */
+export function draftSecondsLeft(countdownMs: number, elapsedMs: number): number {
+  return Math.max(0, Math.ceil((countdownMs - Math.max(0, elapsedMs)) / 1000));
+}
+
+/** A dictated message taken into the composer: in place of an empty one, or after what is
+ * already typed there, never over it. */
+export function composerWithDraft(composer: string, text: string): string {
+  if (composer.trim() === "") {
+    return text;
+  }
+  return composer.replace(/\s+$/, "") + " " + text;
+}
+
+/** The message voice refused as too long, for a composer to take over: the kept draft when
+ * it is one this composer has not acted on yet and the composer is empty, else null. A
+ * composer the user is typing in is never overwritten. */
+export function keptDraftToFill(kept: string, seen: string, composer: string): string | null {
+  if (kept === "" || kept === seen || composer.trim() !== "") {
+    return null;
+  }
+  return kept;
 }

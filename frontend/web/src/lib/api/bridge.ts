@@ -432,6 +432,13 @@ export interface VoicePendingAction {
    * how long the window is. Render countdowns from it; a fixed duration restarted on
    * arrival would show a full window that has already partly, or entirely, elapsed. */
   remainingMs: number;
+  /** A chat draft (commandId "chat.send") sends itself when its window closes; any other
+   * pending command is dropped then. */
+  runOnTimeout: boolean;
+  /** How long the window is, in ms. Not for rendering a countdown: remainingMs is. */
+  timeoutMs: number;
+  /** A chat draft's message, exactly as it will be posted ("" for anything else). */
+  text: string;
 }
 
 /** Voice control's live state (voice.state, the method and the event). */
@@ -444,6 +451,9 @@ export interface VoiceState {
   /** The bound microphone's name; "" when none is bound. */
   device: string;
   pending: VoicePendingAction | null;
+  /** The last dictated chat message refused as too long, kept for the Multichat composer to
+   * take over; "" when there is none. Cleared at the next utterance. */
+  keptDraft: string;
   /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic. */
   ready: { cpu: boolean; cpuReason: string; model: boolean; mic: boolean };
   settings: VoiceSettingsState;

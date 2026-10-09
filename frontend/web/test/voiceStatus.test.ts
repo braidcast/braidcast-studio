@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { VoicePendingAction, VoiceSettingsState } from "$lib/api/bridge";
 import {
+  composerWithDraft,
+  draftSecondsLeft,
+  keptDraftToFill,
+  voiceDraft,
   voiceEnableGate,
   voiceIndicator,
   voiceModelLabel,
@@ -15,6 +19,7 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     transcript: "",
     device: "Microphone (Yeti)",
     pending: null,
+    keptDraft: "",
     ready: { cpu: true, cpuReason: "", model: true, mic: true },
     settings: {
       enabled: true,
@@ -35,6 +40,9 @@ function pending(overrides: Partial<VoicePendingAction> = {}): VoicePendingActio
     needsConfirmWord: true,
     deadlineMs: 1_000_000,
     remainingMs: 8000,
+    runOnTimeout: false,
+    timeoutMs: 0,
+    text: "",
     ...overrides,
   };
 }
@@ -237,5 +245,100 @@ describe("voiceEnableGate", () => {
   it("never blocks turning off", () => {
     const on = { ...offBase, enabled: true };
     expect(voiceEnableGate(on, { supported: false, reason: "Needs AVX2." }, [])).toEqual({ blocked: false, why: "" });
+  });
+});
+
+describe("voiceDraft", () => {
+  const draft = pending({
+    commandId: "chat.send",
+    summary: "Send to chat: hello everyone",
+    needsConfirmWord: false,
+    runOnTimeout: true,
+    timeoutMs: 3000,
+    remainingMs: 3000,
+    text: "hello everyone",
+  });
+
+  it("is nothing unless a chat draft is pending", () => {
+    expect(voiceDraft(state())).toBeNull();
+    expect(voiceDraft(state({ state: "pending", pending: pending() }))).toBeNull();
+    expect(voiceDraft(state({ state: "idle", pending: draft }))).toBeNull();
+  });
+
+  it("carries the text and the countdown", () => {
+    const shown = voiceDraft(state({ state: "pending", pending: draft }));
+    expect(shown?.text).toBe("hello everyone");
+    expect(shown?.summary).toBe("Send to chat: hello everyone");
+    expect(shown?.countdownMs).toBe(3000);
+    expect(shown?.waitingForWord).toBe(false);
+  });
+
+  it("counts what is left, not how long the window was", () => {
+    const shown = voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: 900 } }));
+    expect(shown?.countdownMs).toBe(900);
+  });
+
+  it("shows no window at all when the deadline is already spent", () => {
+    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: 0 } }))?.countdownMs).toBe(0);
+    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: -50 } }))?.countdownMs).toBe(0);
+  });
+
+  it("says when it is waiting for the word instead of a countdown", () => {
+    const shown = voiceDraft(
+      state({ state: "pending", pending: { ...draft, runOnTimeout: false, needsConfirmWord: true } }),
+    );
+    expect(shown?.countdownMs).toBe(0);
+    expect(shown?.waitingForWord).toBe(true);
+  });
+
+  it("tells the indicator a draft is not confirmed like a command", () => {
+    expect(voiceIndicator(state({ state: "pending", pending: draft })).detail).toBe("Sends unless you cancel");
+    expect(
+      voiceIndicator(state({ state: "pending", pending: { ...draft, runOnTimeout: false, needsConfirmWord: true } }))
+        .detail,
+    ).toBe("Say send to post it");
+  });
+});
+
+describe("draftSecondsLeft", () => {
+  it("rounds up, so the last second still reads 1", () => {
+    expect(draftSecondsLeft(3000, 0)).toBe(3);
+    expect(draftSecondsLeft(3000, 1)).toBe(3);
+    expect(draftSecondsLeft(3000, 2001)).toBe(1);
+    expect(draftSecondsLeft(3000, 2999)).toBe(1);
+  });
+
+  it("never goes below zero, and ignores a clock that ran backwards", () => {
+    expect(draftSecondsLeft(3000, 3000)).toBe(0);
+    expect(draftSecondsLeft(3000, 9000)).toBe(0);
+    expect(draftSecondsLeft(0, 0)).toBe(0);
+    expect(draftSecondsLeft(2500, -400)).toBe(3);
+  });
+});
+
+describe("composerWithDraft", () => {
+  it("fills an empty composer", () => {
+    expect(composerWithDraft("", "hello")).toBe("hello");
+    expect(composerWithDraft("   ", "hello")).toBe("hello");
+  });
+
+  it("never overwrites what is typed, it follows it", () => {
+    expect(composerWithDraft("so anyway", "hello")).toBe("so anyway hello");
+    expect(composerWithDraft("so anyway  ", "hello")).toBe("so anyway hello");
+  });
+});
+
+describe("keptDraftToFill", () => {
+  it("hands a refused message to an empty composer once", () => {
+    expect(keptDraftToFill("a long message", "", "")).toBe("a long message");
+    expect(keptDraftToFill("a long message", "a long message", "")).toBeNull();
+  });
+
+  it("leaves a composer the user is typing in alone", () => {
+    expect(keptDraftToFill("a long message", "", "typing")).toBeNull();
+  });
+
+  it("does nothing without one", () => {
+    expect(keptDraftToFill("", "", "")).toBeNull();
   });
 });

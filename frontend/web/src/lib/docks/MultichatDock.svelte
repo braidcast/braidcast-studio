@@ -42,6 +42,8 @@
   import GoalStrip from "$lib/docks/multichat/GoalStrip.svelte";
   import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
   import { moderationMatcher, redactChat, removedLabel } from "$lib/docks/multichat/chatModeration";
+  import { voiceStore } from "$lib/stores/voiceStore.svelte";
+  import { composerWithDraft, draftSecondsLeft, keptDraftToFill, voiceDraft } from "$lib/voice/voiceStatus";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -585,6 +587,68 @@
     })();
   }
 
+  // --- a dictated message ----------------------------------------------------
+  // Voice control's chat draft shows here, where the user already looks for chat, with
+  // its countdown and three ways out. The host holds the authoritative timer (a deadline
+  // fixed when the draft was made) and sends on it; the seconds are rendered here from
+  // what the host said was LEFT at its last emit, so a draft that arrived late shows a
+  // short window, never a fresh one.
+  $effect(() => voiceStore.subscribe());
+  let spoken = $derived(voiceDraft(voiceStore.state));
+  let spokenSeconds = $state(0);
+  $effect(() => {
+    const countdownMs = spoken?.countdownMs ?? 0;
+    const startedAt = Date.now();
+    spokenSeconds = draftSecondsLeft(countdownMs, 0);
+    if (countdownMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      spokenSeconds = draftSecondsLeft(countdownMs, Date.now() - startedAt);
+    }, 250);
+    return () => clearInterval(timer);
+  });
+
+  let composerBox = $state<HTMLTextAreaElement | null>(null);
+
+  // Either call can lose a race with the window closing a moment earlier; the host then
+  // refuses it and the next voice.state says what happened.
+  function sendSpokenNow(): void {
+    void obs.call("voice.confirm").catch(() => {});
+  }
+  function cancelSpoken(): void {
+    void obs.call("voice.cancel").catch(() => {});
+  }
+  // Clicking into the draft takes it out of voice's hands: the countdown is cancelled and
+  // the text becomes an ordinary typed draft, sent (or not) like anything typed, to where
+  // the composer points. Only once the host confirms the cancel: if the window closed
+  // first the message is already out, and handing it to the composer would invite sending
+  // it twice.
+  async function editSpoken(): Promise<void> {
+    const text = spoken?.text ?? "";
+    try {
+      await obs.call("voice.cancel");
+    } catch {
+      return;
+    }
+    draft = composerWithDraft(draft, text);
+    composerBox?.focus();
+  }
+
+  // A dictated message refused as too long is kept, not lost: it lands in an empty
+  // composer to be shortened there. Once per refusal, and never over what is typed.
+  let keptSeen = "";
+  $effect(() => {
+    const kept = voiceStore.state.keptDraft;
+    untrack(() => {
+      const fill = keptDraftToFill(kept, keptSeen, draft);
+      keptSeen = kept;
+      if (fill !== null) {
+        draft = fill;
+      }
+    });
+  });
+
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -736,6 +800,28 @@
     </div>
   {/if}
 
+  {#if spoken}
+    <!-- Status, not an alert: polite, and on the label only, so the ticking seconds are
+         not re-read every second; the text and the buttons sit beside it. -->
+    <div class="vdraft">
+      <span class="vdlabel" role="status" aria-live="polite">
+        {#if spoken.waitingForWord}
+          Say &ldquo;send&rdquo; to post
+        {:else}
+          Voice message &middot; sending in {spokenSeconds}s
+        {/if}
+      </span>
+      <button type="button" class="vdtext" title="Edit it as a typed message" onclick={editSpoken}
+        >{spoken.text}</button
+      >
+      <div class="vdactions">
+        <Button size="xs" variant="filled" onclick={sendSpokenNow}>Send now</Button>
+        <Button size="xs" onclick={editSpoken}>Edit</Button>
+        <Button size="xs" onclick={cancelSpoken}>Cancel</Button>
+      </div>
+    </div>
+  {/if}
+
   <div class="composer">
     <p id="replyto-label" class="replyto" class:warn={composer.tone === "warn"} class:fan={composer.tone === "fan"}>
       <span>{composer.lead}</span>
@@ -760,6 +846,7 @@
       <textarea
         class="input"
         rows="1"
+        bind:this={composerBox}
         bind:value={draft}
         onkeydown={onKeydown}
         disabled={!canSend}
@@ -924,6 +1011,66 @@
     padding: 6px 8px;
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-base);
+  }
+  /* A dictated message waiting to go out: one band above the composer it would otherwise
+     have been typed into, tinted and edged like the composer's fan-out band, since it too
+     is about to reach chat. It grows in rather than jumping the feed. */
+  .vdraft {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 5px 8px;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2));
+    box-shadow: inset 3px 0 0 var(--color-accent);
+    animation: vdraft-in 140ms ease-out;
+  }
+  .vdlabel {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.09em;
+    text-transform: var(--label-case);
+    color: var(--color-accent);
+  }
+  /* The message itself, one line, and the way into editing it: a click turns it into a
+     typed draft. */
+  .vdtext {
+    flex: 1 1 8em;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 12px;
+    color: var(--color-text);
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: text;
+  }
+  .vdtext:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .vdactions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  @keyframes vdraft-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .vdraft {
+      animation: none;
+    }
   }
   .composer {
     flex: 0 0 auto;
