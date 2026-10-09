@@ -256,6 +256,26 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		}
 		return effects;
 
+	case EventType::Confirm: {
+		// The UI's Confirm button: the same action as a spoken yes, so it goes through the
+		// same code. Nothing pending, nothing to do.
+		if (status_.pending.commandId.empty()) {
+			return effects;
+		}
+		Interpretation confirm;
+		confirm.kind = Interpretation::Kind::Control;
+		confirm.control = Interpretation::Control::ConfirmPending;
+		const State segment = status_.state;
+		effects = ApplyInterpretation(confirm, event.nowMs);
+		// A click while the key is held (or while the answer is being recognized) leaves
+		// that segment running, as a timeout does: its transcript then finds nothing
+		// pending.
+		if (segment == State::Listening || segment == State::Thinking) {
+			status_.state = segment;
+		}
+		return effects;
+	}
+
 	case EventType::Cancel:
 		// The cancel hotkey: abandon a segment being recorded, a pending command, or
 		// both. Silent when there was nothing to cancel, so a stray press is not noise.

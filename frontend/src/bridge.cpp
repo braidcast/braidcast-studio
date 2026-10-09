@@ -15596,6 +15596,8 @@ void Init()
 		{"voice.model.status", Voice::BridgeMethods::ModelStatus},
 		{"voice.model.download", Voice::BridgeMethods::ModelDownload},
 		{"voice.model.cancel", Voice::BridgeMethods::ModelCancel},
+		{"voice.confirm", Voice::BridgeMethods::Confirm},
+		{"voice.cancel", Voice::BridgeMethods::CancelCommand},
 		{"settings.getAdvanced", MethodSettingsGetAdvanced},
 		{"settings.setAdvanced", MethodSettingsSetAdvanced},
 		{"settings.snapshot", MethodSettingsSnapshot},

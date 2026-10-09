@@ -449,6 +449,9 @@ export interface VoicePayload {
   settings: VoiceSettingsState;
   models: VoiceModelStatus[];
   cpu: { supported: boolean; reason: string };
+  /** Why viewers would hear the command cues and what to change (the monitoring device
+   * is one a Desktop Audio source captures); "" when they would not. */
+  cueWarning: string;
 }
 
 /** Advanced app settings (process priority, stream delay, auto-reconnect, network,
@@ -2300,6 +2303,11 @@ export interface ObsMethods {
   "voice.model.status": { models: VoiceModelStatus[] };
   "voice.model.download": { started: boolean; models: VoiceModelStatus[] };
   "voice.model.cancel": { cancelled: boolean; models: VoiceModelStatus[] };
+  // Confirm or drop the pending voice command from the UI, as a spoken yes or the cancel
+  // key would. Both answer the new voice.state and throw when there is nothing to act on
+  // (the command timed out a moment earlier, say).
+  "voice.confirm": VoiceState;
+  "voice.cancel": VoiceState;
   // Advanced app settings (process priority/stream delay/auto-reconnect/network/
   // browser HW accel). setAdvanced applies any present subset, persists, and echoes
   // the full post-apply state.

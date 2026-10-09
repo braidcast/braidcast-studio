@@ -12,6 +12,8 @@ export interface VoiceIndicator {
   tone: VoiceTone;
   label: string;
   detail: string;
+  /** A command is waiting: offer Confirm and Cancel beside the spoken yes. */
+  confirmable: boolean;
 }
 
 const MEGABYTE = 1024 * 1024;
@@ -35,24 +37,37 @@ function readyDetail(state: VoiceState): string {
 
 export function voiceIndicator(state: VoiceState): VoiceIndicator {
   if (!state.settings.enabled || state.state === "disabled") {
-    return { visible: false, tone: "idle", label: "", detail: "" };
+    return { visible: false, tone: "idle", label: "", detail: "", confirmable: false };
   }
   switch (state.state) {
     case "listening":
-      return { visible: true, tone: "live", label: "Listening", detail: state.device };
+      return { visible: true, tone: "live", label: "Listening", detail: state.device, confirmable: false };
     case "thinking":
-      return { visible: true, tone: "busy", label: "Thinking", detail: state.transcript };
+      return { visible: true, tone: "busy", label: "Thinking", detail: state.transcript, confirmable: false };
     case "pending":
       return {
         visible: true,
         tone: "warn",
         label: state.pending?.summary || "Waiting for confirmation",
         detail: state.pending?.needsConfirmWord ? "Say yes to confirm" : "Press the key again to confirm",
+        confirmable: state.pending !== null,
       };
     case "notReady":
-      return { visible: true, tone: "warn", label: "Voice not ready", detail: readyDetail(state) || state.message };
+      return {
+        visible: true,
+        tone: "warn",
+        label: "Voice not ready",
+        detail: readyDetail(state) || state.message,
+        confirmable: false,
+      };
     default:
-      return { visible: true, tone: "idle", label: "Voice ready", detail: state.message || state.device };
+      return {
+        visible: true,
+        tone: "idle",
+        label: "Voice ready",
+        detail: state.message || state.device,
+        confirmable: false,
+      };
   }
 }
 

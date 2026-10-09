@@ -898,6 +898,40 @@ void TestVoiceListener(Tally &t)
 		t.Check("listener", "the interpreter tells the user's mute from ours",
 			oursOnly && seen.mutedSeen && !seen.pttMuted);
 	}
+
+	// 26. Confirming from the UI runs the pending command, exactly like saying yes.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		t.Check("listener", "a UI confirmation runs the pending command",
+			EffectNames(l->Handle(Ev(EventType::Confirm, 1600))) == "run:streaming.stop,cue:accept" &&
+				l->Current() == S::Idle);
+	}
+
+	// 27. Confirming with nothing pending does nothing at all.
+	{
+		auto l = fresh();
+		t.Check("listener", "a UI confirmation with nothing pending is inert",
+			l->Handle(Ev(EventType::Confirm, 100)).empty() && l->Current() == S::Idle);
+	}
+
+	// 28. A click while the key is held runs the command and leaves the segment open; its
+	// answer then finds nothing pending.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		l->Handle(Transcript("confirm streaming.stop", 1400));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		const std::string fx = EffectNames(l->Handle(Ev(EventType::Confirm, 2100)));
+		const bool stillListening = l->Current() == S::Listening;
+		l->Handle(Ev(EventType::PttUp, 2600));
+		t.Check("listener", "a UI confirmation mid-segment keeps the segment",
+			fx == "run:streaming.stop,cue:accept" && stillListening &&
+				EffectNames(l->Handle(Transcript("yes", 2900))).find("run:") == std::string::npos);
+	}
 }
 
 std::string VoiceDataPath(const char *relative)
@@ -1642,6 +1676,16 @@ void TestVoiceBridge(Tally &t)
 
 	t.Check("bridge", "cancelling a download that is not running is refused",
 		!Dispatch("voice.model.cancel", nlohmann::json{{"id", Voice::kVadModelId}}, result, error));
+
+	result.clear();
+	error.clear();
+	t.Check("bridge", "confirming with nothing pending is refused",
+		!Dispatch("voice.confirm", nlohmann::json::object(), result, error) && !error.empty());
+	t.Check("bridge", "cancelling with nothing to cancel is refused",
+		!Dispatch("voice.cancel", nlohmann::json::object(), result, error) && !error.empty());
+	t.Check("bridge", "getVoice carries the cue warning field",
+		Dispatch("settings.getVoice", nlohmann::json::object(), result, error) &&
+			result.contains("cueWarning"));
 
 	// The settings file round-trips through the store, not just through memory.
 	VoiceSettings persisted;

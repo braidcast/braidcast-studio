@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { obs } from "$lib/api/bridge";
   import { voiceStore } from "$lib/stores/voiceStore.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import { voiceIndicator } from "$lib/voice/voiceStatus";
 
   // Push-to-talk is invisible by nature: the user is looking at their game, not the app.
@@ -8,22 +10,38 @@
   $effect(() => voiceStore.subscribe());
 
   const indicator = $derived(voiceIndicator(voiceStore.state));
+
+  // A spoken yes is the point, but a hand already on the mouse should not have to speak.
+  // Either call can lose a race with the pending window closing a moment earlier; the
+  // host then refuses it and the next voice.state says what happened, so a refusal is
+  // dropped rather than thrown into the console.
+  function confirm(): void {
+    void obs.call("voice.confirm").catch(() => {});
+  }
+  function cancel(): void {
+    void obs.call("voice.cancel").catch(() => {});
+  }
 </script>
 
 {#if indicator.visible}
   <!-- Status, not an alert: a live region so a screen reader hears the change, but polite,
        because it changes on every key press. -->
-  <div
-    class="voice"
-    data-tone={indicator.tone}
-    role="status"
-    aria-live="polite"
-    title={indicator.detail ? `${indicator.label} — ${indicator.detail}` : indicator.label}
-  >
-    <span class="dot" aria-hidden="true"></span>
-    <span class="label">{indicator.label}</span>
-    {#if indicator.detail}
-      <span class="detail">{indicator.detail}</span>
+  <div class="voice" data-tone={indicator.tone}>
+    <span
+      class="state"
+      role="status"
+      aria-live="polite"
+      title={indicator.detail ? `${indicator.label} — ${indicator.detail}` : indicator.label}
+    >
+      <span class="dot" aria-hidden="true"></span>
+      <span class="label">{indicator.label}</span>
+      {#if indicator.detail}
+        <span class="detail">{indicator.detail}</span>
+      {/if}
+    </span>
+    {#if indicator.confirmable}
+      <Button size="xs" variant="filled" onclick={confirm}>Confirm</Button>
+      <Button size="xs" onclick={cancel}>Cancel</Button>
     {/if}
   </div>
 {/if}
@@ -42,6 +60,12 @@
     color: var(--color-dim);
     white-space: nowrap;
     border-left: var(--border-weight) solid var(--color-border);
+  }
+  .state {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
   }
   .dot {
     width: 7px;

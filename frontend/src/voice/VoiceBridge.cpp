@@ -123,4 +123,24 @@ bool ModelCancel(const json &params, json &result, std::string &error)
 	return true;
 }
 
+bool Confirm(const json &, json &result, std::string &error)
+{
+	if (!Engine().ConfirmPending()) {
+		error = "there is no command waiting for confirmation";
+		return false;
+	}
+	result = Engine().StateJson();
+	return true;
+}
+
+bool CancelCommand(const json &, json &result, std::string &error)
+{
+	if (!Engine().CancelPending()) {
+		error = "there is nothing to cancel";
+		return false;
+	}
+	result = Engine().StateJson();
+	return true;
+}
+
 } // namespace Voice::BridgeMethods

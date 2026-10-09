@@ -23,6 +23,8 @@
   let s = $state<VoiceSettingsState>({ ...DEFAULTS });
   let models = $state<VoiceModelStatus[]>([]);
   let cpu = $state<{ supported: boolean; reason: string }>({ supported: true, reason: "" });
+  // Why viewers would hear the cues ("" when they would not); the host decides.
+  let cueWarning = $state("");
   let loaded = $state(false);
   let error = $state<string | null>(null);
   const guard = new RequestGuard();
@@ -35,6 +37,7 @@
     confirmed = { ...p.settings };
     models = p.models;
     cpu = p.cpu;
+    cueWarning = p.cueWarning;
   }
 
   $effect(() => {
@@ -110,6 +113,8 @@
   const ENABLE_HINT_ID = "voice-enable-hint";
   const MODEL_ID = "voice-model";
   const LOG_HINT_ID = "voice-log-hint";
+  const CUE_VOLUME_ID = "voice-cue-volume";
+  const CUE_HINT_ID = "voice-cue-hint";
 </script>
 
 {#if !loaded}
@@ -147,6 +152,35 @@
       Under Hotkeys, "Voice Control: Push to Talk" has no key until you choose one. "Voice Control: Cancel" drops a
       command in progress and defaults to Escape.
     </p>
+  </section>
+
+  <section class="group">
+    <h4>Command sounds</h4>
+    <div class="field">
+      <label class="flabel" for={CUE_VOLUME_ID}>Cue volume</label>
+      <div class="slider">
+        <!-- Shown as it moves, applied once on release: one settings write per drag. -->
+        <input
+          id={CUE_VOLUME_ID}
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={s.cueVolume}
+          aria-describedby={CUE_HINT_ID}
+          oninput={(e) => (s = { ...s, cueVolume: Number(e.currentTarget.value) })}
+          onchange={(e) => void apply({ cueVolume: Number(e.currentTarget.value) })}
+        />
+        <span class="pct">{Math.round(s.cueVolume * 100)}%</span>
+      </div>
+    </div>
+    <p id={CUE_HINT_ID} class="dim note">
+      A short sound answers each command, so you can keep your eyes on the game. It plays on your monitoring device
+      only, never into the stream. Set it to zero for silence.
+    </p>
+    {#if cueWarning}
+      <p class="note status warn" role="status">{cueWarning}</p>
+    {/if}
   </section>
 
   <section class="group">
@@ -271,6 +305,24 @@
   }
   .actions {
     margin-top: 10px;
+  }
+  .slider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 320px;
+  }
+  .slider input {
+    flex: 1;
+    min-width: 0;
+  }
+  .pct {
+    flex: 0 0 auto;
+    min-width: 36px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--color-muted);
+    font-variant-numeric: tabular-nums;
   }
   .models {
     list-style: none;

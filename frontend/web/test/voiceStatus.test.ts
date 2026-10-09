@@ -60,7 +60,13 @@ describe("voiceIndicator", () => {
 
   it("reads idle as ready, with the device name", () => {
     const indicator = voiceIndicator(state());
-    expect(indicator).toEqual({ visible: true, tone: "idle", label: "Voice ready", detail: "Microphone (Yeti)" });
+    expect(indicator).toEqual({
+      visible: true,
+      tone: "idle",
+      label: "Voice ready",
+      detail: "Microphone (Yeti)",
+      confirmable: false,
+    });
   });
 
   it("reads listening as live", () => {
@@ -92,6 +98,21 @@ describe("voiceIndicator", () => {
 
   it("still says something when pending arrives without the action", () => {
     expect(voiceIndicator(state({ state: "pending", pending: null })).label).toBe("Waiting for confirmation");
+  });
+
+  it("offers buttons while a command is pending", () => {
+    expect(voiceIndicator(state({ state: "pending", pending: pending() })).confirmable).toBe(true);
+  });
+
+  it("offers no buttons when nothing is pending", () => {
+    expect(voiceIndicator(state()).confirmable).toBe(false);
+    for (const s of ["listening", "thinking", "notReady", "disabled"] as const) {
+      expect(voiceIndicator(state({ state: s })).confirmable).toBe(false);
+    }
+  });
+
+  it("offers no buttons for a pending state that carries no action to confirm", () => {
+    expect(voiceIndicator(state({ state: "pending", pending: null })).confirmable).toBe(false);
   });
 
   it("explains an unsupported CPU rather than saying not ready", () => {

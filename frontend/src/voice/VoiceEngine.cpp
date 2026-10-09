@@ -624,6 +624,31 @@ nlohmann::json VoiceEngine::StateJson() const
 	return state;
 }
 
+bool VoiceEngine::ConfirmPending()
+{
+	if (!started_ || listener_->Snapshot().pending.commandId.empty()) {
+		return false;
+	}
+	HandleOnUi(MakeEvent(EventType::Confirm), generation_.load(std::memory_order_acquire));
+	return true;
+}
+
+bool VoiceEngine::CancelPending()
+{
+	const State state = listener_->Current();
+	if (!started_ || (listener_->Snapshot().pending.commandId.empty() && state != State::Listening &&
+			  state != State::Thinking)) {
+		// A stray click is not a cancel: the listener's Cancel would also clear what the
+		// indicator shows.
+		return false;
+	}
+	// The listener only: a segment in flight is abandoned there and its transcript, when
+	// it comes, finds nobody waiting. The recognizer and the mute guard belong to the
+	// hotkey thread, and the key coming up still ends and releases them.
+	HandleOnUi(MakeEvent(EventType::Cancel), generation_.load(std::memory_order_acquire));
+	return true;
+}
+
 void VoiceEngine::PublishState()
 {
 	if (!started_) {

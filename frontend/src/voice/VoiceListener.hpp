@@ -94,7 +94,8 @@ enum class EventType {
 	Transcript,
 	TranscribeFailed,
 	ActionResult,
-	Cancel, // the cancel hotkey: drop whatever is in flight
+	Confirm, // the UI's Confirm button: the same as a spoken yes
+	Cancel,  // the cancel hotkey or the UI's Cancel button: drop whatever is in flight
 	Tick,
 };
 

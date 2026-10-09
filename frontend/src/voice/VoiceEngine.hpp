@@ -91,6 +91,12 @@ public:
 	// Emits voice.state. UI thread.
 	void PublishState();
 
+	// UI thread. Confirm or drop the pending command from the UI rather than by voice:
+	// the same listener events as a spoken yes and the cancel key. False, doing nothing,
+	// when there is nothing to confirm (or to cancel: no pending command and no segment).
+	bool ConfirmPending();
+	bool CancelPending();
+
 	void SetInterpreter(Interpreter fn);
 	void SetActionRunner(ActionRunner fn);
 	void SetCueSink(CueSink fn);
