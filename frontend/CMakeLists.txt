@@ -380,6 +380,10 @@ target_sources(
     src/voice/VoiceCapture.hpp
     src/voice/VoiceListener.cpp
     src/voice/VoiceListener.hpp
+    src/voice/WavFile.cpp
+    src/voice/WavFile.hpp
+    src/voice/Recognizer.cpp
+    src/voice/Recognizer.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -762,6 +766,7 @@ set_source_files_properties(
   src/voice/VoiceSettings.cpp
   src/voice/MicMuteGuard.cpp
   src/voice/VoiceCapture.cpp
+  src/voice/Recognizer.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 
@@ -885,6 +890,21 @@ add_custom_command(
 # empty document and the window renders blank. Trailing slash installs the
 # bundle contents (index.html, assets/, overlay/) into the destination.
 install(DIRECTORY "${_web_dist}/" DESTINATION "${OBS_DATA_DESTINATION}/braidcast/web" COMPONENT Runtime)
+
+# The voice recognizer's test fixture. Copied to the rundir for the smoke test only,
+# and deliberately NOT installed: it is a test asset, not something users need. It
+# lives in selftest-data/ rather than data/ because set_target_properties_obs installs
+# all of data/ (target_install_resources). The cue WAVs added in P2 are the opposite
+# case and do get install() rules.
+add_custom_command(
+  TARGET ${_target}
+  POST_BUILD
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/selftest-data/voice"
+    "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/braidcast/voice"
+  COMMENT "Copying voice data (recognizer fixture) to the run directory"
+  VERBATIM
+)
 
 # Drop the OBS-style portable marker into the DEV rundir only, so an in-tree build
 # runs self-contained against <rundir>/bin/64bit/config instead of the shared

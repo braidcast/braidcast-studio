@@ -4,10 +4,14 @@
 #include "multistream/GlobalAudioChannels.hpp"
 #include "util/file_util.hpp"
 #include "util/async_task.hpp"
+#include "util/env_config.hpp"
 #include "util/http_client.hpp"
+#include "util/paths.hpp"
 #include "util/sha256.hpp"
+#include "util/string_util.hpp"
 #include "util/time_util.hpp"
 #include "voice/MicMuteGuard.hpp"
+#include "voice/Recognizer.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceListener.hpp"
@@ -15,16 +19,21 @@
 #include "voice/VoiceResampler.hpp"
 #include "voice/VoiceRing.hpp"
 #include "voice/VoiceSettings.hpp"
+#include "voice/WavFile.hpp"
 
 #include <obs.hpp>
 #include <whisper.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -813,12 +822,184 @@ void TestVoiceListener(Tally &t)
 	}
 }
 
+std::string VoiceDataPath(const char *relative)
+{
+	// The rundir layout mirrors the installed one: <data>/braidcast/voice/<relative>.
+	const std::string path = RundirRoot() + "/data/braidcast/voice/" + relative;
+	std::error_code ec;
+	return std::filesystem::exists(std::filesystem::u8path(path), ec) ? path : std::string();
+}
+
+void TestWavFile(Tally &t)
+{
+	const std::string path = VoiceDataPath("fixtures/switch-to-gameplay.wav");
+	if (path.empty()) {
+		t.Skip("wav", "fixture loads", "fixtures/switch-to-gameplay.wav not found in the data dir");
+		return;
+	}
+	Voice::WavData wav;
+	std::string error;
+	const bool ok = Voice::LoadWavMono(path, wav, error);
+	t.Check("wav", "fixture loads as 16 kHz mono", ok && wav.sampleRate == 16000 && wav.samples.size() > 12000);
+	t.Check("wav", "fixture is not silence", ok && Rms(wav.samples.data(), wav.samples.size()) > 0.01);
+
+	Voice::WavData missing;
+	t.Check("wav", "a missing file reports an error",
+		!Voice::LoadWavMono(path + ".nope", missing, error) && !error.empty());
+
+	// A file that is not RIFF at all must be refused rather than read as audio.
+	const std::filesystem::path junk = std::filesystem::temp_directory_path() / "braidcast-voice-junk.wav";
+	{
+		std::ofstream f(junk, std::ios::binary);
+		f << "this is not a wav file at all, not even close";
+	}
+	t.Check("wav", "a non-RIFF file is refused", !Voice::LoadWavMono(junk.u8string(), missing, error));
+	std::error_code ec;
+	std::filesystem::remove(junk, ec);
+}
+
+// The parts of the recognizer that need no model, so they run in every smoke.
+void TestRecognizerWithoutModel(Tally &t)
+{
+	t.Check("recognizer", "noise markers stripped",
+		Voice::CleanTranscript(" [BLANK_AUDIO] switch to (wind blowing) gameplay\n") == "switch to gameplay");
+	t.Check("recognizer", "nested and unbalanced markers stripped",
+		Voice::CleanTranscript("[a [b] c] mute) mic (") == "mute mic");
+
+	// One token per word, so the budget reads as a word count.
+	const auto words = [](const std::string &text) {
+		int n = 0;
+		for (size_t i = 0; i < text.size(); ++i) {
+			n += text[i] != ' ' && (i == 0 || text[i - 1] == ' ') ? 1 : 0;
+		}
+		return n;
+	};
+	t.Check("recognizer", "a prompt within budget is kept whole",
+		Voice::TrimPromptFront("alpha beta gamma", 3, words) == "alpha beta gamma");
+	t.Check("recognizer", "an over-long prompt keeps its tail",
+		Voice::TrimPromptFront("alpha beta gamma delta", 2, words) == "gamma delta");
+
+	// A model that is not there fails through the callback, and nothing else breaks.
+	Voice::SpscRing ring(1024);
+	Voice::Recognizer rec(ring, [] { return false; });
+	std::mutex mutex;
+	std::condition_variable cv;
+	bool reported = false;
+	bool loaded = true;
+	std::string why;
+	rec.SetModelCallback([&](bool ok, const std::string &error) {
+		std::lock_guard<std::mutex> lock(mutex);
+		reported = true;
+		loaded = ok;
+		why = error;
+		cv.notify_all();
+	});
+	const std::filesystem::path missing = std::filesystem::temp_directory_path() / "braidcast-voice-no-model.bin";
+	rec.Start(missing.u8string(), 1);
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(10), [&] { return reported; });
+	}
+	t.Check("recognizer", "a missing model file fails with a reason", reported && !loaded && !why.empty());
+	t.Check("recognizer", "no segment opens without a model", !rec.Ready() && !rec.BeginSegment());
+	rec.Stop();
+	rec.Stop();
+	t.Check("recognizer", "stop after a failed load is idempotent", !rec.Ready());
+}
+
+void TestRecognizer(Tally &t)
+{
+	// Loading a model costs seconds and hundreds of megabytes, so the recognizer runs
+	// in the smoke test only when a model directory is named:
+	//   BRAIDCAST_SELFTEST_VOICE_MODELS=D:/.../voice-p0/models
+	const std::optional<std::string> modelDir = Env::Raw("BRAIDCAST_SELFTEST_VOICE_MODELS");
+	if (!modelDir || modelDir->empty()) {
+		t.Skip("recognizer", "transcribes the fixture", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
+		return;
+	}
+	const std::string modelPath = *modelDir + "/ggml-base.en-q5_1.bin";
+	const std::string wavPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
+	Voice::WavData wav;
+	std::string error;
+	if (wavPath.empty() || !Voice::LoadWavMono(wavPath, wav, error)) {
+		t.Check("recognizer", "fixture available", false);
+		return;
+	}
+
+	Voice::SpscRing ring(Voice::kVoiceSampleRate * 20);
+	Voice::Recognizer rec(ring, [] { return false; });
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	std::vector<Voice::Recognizer::Result> results;
+	bool ready = false;
+	rec.SetModelCallback([&](bool ok, const std::string &why) {
+		std::lock_guard<std::mutex> lock(mutex);
+		ready = ok;
+		error = why;
+		cv.notify_all();
+	});
+	rec.SetResultCallback([&](Voice::Recognizer::Result r) {
+		std::lock_guard<std::mutex> lock(mutex);
+		results.push_back(std::move(r));
+		cv.notify_all();
+	});
+
+	rec.Start(modelPath, 2);
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(60), [&] { return ready || !error.empty(); });
+	}
+	t.Check("recognizer", "model loads", ready);
+	if (!ready) {
+		HostLog("[selftest] voice-recognizer model load error: " + error);
+		rec.Stop();
+		return;
+	}
+
+	// Too short: under the minimum, the segment is refused without running whisper.
+	rec.BeginSegment();
+	ring.Write(wav.samples.data(), 1600); // 100 ms
+	rec.EndSegment();
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(10), [&] { return !results.empty(); });
+	}
+	t.Check("recognizer", "a 100 ms segment is refused",
+		results.size() == 1 && !results[0].ok && results[0].text.empty());
+	results.clear();
+
+	// The real fixture.
+	const bool opened = rec.BeginSegment();
+	ring.Write(wav.samples.data(), wav.samples.size());
+	rec.EndSegment();
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(120), [&] { return !results.empty(); });
+	}
+	const std::string text = results.empty() ? std::string() : StringUtil::ToLower(results[0].text);
+	t.Check("recognizer", "transcribes the fixture",
+		opened && results.size() == 1 && results[0].ok && text.find("gameplay") != std::string::npos);
+	t.Check("recognizer", "transcript has no bracketed noise markers",
+		text.find("[") == std::string::npos && text.find("(") == std::string::npos);
+
+	// A second BeginSegment while one is open is refused rather than interleaved.
+	rec.BeginSegment();
+	t.Check("recognizer", "overlapping segments are refused", !rec.BeginSegment());
+	rec.EndSegment();
+
+	rec.Stop();
+	t.Check("recognizer", "stop is idempotent", (rec.Stop(), true));
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
-	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,    &TestSpscRing,
-	&TestResampler,     &TestMicMuteGuard, &TestVoiceCapture,         &TestVoiceListener,
+	&TestWhisperLinked,   &TestCpuGate,       &TestLogCategory,  &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
+	&TestRecognizer,
 };
 
 } // namespace
