@@ -1,10 +1,13 @@
 #include "obs_bootstrap.hpp"
 
 #include "log.hpp"
+#include "voice/VoiceCpu.hpp"
 
 #include <whisper.h>
 
 #include <string>
+
+#include <windows.h>
 
 // Voice control self-tests for the headless smoke path (main.cpp). One function per
 // case, listed in kCases; each logs "[selftest] voice-<area> <case> -> OK|MISMATCH"
@@ -33,10 +36,21 @@ void TestWhisperLinked(Tally &t)
 	t.Check("whisper", "version 1.9.4", std::string(whisper_version()) == "1.9.4");
 }
 
+void TestCpuGate(Tally &t)
+{
+	std::string reason;
+	const bool ok = Voice::CpuSupportsVoice(reason);
+	// PF_AVX2_INSTRUCTIONS_AVAILABLE (40) is missing from older SDK headers.
+	const bool osAvx2 = IsProcessorFeaturePresent(40) != 0;
+	t.Check("cpu", "gate agrees with the OS AVX2 report", ok == osAvx2);
+	t.Check("cpu", "reason set exactly when unsupported", ok == reason.empty());
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
 	&TestWhisperLinked,
+	&TestCpuGate,
 };
 
 } // namespace

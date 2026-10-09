@@ -360,6 +360,8 @@ target_sources(
     src/update/update_version.cpp
     src/update/update_version.hpp
     # Voice control: whisper.cpp speech commands and chat dictation (frontend/src/voice).
+    src/voice/VoiceCpu.cpp
+    src/voice/VoiceCpu.hpp
     src/voice/VoiceSelfTest.cpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
