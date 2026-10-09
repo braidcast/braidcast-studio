@@ -2116,7 +2116,7 @@ const Case kCases[] = {
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
 	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints, &TestRecentChatters,
-	&TestChatterFeed,
+	&TestChatterFeed,     &TestChatLimits,    &TestChatCommands,   &TestChatDrafts,
 };
 
 } // namespace
