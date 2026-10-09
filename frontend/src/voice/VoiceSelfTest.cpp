@@ -14,6 +14,7 @@
 #include "util/time_util.hpp"
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
+#include "voice/TextNormalize.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceEngine.hpp"
@@ -1162,6 +1163,31 @@ void TestVoiceHotkeys(Tally &t)
 	t.Check("hotkeys", "cancel defaults to Escape", bound.escape);
 }
 
+void TestTextNormalize(Tally &t)
+{
+	using Voice::Normalize;
+
+	t.Check("normalize", "lowercases and strips punctuation",
+		Normalize("Switch to BRB, please!").text == "switch to brb please");
+	t.Check("normalize", "collapses whitespace", Normalize("  switch\tto   brb \n").text == "switch to brb");
+	t.Check("normalize", "keeps digits", Normalize("scene 2").text == "scene 2");
+	t.Check("normalize", "number words become digits",
+		Normalize("switch to scene twenty one").text == "switch to scene 21");
+	t.Check("normalize", "a hyphenated number becomes digits", Normalize("scene twenty-one").text == "scene 21");
+	t.Check("normalize", "zero through nine", Normalize("camera zero and nine").text == "camera 0 and 9");
+	t.Check("normalize", "a spelled-out abbreviation collapses",
+		Normalize("switch to B.R.B.").text == "switch to brb");
+	t.Check("normalize", "apostrophes inside words survive", Normalize("don't stop").text == "don't stop");
+	t.Check("normalize", "an empty string is empty", Normalize("").text.empty() && Normalize("...").text.empty());
+
+	// The span map is what lets a chat message keep its original spelling.
+	const Voice::Normalized message = Normalize("send Hello, World! to chat");
+	t.Check("normalize", "tokens are recorded", message.tokens.size() == 5 && message.tokens[1] == "hello");
+	t.Check("normalize", "a token range maps back to the original text", message.Original(1, 2) == "Hello, World!");
+	t.Check("normalize", "the whole range maps back to the whole input",
+		message.Original(0, 4) == "send Hello, World! to chat");
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1245,6 +1271,7 @@ const Case kCases[] = {
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys, &TestVoiceBridge,
+	&TestTextNormalize,
 };
 
 } // namespace
