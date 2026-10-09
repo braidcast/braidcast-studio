@@ -2,6 +2,7 @@
 
 #include "audio/AudioEndpoints.hpp"
 #include "bridge.hpp"
+#include "chat/recent_chatters.hpp"
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/StorePaths.hpp"
@@ -1556,6 +1557,74 @@ void TestCommandRegistry(Tally &t)
 	t.Check("registry", "an unknown method fails with a reason", fails("no.such.method", nlohmann::json::object()));
 }
 
+void TestRecentChatters(Tally &t)
+{
+	Chat::RecentChatters ring;
+	const int64_t t0 = 1000000;
+	const OAuth::DestinationId twitch{"twitch:100", ""};
+	const OAuth::DestinationId youtubeA{"youtube:200", "profile-a"};
+	const OAuth::DestinationId youtubeB{"youtube:200", "profile-b"};
+
+	ring.Note("twitch", "u1", "Dave", twitch, t0);
+	ring.Note("youtube", "u2", "Sarah", youtubeA, t0 + 1000);
+	ring.Note("twitch", "u1", "Dave", twitch, t0 + 2000); // same person again
+
+	const std::vector<Chat::Chatter> recent = ring.Recent(t0 + 3000);
+	t.Check("chatters", "a repeat speaker appears once", recent.size() == 2);
+	t.Check("chatters", "most recent first", !recent.empty() && recent[0].displayName == "Dave");
+
+	// A reply goes back to the broadcast the person last spoke in.
+	ring.Note("youtube", "u2", "Sarah", youtubeB, t0 + 2500);
+	const std::optional<Chat::Chatter> sarah = ring.Resolve("sarah", t0 + 3000);
+	t.Check("chatters", "a repeat speaker adopts their newest destination",
+		sarah && sarah->accountId == "youtube:200" && sarah->profileUuid == "profile-b");
+
+	// A platform without stable author ids still works, keyed by name.
+	Chat::RecentChatters byName;
+	byName.Note("kick", "", "Mo", twitch, t0);
+	byName.Note("kick", "", "mo", twitch, t0 + 500); // same name, different case
+	t.Check("chatters", "a nameless-id platform dedupes by name", byName.Recent(t0 + 1000).size() == 1);
+
+	// The window drops old speakers.
+	t.Check("chatters", "speakers older than the window are dropped",
+		ring.Recent(t0 + Chat::RecentChatters::kWindowMs + 5000).empty());
+
+	// Capacity is bounded.
+	Chat::RecentChatters full;
+	for (int i = 0; i < 400; ++i) {
+		full.Note("twitch", "u" + std::to_string(i), "User" + std::to_string(i), twitch, t0 + i);
+	}
+	t.Check("chatters", "the ring is bounded", full.Recent(t0 + 500).size() == Chat::RecentChatters::kCapacity);
+	t.Check("chatters", "the oldest speakers fell off",
+		!full.Resolve("User0", t0 + 500).has_value() && full.Resolve("User399", t0 + 500).has_value());
+
+	// Resolution is fuzzy, because the user says a name rather than spelling a handle.
+	Chat::RecentChatters names;
+	names.Note("twitch", "u1", "DaveTheStreamer", twitch, t0);
+	names.Note("twitch", "u2", "Sarah_92", twitch, t0 + 100);
+	const std::optional<Chat::Chatter> dave = names.Resolve("dave", t0 + 200);
+	t.Check("chatters", "one word of a run-together handle resolves", dave && dave->authorId == "u1");
+	t.Check("chatters", "an unknown name does not", !names.Resolve("gareth", t0 + 200));
+
+	// Two similar names must not be guessed between; an exact name is not a guess.
+	Chat::RecentChatters twins;
+	twins.Note("twitch", "u1", "Dave_K", twitch, t0);
+	twins.Note("twitch", "u2", "Dave_J", twitch, t0 + 100);
+	t.Check("chatters", "ambiguous names do not resolve", !twins.Resolve("dave", t0 + 200));
+	twins.Note("twitch", "u3", "Sam", twitch, t0 + 150);
+	twins.Note("twitch", "u4", "Sammy", twitch, t0 + 160);
+	const std::optional<Chat::Chatter> sam = twins.Resolve("sam", t0 + 200);
+	t.Check("chatters", "an exact name wins over a longer one", sam && sam->authorId == "u3");
+
+	// The same name on two platforms is one person to the ear: the latest speaker.
+	Chat::RecentChatters both;
+	both.Note("twitch", "u1", "Kai", twitch, t0);
+	both.Note("youtube", "c9", "kai", youtubeA, t0 + 100);
+	const std::optional<Chat::Chatter> kai = both.Resolve("kai", t0 + 200);
+	t.Check("chatters", "one name on two platforms resolves to the latest speaker",
+		kai && kai->platform == "youtube");
+}
+
 void TestVoiceFeedback(Tally &t)
 {
 	Voice::VoiceFeedback feedback;
@@ -1705,7 +1774,7 @@ const Case kCases[] = {
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
-	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints,
+	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints, &TestRecentChatters,
 };
 
 } // namespace

@@ -130,4 +130,40 @@ SlotMatch BestMatch(const std::string &query, const std::vector<std::string> &ca
 	return best;
 }
 
+std::string SpokenHandle(const std::string &handle)
+{
+	auto lower = [](char c) {
+		return c >= 'a' && c <= 'z';
+	};
+	auto upper = [](char c) {
+		return c >= 'A' && c <= 'Z';
+	};
+	auto digit = [](char c) {
+		return c >= '0' && c <= '9';
+	};
+	auto letter = [&](char c) {
+		return lower(c) || upper(c);
+	};
+
+	std::string out;
+	out.reserve(handle.size() + 8);
+	for (size_t i = 0; i < handle.size(); ++i) {
+		const char c = handle[i];
+		if (c == '_' || c == '-' || c == '.') {
+			out.push_back(' ');
+			continue;
+		}
+		if (i > 0) {
+			const char prev = handle[i - 1];
+			const bool camel = (lower(prev) || digit(prev)) && upper(c);
+			const bool numberEdge = (letter(prev) && digit(c)) || (digit(prev) && letter(c));
+			if (camel || numberEdge) {
+				out.push_back(' ');
+			}
+		}
+		out.push_back(c);
+	}
+	return out;
+}
+
 } // namespace Voice

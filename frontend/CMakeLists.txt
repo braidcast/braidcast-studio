@@ -225,6 +225,10 @@ target_sources(
     src/chat/chat_archive_schema.cpp
     src/chat/chat_archive_selftest.cpp
     src/chat/chat_retention.hpp
+    # Who has spoken lately (voice control's "reply to ..."): fed at the hub's fan-out
+    # point, read on the UI thread; no obs.h.
+    src/chat/recent_chatters.cpp
+    src/chat/recent_chatters.hpp
     # The destination filter, page bounds and page shape events.list and chat.list share.
     src/chat/feed_query.hpp
     # Phase 9.0 Task 3: Twitch IRC-over-WebSocket chat transport (read + send),

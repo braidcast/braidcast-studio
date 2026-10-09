@@ -34,6 +34,12 @@ struct SlotMatch {
 // over any candidate that merely contains it ("BRB" over "BRB 2").
 SlotMatch BestMatch(const std::string &query, const std::vector<std::string> &candidates);
 
+// How a typed chat handle is said aloud: its words pulled apart where the typing ran them
+// together ("DaveTheStreamer" -> "Dave The Streamer", "dave123" -> "dave 123", "xX_Mo_Xx"
+// -> "x X Mo Xx"). A viewer is called by one word of a handle, and Similarity only credits
+// a word it can find whole, so a person is matched on this rather than on the handle.
+std::string SpokenHandle(const std::string &handle);
+
 } // namespace Voice
 
 #endif // OBS_MULTISTREAM_FRONTEND_VOICE_FUZZY_MATCH_HPP_
