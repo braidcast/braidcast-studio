@@ -363,6 +363,10 @@ target_sources(
     src/voice/VoiceCpu.cpp
     src/voice/VoiceCpu.hpp
     src/voice/VoiceSelfTest.cpp
+    src/settings/SettingsFields.hpp
+    src/voice/VoiceP0Defaults.hpp
+    src/voice/VoiceSettings.cpp
+    src/voice/VoiceSettings.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -740,7 +744,11 @@ set_source_files_properties(
 set_source_files_properties(src/util/win_dll_blocklist.c PROPERTIES COMPILE_OPTIONS "/wd4201;/wd4152")
 
 # Voice TUs that include obs.h, whose math headers use nameless structs (C4201).
-set_source_files_properties(src/voice/VoiceSelfTest.cpp PROPERTIES COMPILE_OPTIONS "/wd4201")
+set_source_files_properties(
+  src/voice/VoiceSelfTest.cpp
+  src/voice/VoiceSettings.cpp
+  PROPERTIES COMPILE_OPTIONS "/wd4201"
+)
 
 # Place the exe in the OBS rundir (bin/64bit) like other targets; keep a distinct
 # OUTPUT_NAME so it does not collide with the legacy obs64 in a shared rundir

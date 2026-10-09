@@ -1,0 +1,26 @@
+#ifndef OBS_MULTISTREAM_FRONTEND_VOICE_SETTINGS_HPP_
+#define OBS_MULTISTREAM_FRONTEND_VOICE_SETTINGS_HPP_
+
+#include "settings/SettingsFields.hpp"
+#include "voice/VoiceP0Defaults.hpp"
+
+#include <string>
+
+// Voice control preferences, persisted to voice.json beside general.json. The field
+// table (VoiceSettingsTable) is the one wire <-> file <-> member mapping. `model` is
+// free text here and validated against the VoiceModels catalog by settings.setVoice,
+// so the catalog stays the single list of model ids.
+struct VoiceSettings {
+	bool enabled = false;
+	std::string model = Voice::P0::kDefaultModelId;
+	// Write recognized text to the session log. Only takes effect while the `voice`
+	// debug component is also on; both default off.
+	bool logTranscripts = false;
+
+	void Load();
+	bool Save() const;
+};
+
+const SettingsFields::Table<VoiceSettings> &VoiceSettingsTable();
+
+#endif // OBS_MULTISTREAM_FRONTEND_VOICE_SETTINGS_HPP_
