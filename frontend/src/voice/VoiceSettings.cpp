@@ -20,8 +20,12 @@ constexpr SettingsFields::StringField<VoiceSettings> kStrings[] = {
 	{"model", "model", &VoiceSettings::model, nullptr, 0, kModelIdMaxLen},
 };
 
+constexpr SettingsFields::DoubleField<VoiceSettings> kDoubles[] = {
+	{"cueVolume", "cue_volume", &VoiceSettings::cueVolume, 0.0, 1.0},
+};
+
 constexpr SettingsFields::Table<VoiceSettings> kTable = {
-	kBools, std::size(kBools), kStrings, std::size(kStrings), nullptr, 0,
+	kBools, std::size(kBools), kStrings, std::size(kStrings), kDoubles, std::size(kDoubles),
 };
 
 } // namespace

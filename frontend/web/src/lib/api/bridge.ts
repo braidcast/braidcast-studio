@@ -393,6 +393,9 @@ export interface VoiceSettingsState {
   model: string;
   /** Write recognized text to the session log; only with the voice debug category on. */
   logTranscripts: boolean;
+  /** How loud the command cues play, 0 (silent) to 1. They play on the monitoring
+   * device only, never into the stream mix. */
+  cueVolume: number;
 }
 
 /** One catalog entry and its download state (voice.model.status). */
@@ -2289,7 +2292,7 @@ export interface ObsMethods {
   "settings.getGeneral": GeneralSettings;
   "settings.setGeneral": GeneralSettings;
   // Voice control. setVoice applies any present subset ({enabled, model,
-  // logTranscripts}) and answers the full payload; it also emits settings.voiceChanged.
+  // logTranscripts, cueVolume}) and answers the full payload; it also emits settings.voiceChanged.
   // A download's progress arrives as voice.model.status events, one model per event.
   "settings.getVoice": VoicePayload;
   "settings.setVoice": VoicePayload;

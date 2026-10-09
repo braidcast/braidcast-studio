@@ -16,6 +16,9 @@ struct VoiceSettings {
 	// Write recognized text to the session log. Only takes effect while the `voice`
 	// debug component is also on; both default off.
 	bool logTranscripts = false;
+	// How loud the command cues are, 0 (silent) to 1. Cues are monitored, not mixed into
+	// the stream, so this is a private volume.
+	double cueVolume = 0.6;
 
 	void Load();
 	bool Save() const;

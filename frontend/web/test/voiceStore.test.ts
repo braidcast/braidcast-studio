@@ -26,7 +26,7 @@ const settle = () => new Promise<void>((r) => queueMicrotask(r));
 function state(overrides: Partial<VoiceState> = {}): VoiceState {
   return {
     ...VOICE_STATE_EMPTY,
-    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false },
+    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 },
     ...overrides,
   };
 }

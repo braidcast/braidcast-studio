@@ -16,7 +16,7 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     device: "Microphone (Yeti)",
     pending: null,
     ready: { cpu: true, cpuReason: "", model: true, mic: true },
-    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false },
+    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 },
     ...overrides,
   };
 }
@@ -46,7 +46,7 @@ function model(overrides: Partial<VoiceModelStatus> = {}): VoiceModelStatus {
   };
 }
 
-const off = { enabled: false, model: "base.en-q5_1", logTranscripts: false };
+const off = { enabled: false, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 };
 
 describe("voiceIndicator", () => {
   it("is hidden while voice is off", () => {
@@ -172,7 +172,7 @@ describe("voiceModelLabel", () => {
 
 describe("voiceEnableGate", () => {
   const cpuOk = { supported: true, reason: "" };
-  const offBase = { enabled: false, model: "base.en-q5_1", logTranscripts: false };
+  const offBase = { enabled: false, model: "base.en-q5_1", logTranscripts: false, cueVolume: 0.6 };
 
   it("allows turning on once the chosen model is on disk", () => {
     expect(voiceEnableGate(offBase, cpuOk, [model({ state: "ready" })])).toEqual({ blocked: false, why: "" });

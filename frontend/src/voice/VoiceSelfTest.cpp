@@ -125,6 +125,19 @@ void TestVoiceSettingsTable(Tally &t)
 	t.Check("settings", "obs_data round trip",
 		loaded.enabled == s.enabled && loaded.model == s.model && loaded.logTranscripts == s.logTranscripts);
 	t.Check("settings", "file key is snake_case", obs_data_has_user_value(data, "log_transcripts"));
+
+	VoiceSettings volumes;
+	std::string volumeError;
+	SettingsFields::ApplyPatch(table, nlohmann::json{{"cueVolume", 0.5}}, volumes, volumeError);
+	t.Check("settings", "cue volume applies", volumes.cueVolume == 0.5);
+	SettingsFields::ApplyPatch(table, nlohmann::json{{"cueVolume", 4.0}}, volumes, volumeError);
+	t.Check("settings", "cue volume clamps high", volumes.cueVolume == 1.0);
+	SettingsFields::ApplyPatch(table, nlohmann::json{{"cueVolume", -2.0}}, volumes, volumeError);
+	t.Check("settings", "cue volume clamps low", volumes.cueVolume == 0.0);
+	t.Check("settings", "cue volume defaults audible", VoiceSettings{}.cueVolume > 0.0);
+	t.Check("settings", "cue volume is on the wire and in the file",
+		SettingsFields::ToJson(table, VoiceSettings{}).contains("cueVolume") &&
+			obs_data_has_user_value(data, "cue_volume"));
 }
 
 void TestSha256(Tally &t)
