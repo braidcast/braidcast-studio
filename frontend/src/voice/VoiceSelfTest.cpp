@@ -8,6 +8,7 @@
 #include "util/sha256.hpp"
 #include "util/time_util.hpp"
 #include "voice/MicMuteGuard.hpp"
+#include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceResampler.hpp"
@@ -434,12 +435,63 @@ void TestMicMuteGuard(Tally &t)
 		!GlobalAudio::PersistedMuteForSnapshot(src, epoch, snapshot));
 }
 
+void TestVoiceCapture(Tally &t)
+{
+	Voice::SpscRing ring(Voice::kVoiceSampleRate * 4);
+	Voice::VoiceCapture capture(ring);
+
+	// Two planar channels of a 1 kHz sine at 48 kHz: 480 frames is one libobs block.
+	std::vector<float> left;
+	FillSine(left, 480, 1000.0, 48000.0);
+	std::vector<float> right = left;
+	const float *planes[2] = {left.data(), right.data()};
+
+	capture.FeedForTest(48000, planes, 2, 480, false);
+	t.Check("capture", "one 10 ms block yields about 160 frames at 16 kHz",
+		ring.Available() >= 158 && ring.Available() <= 162);
+
+	// The downmix is an average, so two identical channels keep the level.
+	std::vector<float> got(ring.Available());
+	ring.Read(got.data(), got.size());
+	t.Check("capture", "identical channels keep their level", Rms(got.data(), got.size()) > 0.5);
+
+	// A muted block still feeds audio (the mute is our own push-to-talk mute) but is
+	// remembered, so the listener can refuse commands the user did not intend to speak.
+	t.Check("capture", "muted starts false", !capture.TakeMutedSeen());
+	capture.FeedForTest(48000, planes, 2, 480, true);
+	t.Check("capture", "muted block sets the flag", capture.TakeMutedSeen());
+	t.Check("capture", "taking the flag clears it", !capture.TakeMutedSeen());
+
+	// A block longer than the resampler's limit must still be consumed whole.
+	ring.Reset();
+	std::vector<float> longBlock;
+	FillSine(longBlock, 9000, 1000.0, 48000.0);
+	const float *onePlane[1] = {longBlock.data()};
+	capture.FeedForTest(48000, onePlane, 1, 9000, false);
+	t.Check("capture", "a block over the resampler limit is chunked, not dropped",
+		ring.Available() >= 2990 && ring.Available() <= 3010 && ring.Dropped() == 0);
+
+	// A rate change rebuilds the resampler rather than resampling with stale state.
+	ring.Reset();
+	std::vector<float> at44;
+	FillSine(at44, 441, 1000.0, 44100.0);
+	const float *plane44[1] = {at44.data()};
+	capture.FeedForTest(44100, plane44, 1, 441, false);
+	t.Check("capture", "input rate change is picked up",
+		capture.InputRateForTest() == 44100 && ring.Available() >= 158 && ring.Available() <= 162);
+
+	// Binding a channel with no source is not an error; it simply stays unbound.
+	t.Check("capture", "unbind without bind is harmless", !capture.Bound());
+	capture.Unbind();
+	t.Check("capture", "still unbound after a redundant unbind", !capture.Bound());
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,    &TestLogCategory,  &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel, &TestModelCatalog, &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,   &TestResampler,    &TestMicMuteGuard,
+	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
+	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,    &TestSpscRing,
+	&TestResampler,     &TestMicMuteGuard, &TestVoiceCapture,
 };
 
 } // namespace

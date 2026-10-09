@@ -376,6 +376,8 @@ target_sources(
     src/voice/VoiceResampler.hpp
     src/voice/MicMuteGuard.cpp
     src/voice/MicMuteGuard.hpp
+    src/voice/VoiceCapture.cpp
+    src/voice/VoiceCapture.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -757,6 +759,7 @@ set_source_files_properties(
   src/voice/VoiceSelfTest.cpp
   src/voice/VoiceSettings.cpp
   src/voice/MicMuteGuard.cpp
+  src/voice/VoiceCapture.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 
