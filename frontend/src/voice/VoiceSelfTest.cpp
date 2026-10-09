@@ -12,6 +12,7 @@
 #include "util/sha256.hpp"
 #include "util/string_util.hpp"
 #include "util/time_util.hpp"
+#include "voice/CommandMatcher.hpp"
 #include "voice/FuzzyMatch.hpp"
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
@@ -1230,6 +1231,91 @@ void TestFuzzyMatch(Tally &t)
 	t.Check("fuzzy", "an empty candidate list is a miss", !match.ok && !match.ambiguous);
 }
 
+void TestCommandMatcher(Tally &t)
+{
+	using namespace Voice;
+
+	// A fixed studio: three scenes, three sources, two of the scenes similarly named.
+	CommandCandidates candidates;
+	candidates.scenes = {"Gameplay Cam", "Starting Soon", "BRB"};
+	candidates.sources = {"Webcam", "Alerts", "Game Capture"};
+	candidates.audioSources = {"Microphone", "Desktop Audio"};
+
+	auto match = [&](const char *text) {
+		return MatchCommand(Normalize(text), candidates);
+	};
+
+	struct Case {
+		const char *said;
+		const char *commandId; // "" means no match
+		const char *slot;      // the resolved slot value, when there is one
+		// Show/hide and mute/unmute share one bridge method, so the id alone no longer
+		// tells them apart: assert the boolean that does. nullptr = the row takes none.
+		const char *flagKey;
+		bool flagValue;
+	};
+
+	const Case kTable[] = {
+		{"switch to gameplay", "scenes.setCurrent", "Gameplay Cam", nullptr, false},
+		{"go to BRB", "scenes.setCurrent", "BRB", nullptr, false},
+		{"Switch to B.R.B., please.", "scenes.setCurrent", "BRB", nullptr, false},
+		{"scene starting soon", "scenes.setCurrent", "Starting Soon", nullptr, false},
+		{"show webcam", "sceneItems.setVisible", "Webcam", "visible", true},
+		{"hide the alerts", "sceneItems.setVisible", "Alerts", "visible", false},
+		{"mute microphone", "audio.setMuted", "Microphone", "muted", true},
+		{"mute mike", "audio.setMuted", "Microphone", "muted", true},
+		{"unmute my mic", "audio.setMuted", "Microphone", "muted", false},
+		{"mute desktop audio", "audio.setMuted", "Desktop Audio", "muted", true},
+		{"unmute desktop", "audio.setMuted", "Desktop Audio", "muted", false},
+		{"start streaming", "streaming.start", "", nullptr, false},
+		{"go live", "streaming.start", "", nullptr, false},
+		{"stop the stream", "streaming.stop", "", nullptr, false},
+		{"end the stream now", "streaming.stop", "", nullptr, false},
+		// Not commands.
+		{"I'll switch to BRB later", "", "", nullptr, false},
+		{"we should probably go to the store", "", "", nullptr, false},
+		{"switch to the weather forecast", "", "", nullptr, false},
+		{"stop streaming for a second", "", "", nullptr, false},
+		{"switch to", "", "", nullptr, false},
+		{"", "", "", nullptr, false},
+	};
+
+	bool allOk = true;
+	for (const Case &c : kTable) {
+		const CommandMatch got = match(c.said);
+		const bool flagOk = c.flagKey == nullptr
+					    ? got.flagKey == nullptr
+					    : (got.flagKey != nullptr && std::string(got.flagKey) == c.flagKey &&
+					       got.flagValue == c.flagValue);
+		const bool matched = got.ok && got.commandId == c.commandId && got.slotValue == c.slot && flagOk;
+		const bool missed = !got.ok && std::string(c.commandId).empty();
+		if (!(matched || missed)) {
+			allOk = false;
+			HostLog(std::string("[selftest] voice-matcher case failed: '") + c.said + "' -> '" +
+				(got.ok ? got.commandId : std::string("<no match>")) + "' slot '" + got.slotValue +
+				"'");
+		}
+	}
+	t.Check("matcher", "the whole command table", allOk);
+
+	// Ambiguity: two scenes that both match "game" must ask, not pick.
+	CommandCandidates twins;
+	twins.scenes = {"Game One", "Game Two"};
+	const CommandMatch ambiguous = MatchCommand(Normalize("switch to game"), twins);
+	t.Check("matcher", "two scenes matching 'game' are ambiguous",
+		!ambiguous.ok && ambiguous.ambiguous && !ambiguous.message.empty());
+
+	// A command whose slot has no candidate at all says which name it heard.
+	const CommandMatch missing = MatchCommand(Normalize("switch to intermission"), candidates);
+	t.Check("matcher", "an unknown scene name is reported back",
+		!missing.ok && missing.message.find("intermission") != std::string::npos);
+
+	// Destructive commands ask first, and so does going live.
+	t.Check("matcher", "stopping the stream needs confirmation", match("stop the stream").needsConfirm);
+	t.Check("matcher", "going live needs confirmation", match("go live").needsConfirm);
+	t.Check("matcher", "switching scenes does not", !match("switch to BRB").needsConfirm);
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1308,12 +1394,12 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,       &TestLogCategory,  &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys, &TestVoiceBridge,
-	&TestTextNormalize,   &TestFuzzyMatch,
+	&TestWhisperLinked,   &TestCpuGate,       &TestLogCategory,    &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,    &TestModelCatalog,   &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,      &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
+	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
+	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher,
 };
 
 } // namespace
