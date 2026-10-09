@@ -9,9 +9,112 @@
 
 #include <nlohmann/json.hpp>
 
+#include <mutex>
 #include <string>
 
 using json = nlohmann::json;
+
+namespace {
+
+// The push-to-talk mute override (see the header). One microphone at a time, so one
+// weak reference and one flag are enough. Guarded because Persist() runs on the UI
+// thread while voice engages from the libobs hotkey thread. The epoch counts every
+// register and clear, so a save can tell whether one overlapped its snapshot.
+std::mutex g_muteOverrideMutex;
+OBSWeakSource g_muteOverrideSource;
+bool g_muteOverrideValue = false;
+uint64_t g_muteOverrideEpoch = 0;
+
+// Whether an override is registered for `source`, and if so its value in `value`.
+// Caller holds g_muteOverrideMutex.
+bool OverrideForLocked(obs_source_t *source, bool &value)
+{
+	if (!source || !g_muteOverrideSource) {
+		return false;
+	}
+	// Resolve the weak ref rather than compare pointers: a destroyed source's address can
+	// be reused by a new one, which must not inherit the override.
+	OBSSourceAutoRelease held = obs_weak_source_get_source(g_muteOverrideSource);
+	if (held.Get() != source) {
+		return false;
+	}
+	value = g_muteOverrideValue;
+	return true;
+}
+
+} // namespace
+
+uint32_t GlobalAudio::PrimaryMicChannel()
+{
+	uint32_t firstMicSlot = 0;
+	for (const GlobalAudioChannels::Slot &slot : GlobalAudioChannels::Slots()) {
+		if (!slot.input) {
+			continue;
+		}
+		const uint32_t channel = static_cast<uint32_t>(slot.channel);
+		if (firstMicSlot == 0) {
+			firstMicSlot = channel;
+		}
+		OBSSourceAutoRelease bound = obs_get_output_source(channel); // addref'd; may be null
+		if (bound) {
+			return channel;
+		}
+	}
+	return firstMicSlot;
+}
+
+void GlobalAudio::SetPersistedMuteOverride(obs_source_t *source, bool mutedBeforeOverride)
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	g_muteOverrideSource = source ? OBSGetWeakRef(source) : OBSWeakSource();
+	g_muteOverrideValue = mutedBeforeOverride;
+	++g_muteOverrideEpoch;
+}
+
+void GlobalAudio::ClearPersistedMuteOverride()
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	g_muteOverrideSource = nullptr;
+	g_muteOverrideValue = false;
+	++g_muteOverrideEpoch;
+}
+
+bool GlobalAudio::PersistedMuteOverride(obs_source_t *source, bool actualMuted)
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	bool value = false;
+	return OverrideForLocked(source, value) ? value : actualMuted;
+}
+
+uint64_t GlobalAudio::MuteOverrideEpoch()
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	return g_muteOverrideEpoch;
+}
+
+bool GlobalAudio::PersistedMuteForSnapshot(obs_source_t *source, uint64_t epochBefore, bool snapshotMuted)
+{
+	bool muted = snapshotMuted;
+	for (;;) {
+		bool value = false;
+		bool active = false;
+		uint64_t now = 0;
+		{
+			std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+			active = OverrideForLocked(source, value);
+			now = g_muteOverrideEpoch;
+		}
+		if (now == epochBefore) {
+			return active ? value : muted;
+		}
+		// A guard engaged or released while the snapshot was taken, so its "muted" may be
+		// the guard's own: read the live state again and recheck. The guard registers
+		// before it mutes and clears after it unmutes, so a read with no transition
+		// around it is either covered by the override or not the guard's mute at all.
+		epochBefore = now;
+		muted = source && obs_source_muted(source);
+	}
+}
 
 const std::array<GlobalAudioChannels::Slot, 6> &GlobalAudioChannels::Slots()
 {
@@ -100,12 +203,22 @@ bool GlobalAudioChannels::Persist() const
 		// from the scene-collection save (SaveFilter), so this file is the only place
 		// their filters and mixer state can persist. A blob that won't round-trip
 		// through JSON degrades to the legacy device_id string.
+		// Read before the snapshot, so a push-to-talk hold that starts or ends while
+		// obs_save_source runs is noticed (see PersistedMuteForSnapshot).
+		const uint64_t epoch = GlobalAudio::MuteOverrideEpoch();
 		OBSDataAutoRelease saved = obs_save_source(cur); // full obs_save_source blob
 		const char *savedJson = saved ? obs_data_get_json(saved) : nullptr;
 		bool stored = false;
 		if (savedJson && *savedJson) {
 			try {
-				obj[std::to_string(slot.channel)] = json::parse(savedJson);
+				json blob = json::parse(savedJson);
+				// Voice push-to-talk mutes the mic for a moment; persist the state from
+				// before that, so a save during the hold cannot leave the user muted.
+				const auto muted = blob.find("muted");
+				if (muted != blob.end() && muted->is_boolean()) {
+					*muted = GlobalAudio::PersistedMuteForSnapshot(cur, epoch, muted->get<bool>());
+				}
+				obj[std::to_string(slot.channel)] = std::move(blob);
 				stored = true;
 			} catch (const std::exception &e) {
 				HostLog("[audio] global audio: ch" + std::to_string(slot.channel) +

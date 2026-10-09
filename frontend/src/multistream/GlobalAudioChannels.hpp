@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
+
+typedef struct obs_source obs_source_t;
 
 // Owns the global desktop/mic audio channels -- the wasapi capture sources bound
 // to OBS output channels 1..6 that stock OBS seeds on first run (Desktop Audio /
@@ -77,3 +80,35 @@ public:
 	// obs_shutdown. Call during teardown while libobs is still up.
 	void Clear();
 };
+
+// Free functions over the same slot table, for callers that need "the mic" or the
+// persisted mute state without the lifecycle owner (voice control runs them from the
+// libobs hotkey thread).
+namespace GlobalAudio {
+
+// The global audio channel holding the user's microphone: the first mic/aux slot
+// (channels 3-6) with a source bound, or the first mic/aux slot if none is bound.
+// The one place voice control and the UI agree on "the mic".
+uint32_t PrimaryMicChannel();
+
+// Voice push-to-talk mutes the mic for the length of a command, and a save during
+// that window would persist the muted state (obs_save_source writes "muted", and
+// Persist() stores that blob). While an override is registered for a source, Persist()
+// stores the state from before the mute instead. SetPersistedMuteOverride registers
+// one (passing nullptr clears it); ClearPersistedMuteOverride drops it. One source at
+// a time: registering another replaces the first.
+void SetPersistedMuteOverride(obs_source_t *source, bool mutedBeforeOverride);
+void ClearPersistedMuteOverride();
+// The value to persist for `source`: the override when one is registered for that
+// source, otherwise `actualMuted` unchanged.
+bool PersistedMuteOverride(obs_source_t *source, bool actualMuted);
+
+// What Persist() uses, because checking the override AFTER a snapshot is not enough: a
+// hold that ends between obs_save_source reading "muted" and that check would store the
+// guard's mute. Read MuteOverrideEpoch() before the snapshot and pass the snapshot's
+// "muted" here; when a register or clear landed in between, the live state is read
+// again until no transition overlaps the read.
+uint64_t MuteOverrideEpoch();
+bool PersistedMuteForSnapshot(obs_source_t *source, uint64_t epochBefore, bool snapshotMuted);
+
+} // namespace GlobalAudio

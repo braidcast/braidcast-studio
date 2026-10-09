@@ -1,11 +1,13 @@
 #include "obs_bootstrap.hpp"
 
 #include "log.hpp"
+#include "multistream/GlobalAudioChannels.hpp"
 #include "util/file_util.hpp"
 #include "util/async_task.hpp"
 #include "util/http_client.hpp"
 #include "util/sha256.hpp"
 #include "util/time_util.hpp"
+#include "voice/MicMuteGuard.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceResampler.hpp"
@@ -381,12 +383,63 @@ void TestResampler(Tally &t)
 	t.Check("resample", "over-long block refused", guard.Process(huge.data(), huge.size(), out.data()) == 0);
 }
 
+void TestMicMuteGuard(Tally &t)
+{
+	const uint32_t channel = GlobalAudio::PrimaryMicChannel();
+	t.Check("mic", "primary mic channel is a mic/aux slot", channel >= 3 && channel <= 6);
+
+	// A private source of our own, so the test never touches the user's devices.
+	OBSSourceAutoRelease src =
+		obs_source_create_private("wasapi_input_capture", "braidcast voice selftest mic", nullptr);
+	if (!src) {
+		t.Skip("mic", "guard restores the prior state", "no input capture source available");
+		return;
+	}
+	obs_source_set_muted(src, false);
+
+	Voice::MicMuteGuard guard;
+	guard.Engage(src);
+	t.Check("mic", "engage mutes an unmuted mic", obs_source_muted(src));
+	t.Check("mic", "persisted state stays unmuted while held", !GlobalAudio::PersistedMuteOverride(src, true));
+	guard.Release();
+	t.Check("mic", "release restores unmuted", !obs_source_muted(src));
+
+	// The user unmutes mid-hold: release must leave their choice alone.
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	obs_source_set_muted(src, false);
+	guard.Release();
+	t.Check("mic", "release leaves a mic the user unmuted alone", !obs_source_muted(src));
+
+	// Already muted before the guard: release must not unmute it.
+	obs_source_set_muted(src, true);
+	guard.Engage(src);
+	t.Check("mic", "engage on an already muted mic is a no-op", obs_source_muted(src));
+	guard.Release();
+	t.Check("mic", "release keeps a mic that was already muted", obs_source_muted(src));
+
+	// Releasing without engaging, and double release, must both be harmless.
+	guard.Release();
+	t.Check("mic", "release without engage is harmless", obs_source_muted(src));
+	t.Check("mic", "no override once released", GlobalAudio::PersistedMuteOverride(src, true));
+
+	// A save that read "muted" during the hold but resolves it after the release (the
+	// guard unmutes, then clears the override) must still store unmuted.
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	const uint64_t epoch = GlobalAudio::MuteOverrideEpoch();
+	const bool snapshot = obs_source_muted(src);
+	guard.Release();
+	t.Check("mic", "a save straddling the release stores unmuted",
+		!GlobalAudio::PersistedMuteForSnapshot(src, epoch, snapshot));
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
 	&TestWhisperLinked,   &TestCpuGate,    &TestLogCategory,  &TestVoiceSettingsTable,
 	&TestSha256,          &TestHttpCancel, &TestModelCatalog, &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,   &TestResampler,
+	&TestPostToUiDelayed, &TestSpscRing,   &TestResampler,    &TestMicMuteGuard,
 };
 
 } // namespace
