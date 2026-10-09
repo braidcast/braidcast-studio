@@ -229,6 +229,9 @@ target_sources(
     # point, read on the UI thread; no obs.h.
     src/chat/recent_chatters.cpp
     src/chat/recent_chatters.hpp
+    # Per-platform chat message length limits, counted in code points; pure, no obs.h.
+    src/chat/chat_limits.cpp
+    src/chat/chat_limits.hpp
     # The destination filter, page bounds and page shape events.list and chat.list share.
     src/chat/feed_query.hpp
     # Phase 9.0 Task 3: Twitch IRC-over-WebSocket chat transport (read + send),

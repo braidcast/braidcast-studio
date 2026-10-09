@@ -2,6 +2,7 @@
 
 #include "audio/AudioEndpoints.hpp"
 #include "bridge.hpp"
+#include "chat/chat_limits.hpp"
 #include "chat/recent_chatters.hpp"
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
@@ -1669,6 +1670,37 @@ void TestChatterFeed(Tally &t)
 		Chat::Chatters().Note(it->platform, it->authorId, it->displayName, {it->accountId, it->profileUuid},
 				      it->lastSeenMs);
 	}
+}
+
+void TestChatLimits(Tally &t)
+{
+	// Counting is by code point, not byte: an emoji is one character to a platform and
+	// four bytes to us, and a message of 400 emoji must not be called 1600 characters.
+	t.Check("limits", "ASCII counts by character", Chat::CodePointCount("hello") == 5);
+	t.Check("limits", "an accented character counts once", Chat::CodePointCount("caf\xc3\xa9") == 4);
+	t.Check("limits", "an emoji counts once", Chat::CodePointCount("\xf0\x9f\x8e\xae") == 1);
+	t.Check("limits", "malformed UTF-8 does not loop or overcount", Chat::CodePointCount("\xff\xfe") <= 2);
+
+	t.Check("limits", "every armed platform has a limit",
+		Chat::MessageLimit("twitch") > 0 && Chat::MessageLimit("youtube") > 0 &&
+			Chat::MessageLimit("kick") > 0 && Chat::MessageLimit("facebook") > 0);
+	t.Check("limits", "an unknown platform gets the safe default",
+		Chat::MessageLimit("some-new-platform") == Chat::kDefaultMessageLimit);
+
+	const std::vector<std::string> platforms = {"twitch", "youtube"};
+	std::string offender;
+	t.Check("limits", "a short message fits everywhere",
+		Chat::FitsEverywhere("hello chat", platforms, offender) && offender.empty());
+
+	const std::string longMessage(Chat::MessageLimit("youtube") + 10, 'x');
+	t.Check("limits", "a message too long for one platform is refused, and names it",
+		!Chat::FitsEverywhere(longMessage, platforms, offender) && offender == "youtube");
+
+	const std::string exact(Chat::MessageLimit("youtube"), 'x');
+	t.Check("limits", "a message exactly at the limit fits", Chat::FitsEverywhere(exact, platforms, offender));
+
+	t.Check("limits", "an empty message never fits", !Chat::FitsEverywhere("", platforms, offender));
+	t.Check("limits", "an empty platform list does not fit either", !Chat::FitsEverywhere("hello", {}, offender));
 }
 
 void TestVoiceFeedback(Tally &t)
