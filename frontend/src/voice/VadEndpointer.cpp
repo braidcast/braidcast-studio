@@ -99,6 +99,7 @@ VadEndpointer::State VadEndpointer::Push(const float *samples, size_t count)
 		if (p < kEndProbability) {
 			silenceMs_ += msPerProb;
 			if (silenceMs_ >= kEndSilenceMs) {
+				speechMs_ -= silenceMs_;
 				DBG(LogCat::Voice, "vad: utterance ended after %zu ms", speechMs_);
 				inSpeech_ = false;
 				silenceMs_ = 0;

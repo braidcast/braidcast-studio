@@ -1280,6 +1280,93 @@ void TestVadEndpointer(Tally &t)
 	t.Check("vad", "stop is idempotent", (vad.Stop(), !vad.Ready()));
 }
 
+void TestContinuousRecognizer(Tally &t)
+{
+	const std::optional<std::string> modelDir = Env::Raw("BRAIDCAST_SELFTEST_VOICE_MODELS");
+	if (!modelDir || modelDir->empty()) {
+		t.Skip("continuous", "wakes on the wake phrase", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
+		return;
+	}
+	// A second fixture beside the first, opened by the default wake phrase:
+	// "Braidcast, switch to gameplay."
+	Voice::WavData woken;
+	Voice::WavData ordinary;
+	std::string error;
+	const std::string wokenPath = VoiceDataPath("fixtures/braidcast-switch-to-gameplay.wav");
+	const std::string ordinaryPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
+	if (wokenPath.empty() || ordinaryPath.empty() || !Voice::LoadWavMono(wokenPath, woken, error) ||
+	    !Voice::LoadWavMono(ordinaryPath, ordinary, error)) {
+		t.Check("continuous", "fixtures available", false);
+		return;
+	}
+
+	Voice::SpscRing ring(Voice::kVoiceSampleRate * 30);
+	Voice::Recognizer rec(ring, [] { return false; });
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	std::vector<Voice::Recognizer::Result> results;
+	int wakes = 0;
+	bool ready = false;
+	rec.SetModelCallback([&](bool ok, const std::string &) {
+		std::lock_guard<std::mutex> lock(mutex);
+		ready = ok;
+		cv.notify_all();
+	});
+	rec.SetWakeCallback([&] {
+		std::lock_guard<std::mutex> lock(mutex);
+		++wakes;
+		cv.notify_all();
+	});
+	rec.SetResultCallback([&](Voice::Recognizer::Result r) {
+		std::lock_guard<std::mutex> lock(mutex);
+		results.push_back(std::move(r));
+		cv.notify_all();
+	});
+
+	Voice::Recognizer::Continuous continuous;
+	continuous.enabled = true;
+	continuous.wakePhrase = VoiceSettings{}.wakePhrase;
+	continuous.vadModelPath = *modelDir + "/ggml-silero-v5.1.2.bin";
+	continuous.wakeModelPath = *modelDir + "/ggml-tiny.en-q5_1.bin";
+	rec.SetContinuous(continuous);
+	rec.Start(*modelDir + "/ggml-base.en-q5_1.bin", 2);
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(90), [&] { return ready; });
+	}
+	t.Check("continuous", "all three models load", ready && rec.ContinuousActive());
+	if (!ready) {
+		rec.Stop();
+		return;
+	}
+
+	// Speech without the wake phrase is dropped silently: no wake, no result.
+	const std::vector<float> silence(Voice::kVoiceSampleRate, 0.f);
+	ring.Write(ordinary.samples.data(), ordinary.samples.size());
+	ring.Write(silence.data(), silence.size());
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(10), [&] { return wakes > 0 || !results.empty(); });
+	}
+	t.Check("continuous", "speech without the wake phrase is ignored", wakes == 0 && results.empty());
+
+	// With it, the app wakes and transcribes, and the phrase is gone from the text.
+	ring.Write(woken.samples.data(), woken.samples.size());
+	ring.Write(silence.data(), silence.size());
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait_for(lock, std::chrono::seconds(60), [&] { return !results.empty(); });
+	}
+	const std::string text = results.empty() ? std::string() : StringUtil::ToLower(results[0].text);
+	t.Check("continuous", "wakes on the wake phrase", wakes == 1 && results.size() == 1 && results[0].wake);
+	t.Check("continuous", "the transcript keeps the command", text.find("gameplay") != std::string::npos);
+	t.Check("continuous", "the wake phrase is stripped", text.find("braid") == std::string::npos);
+
+	rec.Stop();
+	t.Check("continuous", "stop joins cleanly with continuous mode on", !rec.Ready() && !rec.ContinuousActive());
+}
+
 void TestWakeGate(Tally &t)
 {
 	using Voice::MatchWakePhrase;
@@ -2265,15 +2352,15 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,        &TestLogCategory,     &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,     &TestModelCatalog,    &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,       &TestResampler,       &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener,  &TestWavFile,         &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVadEndpointer,  &TestWakeGate,        &TestVoiceEngine,
-	&TestVoiceHotkeys,    &TestVoiceBridge,    &TestTextNormalize,   &TestFuzzyMatch,
-	&TestCommandMatcher,  &TestBridgeSeams,    &TestCommandRegistry, &TestVoiceFeedback,
-	&TestAudioEndpoints,  &TestRecentChatters, &TestChatterFeed,     &TestChatLimits,
-	&TestChatCommands,    &TestChatDrafts,
+	&TestWhisperLinked,   &TestCpuGate,        &TestLogCategory,    &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,     &TestModelCatalog,   &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,       &TestResampler,      &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener,  &TestWavFile,        &TestRecognizerWithoutModel,
+	&TestRecognizer,      &TestVadEndpointer,  &TestWakeGate,       &TestContinuousRecognizer,
+	&TestVoiceEngine,     &TestVoiceHotkeys,   &TestVoiceBridge,    &TestTextNormalize,
+	&TestFuzzyMatch,      &TestCommandMatcher, &TestBridgeSeams,    &TestCommandRegistry,
+	&TestVoiceFeedback,   &TestAudioEndpoints, &TestRecentChatters, &TestChatterFeed,
+	&TestChatLimits,      &TestChatCommands,   &TestChatDrafts,
 };
 
 } // namespace

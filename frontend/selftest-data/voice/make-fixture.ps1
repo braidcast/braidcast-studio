@@ -1,8 +1,8 @@
-# Generates the voice recognizer's test fixture with the Windows speech synthesizer,
+# Generates the voice recognizer's test fixtures with the Windows speech synthesizer,
 # so the repository carries a small WAV rather than a recording of anyone's voice.
 # Run from the repository root:
 #   powershell.exe -ExecutionPolicy Bypass -File frontend/selftest-data/voice/make-fixture.ps1
-# Regenerate only if the fixture is lost: a different voice changes what the model
+# Regenerate only if a fixture is lost: a different voice changes what the model
 # hears, and the recognizer self-test asserts on the text.
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Speech
@@ -18,6 +18,13 @@ $synth.SetOutputToWaveFile($outFile, $format)
 $synth.Rate = 0
 $synth.Speak("Switch to gameplay.")
 $synth.SetOutputToNull()
+
+# The always-listen fixture: the same command, opened by the default wake phrase.
+$wokenFile = Join-Path $outDir "braidcast-switch-to-gameplay.wav"
+$synth.SetOutputToWaveFile($wokenFile, $format)
+$synth.Speak("Braidcast, switch to gameplay.")
+$synth.SetOutputToNull()
+Write-Output "wrote $wokenFile ($((Get-Item $wokenFile).Length) bytes)"
 $synth.Dispose()
 
 $size = (Get-Item $outFile).Length

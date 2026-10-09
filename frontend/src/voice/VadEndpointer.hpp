@@ -60,7 +60,9 @@ public:
 	// Forget the utterance in progress, the held-back remainder and the LSTM state.
 	void Reset();
 
-	// Milliseconds since the utterance in progress started (pauses included).
+	// How long the utterance in progress has run, pauses inside it included. After the
+	// Push that reported Ended, how long the utterance that just ended ran, without the
+	// silence that ended it.
 	size_t SpeechMs() const { return speechMs_; }
 
 private:

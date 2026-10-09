@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_VOICE_RECOGNIZER_HPP_
 #define OBS_MULTISTREAM_FRONTEND_VOICE_RECOGNIZER_HPP_
 
+#include "voice/VadEndpointer.hpp"
 #include "voice/VoiceRing.hpp"
 
 #include <atomic>
@@ -22,6 +23,12 @@ namespace Voice {
 //
 // Callbacks are invoked from the worker thread. The engine marshals them to the UI
 // thread; the recognizer itself knows nothing about CEF. Set them before Start.
+//
+// Always-listen (SetContinuous) is a second mode of the same worker: while no key is
+// held it runs everything the capture delivers past a voice activity detector, checks
+// the opening of each utterance for the wake phrase with a tiny model, and runs the
+// speech model only on an utterance the wake phrase opened. A held key still works and
+// takes precedence over an utterance that has not been claimed by the wake phrase yet.
 class Recognizer {
 public:
 	struct Result {
@@ -30,6 +37,18 @@ public:
 		std::string error; // why, when ok is false
 		bool mutedSeen = false;
 		int64_t inferenceMs = 0;
+		// Always-listen: the utterance was opened by the wake phrase (which is stripped
+		// from `text`), not by the key. The wake callback fired for it first.
+		bool wake = false;
+	};
+
+	// Always-listen configuration. enabled = false keeps the worker in push-to-talk
+	// mode, where it does nothing until BeginSegment.
+	struct Continuous {
+		bool enabled = false;
+		std::string wakePhrase;
+		std::string vadModelPath;  // UTF-8, the Silero model
+		std::string wakeModelPath; // UTF-8, the tiny model used for the wake check only
 	};
 
 	// The pre-roll kept from before the key went down. Push-to-talk users start
@@ -74,18 +93,44 @@ public:
 	// of a long prompt (src/whisper.cpp:7046 and the prompt_past1 take below it).
 	void SetPrompt(std::string prompt);
 
+	// Call before Start; changing it needs a Stop/Start, because the voice activity and
+	// wake models are loaded on the worker. When either fails to load, the worker logs
+	// it and stays in push-to-talk mode (ContinuousActive says which it is in).
+	void SetContinuous(Continuous config);
+	// True once the worker has the always-listen models up, until Stop.
+	bool ContinuousActive() const { return continuousActive_.load(std::memory_order_acquire); }
+
 	// (bool ok, why) once the model has loaded or failed.
 	void SetModelCallback(std::function<void(bool, const std::string &)> fn);
 	void SetResultCallback(std::function<void(Result)> fn);
+	// Fired the moment the wake phrase is recognized, which is while the user is usually
+	// still speaking: the engine turns it into the listening indicator. A Result with
+	// wake = true always follows it, unless Stop comes first.
+	void SetWakeCallback(std::function<void()> fn);
 
 private:
 	enum class Segment { Idle, Open, Closing, Busy };
+	// Where always-listen is with the current utterance: none under way; collecting its
+	// opening; heard it was not for us (ignored until the detector says it ended); or
+	// woken by the wake phrase (collected to the end, then transcribed).
+	enum class Utterance { None, Collecting, Dismissed, Woken };
 
 	static bool ShouldAbort(void *self); // whisper's abort_callback
 	void WorkerMain(std::string modelPath, int threads);
 	bool LoadModel(const std::string &modelPath, std::string &error);
 	void DrainToPreRoll();
+	void KeepPreRoll(const float *samples, size_t count);
 	void StartCollecting();
+	bool StartContinuous();
+	void ContinuousStep();
+	void ContinuousBlock(const float *block, size_t count, VadEndpointer::State state);
+	void BeginUtterance(const float *block, size_t count);
+	void DecideWake();
+	void ConcludeUtterance();
+	bool WakeCheck();
+	bool ClaimWake();
+	void FinishWoken();
+	void AbandonUtterance();
 	void PullAudio();
 	Result Transcribe(int threads);
 	std::string BuildPrompt();
@@ -94,12 +139,16 @@ private:
 	std::function<bool()> takeMutedSeen_;
 	std::function<void(bool, const std::string &)> onModel_;
 	std::function<void(Result)> onResult_;
+	std::function<void()> onWake_;
 
 	std::thread worker_;
 	std::mutex mutex_;
 	std::condition_variable cv_;
 	Segment segment_ = Segment::Idle;
 	bool quit_ = false;
+	// A woken utterance owns the recognizer from the wake until its result: BeginSegment
+	// refuses meanwhile, as it does while a segment is in flight. Under mutex_.
+	bool wakeBusy_ = false;
 	std::string prompt_;
 	std::atomic<bool> ready_{false};
 	// Read by the abort callback on whisper's threads. Stop sets stopping_; the worker
@@ -117,6 +166,15 @@ private:
 	std::vector<float> audio_; // the segment being collected
 	size_t preRollTaken_ = 0;  // how much of audio_ is pre-roll
 	whisper_context *ctx_ = nullptr;
+	int threads_ = 1;
+
+	// Always-listen. continuous_ is set before Start and read-only on the worker after;
+	// the rest is worker-only.
+	Continuous continuous_;
+	std::atomic<bool> continuousActive_{false};
+	VadEndpointer vad_;
+	whisper_context *wakeCtx_ = nullptr;
+	Utterance utterance_ = Utterance::None;
 };
 
 // Strips whisper's non-speech markers ("[BLANK_AUDIO]", "(wind blowing)"), collapses
