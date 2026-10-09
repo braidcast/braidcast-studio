@@ -37,6 +37,7 @@ import { EV } from "$lib/utils/eventNames";
   import IconButton, { ICONBTN_UTILITY } from "$lib/ui/IconButton.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
+  import VoiceIndicator from "$lib/ui/VoiceIndicator.svelte";
   import {
     showMetadataMismatchToast,
     hideMetadataMismatchToast,
@@ -1010,6 +1011,7 @@ import { EV } from "$lib/utils/eventNames";
           {/if}
         </span>
       {/if}
+      <VoiceIndicator />
     </div>
 
     <div class="bb-spacer"></div>
