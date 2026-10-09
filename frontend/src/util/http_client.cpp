@@ -37,28 +37,57 @@ size_t WriteToString(char *ptr, size_t size, size_t nmemb, void *userdata)
 	return total;
 }
 
-// Per-transfer state threaded into the streaming write callback: the easy handle (so
-// the callback can read the response status once headers are in), the caller's chunk
-// sink, and the error-body accumulator used for a non-2xx response.
-struct StreamState {
-	CURL *curl = nullptr;
-	const std::function<bool(std::string_view)> *onChunk = nullptr;
-	std::string *errorBody = nullptr;
+// The caller's ways of asking a transfer to stop early: the request's flag
+// (HttpReq::cancel, either path) and the streaming path's predicate. Both are read by
+// one progress callback, so there is a single cancel mechanism however it is asked for.
+struct CancelSources {
+	const std::atomic<bool> *flag = nullptr;
 	const std::function<bool()> *canceled = nullptr;
-	bool aborted = false; // onChunk or `canceled` requested cancellation
+	bool aborted = false; // a source asked, and the transfer was told to stop
+
+	bool Any() const { return flag || (canceled && *canceled); }
+
+	bool Requested() const
+	{
+		return (flag && flag->load(std::memory_order_acquire)) || (canceled && *canceled && (*canceled)());
+	}
 };
 
 // libcurl's progress callback, which it also calls about once a second while the transfer
-// sits idle: the one place a cancel can land on a stream that is sending nothing.
-int StreamProgress(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
+// connects or sits idle: the one place a cancel can land on a transfer that is receiving
+// nothing.
+int CancelPoll(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
 {
-	auto *st = static_cast<StreamState *>(userdata);
-	if (st->canceled && *st->canceled && (*st->canceled)()) {
-		st->aborted = true;
+	auto *c = static_cast<CancelSources *>(userdata);
+	if (c->Requested()) {
+		c->aborted = true;
 		return 1; // abort -> CURLE_ABORTED_BY_CALLBACK
 	}
 	return 0;
 }
+
+// Turn the progress callback on only when there is something to poll, so a request
+// with no cancel source runs exactly as it did before cancel existed.
+void ArmCancelPoll(CURL *curl, CancelSources &c)
+{
+	if (!c.Any()) {
+		return;
+	}
+	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelPoll);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &c);
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+}
+
+// Per-transfer state threaded into the streaming write callback: the easy handle (so
+// the callback can read the response status once headers are in), the caller's chunk
+// sink, the error-body accumulator used for a non-2xx response, and the cancel sources.
+struct StreamState {
+	CURL *curl = nullptr;
+	const std::function<bool(std::string_view)> *onChunk = nullptr;
+	std::string *errorBody = nullptr;
+	CancelSources cancel;
+	bool aborted = false; // onChunk requested cancellation
+};
 
 size_t WriteStreaming(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
@@ -79,6 +108,11 @@ size_t WriteStreaming(char *ptr, size_t size, size_t nmemb, void *userdata)
 		return total;
 	}
 
+	// A cancel asked for between progress polls lands here, before the chunk is delivered.
+	if (st->cancel.Requested()) {
+		st->cancel.aborted = true;
+		return 0;
+	}
 	if (!(*st->onChunk)(std::string_view(ptr, total))) {
 		// Caller-driven cancel: short return -> curl aborts with CURLE_WRITE_ERROR,
 		// which the caller treats as a clean stop (see the `aborted` flag).
@@ -118,9 +152,14 @@ void ApplyCommonOptions(CURL *curl, const HttpReq &req, struct curl_slist *&head
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
 	}
 
-	// Do NOT follow redirects: OAuth flows must observe the 3xx Location header
-	// themselves rather than transparently chasing it.
-	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+	// Redirects stay off unless the caller opts in: OAuth flows must observe the 3xx
+	// Location header themselves rather than transparently chasing it. An opted-in
+	// static download is capped and kept on HTTPS.
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.followRedirects ? 1L : 0L);
+	if (req.followRedirects) {
+		curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+		curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+	}
 	// NOSIGNAL is mandatory off the main thread: libcurl's default DNS-timeout
 	// path uses SIGALRM, which is unsafe in a multithreaded process.
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -148,12 +187,18 @@ HttpResponse HttpRequest(const HttpReq &req)
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.body);
 	curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, kMaxResponseBytes);
 
+	CancelSources cancel;
+	cancel.flag = req.cancel;
+	ArmCancelPoll(curl, cancel);
+
 	const long timeout = req.timeoutSec > 0 ? req.timeoutSec : 30;
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 
 	const CURLcode code = curl_easy_perform(curl);
 	if (code == CURLE_OK) {
 		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp.status);
+	} else if (cancel.aborted && code == CURLE_ABORTED_BY_CALLBACK) {
+		resp.error = "cancelled";
 	} else {
 		resp.error = curl_easy_strerror(code);
 	}
@@ -186,12 +231,9 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteStreaming);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-	if (canceled) {
-		st.canceled = &canceled;
-		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, StreamProgress);
-		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &st);
-		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-	}
+	st.cancel.flag = req.cancel;
+	st.cancel.canceled = &canceled;
+	ArmCancelPoll(curl, st.cancel);
 
 	// Connect timeout only -- the transfer is a long-lived push stream and must NOT be
 	// killed by a whole-request timeout. A connected-but-dead stream (no bytes for a long
@@ -209,7 +251,8 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 	// A caller-driven cancel returns 0 from the write callback (CURLE_WRITE_ERROR) or 1
 	// from the progress callback (CURLE_ABORTED_BY_CALLBACK). Either is a clean stop, not
 	// a transport failure: leave `error` empty and report whatever status was reached.
-	const bool cleanStop = st.aborted && (code == CURLE_WRITE_ERROR || code == CURLE_ABORTED_BY_CALLBACK);
+	const bool cleanStop = (st.aborted || st.cancel.aborted) &&
+			       (code == CURLE_WRITE_ERROR || code == CURLE_ABORTED_BY_CALLBACK);
 	if (code != CURLE_OK && !cleanStop) {
 		error = curl_easy_strerror(code);
 	}

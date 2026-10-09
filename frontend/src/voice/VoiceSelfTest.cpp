@@ -1,7 +1,9 @@
 #include "obs_bootstrap.hpp"
 
 #include "log.hpp"
+#include "util/http_client.hpp"
 #include "util/sha256.hpp"
+#include "util/time_util.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceSettings.hpp"
 
@@ -126,10 +128,28 @@ void TestSha256(Tally &t)
 	std::filesystem::remove(p, ec);
 }
 
+void TestHttpCancel(Tally &t)
+{
+	// 10.255.255.1 is non-routable, so the connect hangs until the timeout. With the
+	// cancel flag already set, the transfer-info poll must end it in about a second.
+	std::atomic<bool> cancel{true};
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = "http://10.255.255.1/voice-selftest";
+	req.timeoutSec = 30;
+	req.followRedirects = true;
+	req.cancel = &cancel;
+	std::string errorBody, error;
+	const int64_t t0 = TimeUtil::NowMs();
+	const long status = Http::HttpRequestStreaming(req, [](std::string_view) { return true; }, errorBody, error);
+	const int64_t elapsed = TimeUtil::NowMs() - t0;
+	t.Check("http", "cancel ends a stalled connect within 3 s", status == 0 && elapsed < 3000);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked, &TestCpuGate, &TestLogCategory, &TestVoiceSettingsTable, &TestSha256,
+	&TestWhisperLinked, &TestCpuGate, &TestLogCategory, &TestVoiceSettingsTable, &TestSha256, &TestHttpCancel,
 };
 
 } // namespace

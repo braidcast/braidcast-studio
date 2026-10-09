@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_HTTP_CLIENT_HPP_
 #define OBS_MULTISTREAM_FRONTEND_HTTP_CLIENT_HPP_
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,15 @@ struct HttpReq {
 	std::string body;                 // request body (POST/PATCH/PUT)
 	std::string contentType;          // sets Content-Type when non-empty
 	int timeoutSec = 30;              // whole-request timeout
+	// Follow up to 5 HTTPS redirects. Off by default: OAuth flows must observe the 3xx
+	// Location themselves. A static-file download opts in (Hugging Face redirects every
+	// model file to its CDN).
+	bool followRedirects = false;
+	// Polled about once a second for the whole transfer, connect included; true aborts it.
+	// A stalled connect is otherwise uncancellable until its timeout. On the streaming
+	// path it stops the transfer the same clean way `canceled` does; HttpRequest reports
+	// it as a transport failure with `error` "cancelled".
+	const std::atomic<bool> *cancel = nullptr;
 };
 
 struct HttpResponse {
@@ -32,8 +42,8 @@ struct HttpResponse {
 
 // Perform a blocking request. On a transport-level failure `error` is set and
 // `status` is 0; an HTTP error (4xx/5xx) is NOT an error here -- `status`
-// carries the code and `error` stays empty. Redirects are NOT followed (OAuth
-// flows must observe 3xx Location themselves).
+// carries the code and `error` stays empty. Redirects are not
+// followed unless req.followRedirects is set.
 HttpResponse HttpRequest(const HttpReq &req);
 
 // Streaming GET/POST: response body bytes are handed to `onChunk` as they arrive over
@@ -52,6 +62,8 @@ HttpResponse HttpRequest(const HttpReq &req);
 // `canceled`, when set, is polled about once a second whether or not bytes arrive, and a
 // true stops the transfer the same clean way an `onChunk` false does. Without it a cancel
 // is only seen at the next chunk, which on a silent stream is the watchdog's 90 s.
+// req.cancel is the flag form of the same thing, polled by the same callback (connect
+// included) and before each chunk; either may be set, or both.
 //
 // Same thread-safety contract as HttpRequest: each call owns its own easy handle.
 long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::string_view chunk)> &onChunk,
