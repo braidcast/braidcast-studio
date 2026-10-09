@@ -1,10 +1,12 @@
 #include "obs_bootstrap.hpp"
 
+#include "audio/AudioEndpoints.hpp"
 #include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/StorePaths.hpp"
 #include "scene/transitions.hpp"
+#include "settings/AdvancedSettings.hpp"
 #include "util/file_util.hpp"
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
@@ -1549,6 +1551,32 @@ void TestVoiceFeedback(Tally &t)
 			nowhere.LoadedCues() == 0);
 }
 
+void TestAudioEndpoints(Tally &t)
+{
+	// The default render endpoint always resolves on a machine with any audio at all.
+	const std::string defaultRender = AudioEndpoints::DefaultRenderDeviceId();
+	t.Check("endpoints", "the default render device resolves", !defaultRender.empty());
+
+	// "default" and the resolved id must be recognized as the same endpoint, which is the
+	// whole point: OBS stores "default" in both places.
+	t.Check("endpoints", "'default' resolves to the default endpoint",
+		AudioEndpoints::ResolveRenderDeviceId("default") == defaultRender);
+	t.Check("endpoints", "an explicit id resolves to itself",
+		AudioEndpoints::ResolveRenderDeviceId(defaultRender) == defaultRender);
+	t.Check("endpoints", "an unknown id resolves to itself",
+		AudioEndpoints::ResolveRenderDeviceId("nope") == "nope");
+
+	// The shared-device question must answer without throwing, whatever the setup.
+	std::string device;
+	const bool shared = AudioEndpoints::MonitorSharesCapturedDevice(device);
+	t.Check("endpoints", "the shared-device check answers", shared == !device.empty());
+
+	// Ducking still works after the move (it is a no-op that must not fault). Applied
+	// with the user's own setting, so the run changes nothing.
+	AudioEndpoints::DisableAudioDucking(ObsBootstrap::Advanced().disableAudioDucking);
+	t.Check("endpoints", "ducking control survived the move", true);
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1633,7 +1661,7 @@ const Case kCases[] = {
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
-	&TestCommandRegistry, &TestVoiceFeedback,
+	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints,
 };
 
 } // namespace

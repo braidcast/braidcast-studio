@@ -202,10 +202,8 @@ inline constexpr const char *kProcessPriorityTokens[] = {"normal", "aboveNormal"
 // from the log line. Unknown tokens are ignored.
 void ApplyEffectivePriority(const std::string &token, bool live);
 
-// Opt this process's default-render audio session out of (or back into) Windows'
-// automatic ducking. On Windows this maps to IAudioSessionControl2::SetDuckingPreference;
-// on other platforms it is a no-op.
-void DisableAudioDucking(bool disable);
+// The ducking control (disableAudioDucking) is applied by AudioEndpoints::
+// DisableAudioDucking (audio/AudioEndpoints.hpp), beside the other endpoint queries.
 
 // Point libobs' audio monitoring at a persisted device. An empty id means the user
 // never chose one, so libobs' own "Default"/"default" is left standing. A device that

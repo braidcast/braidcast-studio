@@ -11,7 +11,8 @@ namespace Voice::BridgeMethods {
 
 using json = nlohmann::json;
 
-// settings.getVoice: the VoicePayload (settings, model statuses, CPU verdict).
+// settings.getVoice: the VoicePayload (settings, model statuses, CPU verdict, and the
+// cueWarning when viewers would hear the command cues).
 bool SettingsGetVoice(const json &params, json &result, std::string &error);
 // settings.setVoice: any subset of the settings; answers the full VoicePayload.
 bool SettingsSetVoice(const json &params, json &result, std::string &error);

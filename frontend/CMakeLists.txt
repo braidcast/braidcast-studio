@@ -144,6 +144,8 @@ target_sources(
     src/windowing/source_render.hpp
     src/windowing/filter_preview.cpp
     src/windowing/filter_preview.hpp
+    src/audio/AudioEndpoints.cpp
+    src/audio/AudioEndpoints.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
     src/scene/main_channel.cpp
@@ -725,6 +727,7 @@ set_source_files_properties(
   src/windowing/overlay_surface.cpp
   src/windowing/source_render.cpp
   src/windowing/filter_preview.cpp
+  src/audio/AudioEndpoints.cpp
   src/audio/AudioMonitor.cpp
   src/scene/main_channel.cpp
   src/scene/scene_collections.cpp

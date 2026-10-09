@@ -1,15 +1,33 @@
 #include "voice/VoiceBridge.hpp"
 
+#include "audio/AudioEndpoints.hpp"
 #include "bridge.hpp"
 #include "event_names.hpp"
 #include "util/json_util.hpp"
 #include "voice/VoiceEngine.hpp"
 #include "voice/VoiceModels.hpp"
+#include "voice/VoiceP0Defaults.hpp"
 #include "voice/VoiceSettings.hpp"
 
 namespace Voice::BridgeMethods {
 
 namespace {
+
+// Whether viewers would hear the command cues, and what to do about it; "" when they
+// would not. A monitor-only source still reaches the stream when a Desktop Audio
+// capture records the monitoring device itself. P0::kCueLeakOnSharedDevice is the
+// loopback probe's verdict on whether that happens at all (the spec's default until P0
+// measures it), so a "no" there silences the warning everywhere at no cost.
+std::string CueWarning()
+{
+	std::string capture;
+	if (!P0::kCueLeakOnSharedDevice || !AudioEndpoints::MonitorSharesCapturedDevice(capture)) {
+		return std::string();
+	}
+	return "Your monitoring device is also captured by " + capture +
+	       ", so viewers will hear the command sounds. Pick a different monitoring device, stop capturing that "
+	       "device, or turn the cue volume down to zero.";
+}
 
 // The settings block plus everything the Voice tab needs to render it, so the tab
 // makes one call rather than three.
@@ -21,6 +39,7 @@ json VoicePayload()
 		{"settings", SettingsFields::ToJson(VoiceSettingsTable(), Engine().Settings())},
 		{"models", Downloads().StatusJson()["models"]},
 		{"cpu", {{"supported", cpuOk}, {"reason", cpuReason}}},
+		{"cueWarning", CueWarning()},
 	};
 }
 

@@ -37,6 +37,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include "util/async_task.hpp"
+#include "audio/AudioEndpoints.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "chat/chat_archive.hpp"
 #include "chat/chat_history.hpp"
@@ -1138,7 +1139,7 @@ bool ApplyAdvancedPatch(const json &params, json &result, std::string &error)
 		ApplyEffectivePriority(a.processPriority, ObsBootstrap::Multistream().AnyLive());
 	}
 	if (a.disableAudioDucking != oldDisableAudioDucking) {
-		DisableAudioDucking(a.disableAudioDucking);
+		AudioEndpoints::DisableAudioDucking(a.disableAudioDucking);
 	}
 	// settings.setAudio is the normal writer for this pair, and it applies before it
 	// persists. This path exists because the field still rides the descriptor tables,

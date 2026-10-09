@@ -39,6 +39,7 @@
 #include "util/op_error.hpp"
 #include "util/random_util.hpp"
 #include "util/string_util.hpp"
+#include "audio/AudioEndpoints.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "build_info.hpp"
@@ -1352,7 +1353,7 @@ bool ObsBootstrap::Start()
 	// Nothing can be live at startup, and g_multistream is not constructed yet, so
 	// resolve "auto" against an idle state (false) rather than calling AnyLive().
 	ApplyEffectivePriority(g_advanced.processPriority, false);
-	DisableAudioDucking(g_advanced.disableAudioDucking);
+	AudioEndpoints::DisableAudioDucking(g_advanced.disableAudioDucking);
 	// Before the scene collection loads below: a source with monitoring enabled builds
 	// its monitor against whatever device id is current at creation time, so setting it
 	// here saves every restored source a reset it would otherwise need.
