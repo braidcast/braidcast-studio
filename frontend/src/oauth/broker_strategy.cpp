@@ -1,8 +1,5 @@
 #include "broker_strategy.hpp"
 
-#include <windows.h>
-#include <bcrypt.h>
-
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -15,6 +12,7 @@
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
 #include "util/random_util.hpp"
+#include "util/sha256.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
 #include "../util/async_task.hpp"
@@ -88,19 +86,6 @@ std::string Base64Url(const unsigned char *data, size_t len)
 	return out;
 }
 
-bool Sha256(const std::string &in, unsigned char out[32])
-{
-	BCRYPT_ALG_HANDLE alg = nullptr;
-	if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0))) {
-		return false;
-	}
-	const bool ok =
-		BCRYPT_SUCCESS(BCryptHash(alg, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char *>(in.data())),
-					  static_cast<ULONG>(in.size()), out, 32));
-	BCryptCloseAlgorithmProvider(alg, 0);
-	return ok;
-}
-
 } // namespace
 
 BrokerStrategy::BrokerStrategy(Config config) : config_(std::move(config)) {}
@@ -119,7 +104,7 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 	const std::string nonce = Base64Url(nonceBytes.data(), nonceBytes.size());
 
 	unsigned char digest[32];
-	if (!Sha256(verifier, digest)) {
+	if (!Sha256::Digest(verifier, digest)) {
 		err = "failed to compute PKCE challenge";
 		return false;
 	}

@@ -1,12 +1,16 @@
 #include "obs_bootstrap.hpp"
 
 #include "log.hpp"
+#include "util/sha256.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceSettings.hpp"
 
 #include <obs.hpp>
 #include <whisper.h>
 
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <windows.h>
@@ -90,13 +94,42 @@ void TestVoiceSettingsTable(Tally &t)
 	t.Check("settings", "file key is snake_case", obs_data_has_user_value(data, "log_transcripts"));
 }
 
+void TestSha256(Tally &t)
+{
+	unsigned char d[32];
+	t.Check("sha256", "abc vector",
+		Sha256::Digest("abc", d) &&
+			Sha256::ToHex(d) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+	t.Check("sha256", "empty vector",
+		Sha256::Digest("", d) &&
+			Sha256::ToHex(d) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+
+	Sha256::Hasher h;
+	h.Update("a", 1);
+	h.Update("bc", 2);
+	t.Check("sha256", "incremental equals one-shot",
+		h.Ok() && h.Final(d) &&
+			Sha256::ToHex(d) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+	const std::filesystem::path p = std::filesystem::temp_directory_path() / "braidcast-voice-sha.bin";
+	{
+		std::ofstream f(p, std::ios::binary);
+		f << "abc";
+	}
+	std::string hex;
+	t.Check("sha256", "file hash",
+		Sha256::FileHex(p.u8string(), hex, nullptr) &&
+			hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+	std::atomic<bool> cancelled{true};
+	t.Check("sha256", "file hash honours cancel", !Sha256::FileHex(p.u8string(), hex, &cancelled));
+	std::error_code ec;
+	std::filesystem::remove(p, ec);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,
-	&TestCpuGate,
-	&TestLogCategory,
-	&TestVoiceSettingsTable,
+	&TestWhisperLinked, &TestCpuGate, &TestLogCategory, &TestVoiceSettingsTable, &TestSha256,
 };
 
 } // namespace

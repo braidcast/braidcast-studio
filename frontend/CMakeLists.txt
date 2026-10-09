@@ -90,6 +90,8 @@ target_sources(
     src/util/fnv1a.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
+    src/util/sha256.cpp
+    src/util/sha256.hpp
     src/util/http_status.hpp
     src/util/web_bundle.hpp
     # The ONE anonymous InnerTube (youtubei/v1) client, shared by the YouTube live-chat
