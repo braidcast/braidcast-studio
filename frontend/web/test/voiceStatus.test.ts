@@ -1,0 +1,165 @@
+import { describe, expect, it } from "bun:test";
+import type { VoicePendingAction } from "$lib/api/bridge";
+import { voiceIndicator, voiceModelLabel, type VoiceModelStatus, type VoiceState } from "$lib/voice/voiceStatus";
+
+function state(overrides: Partial<VoiceState> = {}): VoiceState {
+  return {
+    state: "idle",
+    message: "",
+    transcript: "",
+    device: "Microphone (Yeti)",
+    pending: null,
+    ready: { cpu: true, cpuReason: "", model: true, mic: true },
+    settings: { enabled: true, model: "base.en-q5_1", logTranscripts: false },
+    ...overrides,
+  };
+}
+
+function pending(overrides: Partial<VoicePendingAction> = {}): VoicePendingAction {
+  return {
+    commandId: "streaming.stop",
+    summary: "Stop streaming?",
+    needsConfirmWord: true,
+    deadlineMs: 1_000_000,
+    remainingMs: 8000,
+    ...overrides,
+  };
+}
+
+function model(overrides: Partial<VoiceModelStatus> = {}): VoiceModelStatus {
+  return {
+    id: "base.en-q5_1",
+    label: "Base (English)",
+    kind: "speech",
+    selectable: true,
+    multilingual: false,
+    bytes: 59721011,
+    received: 0,
+    state: "absent",
+    ...overrides,
+  };
+}
+
+const off = { enabled: false, model: "base.en-q5_1", logTranscripts: false };
+
+describe("voiceIndicator", () => {
+  it("is hidden while voice is off", () => {
+    expect(voiceIndicator(state({ state: "disabled", settings: off })).visible).toBe(false);
+  });
+
+  it("is hidden when the setting is off even if a stale state says otherwise", () => {
+    expect(voiceIndicator(state({ state: "idle", settings: off })).visible).toBe(false);
+    expect(voiceIndicator(state({ state: "disabled" })).visible).toBe(false);
+  });
+
+  it("reads idle as ready, with the device name", () => {
+    const indicator = voiceIndicator(state());
+    expect(indicator).toEqual({ visible: true, tone: "idle", label: "Voice ready", detail: "Microphone (Yeti)" });
+  });
+
+  it("reads listening as live", () => {
+    const indicator = voiceIndicator(state({ state: "listening" }));
+    expect(indicator.tone).toBe("live");
+    expect(indicator.label).toBe("Listening");
+    expect(indicator.detail).toBe("Microphone (Yeti)");
+  });
+
+  it("shows the transcript while thinking, once there is one", () => {
+    expect(voiceIndicator(state({ state: "thinking" })).label).toBe("Thinking");
+    expect(voiceIndicator(state({ state: "thinking" })).tone).toBe("busy");
+    expect(voiceIndicator(state({ state: "thinking", transcript: "switch to gameplay" })).detail).toBe(
+      "switch to gameplay",
+    );
+  });
+
+  it("shows the pending summary and marks it as needing an answer", () => {
+    const indicator = voiceIndicator(state({ state: "pending", pending: pending() }));
+    expect(indicator.tone).toBe("warn");
+    expect(indicator.label).toBe("Stop streaming?");
+    expect(indicator.detail).toBe("Say yes to confirm");
+  });
+
+  it("asks for the key again when the command needs no spoken yes", () => {
+    const indicator = voiceIndicator(state({ state: "pending", pending: pending({ needsConfirmWord: false }) }));
+    expect(indicator.detail).toBe("Press the key again to confirm");
+  });
+
+  it("still says something when pending arrives without the action", () => {
+    expect(voiceIndicator(state({ state: "pending", pending: null })).label).toBe("Waiting for confirmation");
+  });
+
+  it("explains an unsupported CPU rather than saying not ready", () => {
+    const indicator = voiceIndicator(
+      state({
+        state: "notReady",
+        ready: { cpu: false, cpuReason: "Voice control needs a CPU with AVX2 support.", model: false, mic: true },
+      }),
+    );
+    expect(indicator.tone).toBe("warn");
+    expect(indicator.label).toBe("Voice not ready");
+    expect(indicator.detail).toBe("Voice control needs a CPU with AVX2 support.");
+  });
+
+  it("names the missing piece when not ready", () => {
+    expect(
+      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: true, mic: false } }))
+        .detail,
+    ).toBe("No microphone on the Mic/Aux channel");
+    expect(
+      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: false, mic: true } }))
+        .detail,
+    ).toBe("The speech model is not ready");
+  });
+
+  it("names the mic before the model when both are missing", () => {
+    expect(
+      voiceIndicator(state({ state: "notReady", ready: { cpu: true, cpuReason: "", model: false, mic: false } }))
+        .detail,
+    ).toBe("No microphone on the Mic/Aux channel");
+  });
+
+  it("keeps the host's reason for a model that failed", () => {
+    expect(
+      voiceIndicator(
+        state({
+          state: "notReady",
+          message: "Base (English) model is not downloaded",
+          ready: { cpu: true, cpuReason: "", model: false, mic: true },
+        }),
+      ).detail,
+    ).toBe("Base (English) model is not downloaded");
+  });
+
+  it("prefers the host message when there is one", () => {
+    expect(voiceIndicator(state({ state: "idle", message: "No scene called BRB." })).detail).toBe(
+      "No scene called BRB.",
+    );
+  });
+});
+
+describe("voiceModelLabel", () => {
+  it("shows progress while downloading", () => {
+    expect(voiceModelLabel(model({ bytes: 100, received: 25, state: "downloading" }))).toBe("Downloading 25%");
+  });
+
+  it("never shows more than 100% or divides by zero", () => {
+    expect(voiceModelLabel(model({ bytes: 100, received: 140, state: "downloading" }))).toBe("Downloading 100%");
+    expect(voiceModelLabel(model({ bytes: 0, received: 0, state: "downloading" }))).toBe("Downloading 0%");
+  });
+
+  it("shows the size when absent, and nothing when ready", () => {
+    expect(voiceModelLabel(model())).toBe("57 MB download");
+    expect(voiceModelLabel(model({ received: 59721011, state: "ready" }))).toBe("Ready");
+  });
+
+  it("rounds a small model up to 1 MB rather than 0", () => {
+    expect(voiceModelLabel(model({ bytes: 885098, kind: "vad", selectable: false }))).toBe("1 MB download");
+  });
+
+  it("shows the reason it failed", () => {
+    expect(voiceModelLabel(model({ bytes: 100, state: "failed", error: "hash mismatch" }))).toBe(
+      "Failed: hash mismatch",
+    );
+    expect(voiceModelLabel(model({ state: "failed" }))).toBe("Failed: unknown error");
+  });
+});

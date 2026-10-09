@@ -384,6 +384,70 @@ export interface GeneralSettings {
   scenesGridMode: boolean;
 }
 
+/** Voice control preferences (voice.json). setVoice applies any present subset and
+ * answers the full VoicePayload; turning voice on is refused on a CPU without AVX2 and
+ * before the chosen model is downloaded. */
+export interface VoiceSettingsState {
+  enabled: boolean;
+  /** A model id from the catalog (VoiceModelStatus.id with selectable true). */
+  model: string;
+  /** Write recognized text to the session log; only with the voice debug category on. */
+  logTranscripts: boolean;
+}
+
+/** One catalog entry and its download state (voice.model.status). */
+export interface VoiceModelStatus {
+  id: string;
+  label: string;
+  kind: "speech" | "vad";
+  /** Offered in the model picker. The voice-activity detector and the multilingual
+   * model are downloaded on demand rather than chosen. */
+  selectable: boolean;
+  multilingual: boolean;
+  bytes: number;
+  received: number;
+  state: "absent" | "downloading" | "ready" | "failed";
+  /** Why the last download failed; only with state "failed". */
+  error?: string;
+}
+
+/** A command waiting for a confirmation (voice.state's `pending`). */
+export interface VoicePendingAction {
+  commandId: string;
+  summary: string;
+  needsConfirmWord: boolean;
+  /** The host clock's instant the window closes. Not for rendering: the page's clock
+   * is not the host's. */
+  deadlineMs: number;
+  /** What is LEFT of the window at the moment the host answered or emitted this, not
+   * how long the window is. Render countdowns from it; a fixed duration restarted on
+   * arrival would show a full window that has already partly, or entirely, elapsed. */
+  remainingMs: number;
+}
+
+/** Voice control's live state (voice.state, the method and the event). */
+export interface VoiceState {
+  state: "disabled" | "notReady" | "idle" | "listening" | "thinking" | "pending";
+  /** The last miss, error or (in P1) recognized text worth showing; "" for none. */
+  message: string;
+  /** The last recognized text. Shown, never logged. */
+  transcript: string;
+  /** The bound microphone's name; "" when none is bound. */
+  device: string;
+  pending: VoicePendingAction | null;
+  /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic. */
+  ready: { cpu: boolean; cpuReason: string; model: boolean; mic: boolean };
+  settings: VoiceSettingsState;
+}
+
+/** settings.getVoice / settings.setVoice / settings.voiceChanged: the settings plus
+ * everything the Voice tab renders with them. */
+export interface VoicePayload {
+  settings: VoiceSettingsState;
+  models: VoiceModelStatus[];
+  cpu: { supported: boolean; reason: string };
+}
+
 /** Advanced app settings (process priority, stream delay, auto-reconnect, network,
  * browser HW accel). A flat object; setAdvanced applies any present subset, persists,
  * and echoes the full post-apply state. `processPriority` is one of auto/normal/aboveNormal/
@@ -2224,6 +2288,15 @@ export interface ObsMethods {
   // full post-apply state (snapDistance clamped 0..100 server-side).
   "settings.getGeneral": GeneralSettings;
   "settings.setGeneral": GeneralSettings;
+  // Voice control. setVoice applies any present subset ({enabled, model,
+  // logTranscripts}) and answers the full payload; it also emits settings.voiceChanged.
+  // A download's progress arrives as voice.model.status events, one model per event.
+  "settings.getVoice": VoicePayload;
+  "settings.setVoice": VoicePayload;
+  "voice.state": VoiceState;
+  "voice.model.status": { models: VoiceModelStatus[] };
+  "voice.model.download": { started: boolean; models: VoiceModelStatus[] };
+  "voice.model.cancel": { cancelled: boolean; models: VoiceModelStatus[] };
   // Advanced app settings (process priority/stream delay/auto-reconnect/network/
   // browser HW accel). setAdvanced applies any present subset, persists, and echoes
   // the full post-apply state.
@@ -2772,6 +2845,11 @@ export interface ObsEvents {
   "settings.audioChanged": AudioSettings;
   // General app settings changed (any setGeneral apply); the full state is pushed.
   "settings.generalChanged": GeneralSettings;
+  // Voice control: the whole state on every change; the settings payload after any
+  // setVoice; ONE model's status per download step (the method returns the list).
+  "voice.state": VoiceState;
+  "settings.voiceChanged": VoicePayload;
+  "voice.model.status": VoiceModelStatus;
   "fx.changed": FxSnapshot;
   "update.available": UpdateNotice;
   // Advanced app settings changed (any setAdvanced apply); the full state is pushed.
