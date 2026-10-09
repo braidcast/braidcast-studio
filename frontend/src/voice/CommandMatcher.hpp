@@ -24,6 +24,15 @@ struct CommandCandidates {
 	// The platforms with a live chat, as provider ids ("twitch", "youtube"), for "send to
 	// twitch ..." and for where a message to everyone goes.
 	std::vector<std::string> platforms;
+	// Where a reply to each of `people` goes, by the same index: the chat that person last
+	// spoke in (Chat::Chatter). The matcher reads names only; the registry addresses the
+	// reply from this.
+	struct ReplyRoute {
+		std::string platform;
+		std::string accountId;
+		std::string profileUuid;
+	};
+	std::vector<ReplyRoute> replyRoutes;
 };
 
 enum class SlotKind { None, Scene, Source, AudioSource, Person, Platform };

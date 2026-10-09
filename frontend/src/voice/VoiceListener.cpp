@@ -18,6 +18,13 @@ Effect CueEffect(Cue cue)
 	return e;
 }
 
+// A pending action's "text" parameter (a chat draft's message), or "".
+std::string TextParam(const nlohmann::json &params)
+{
+	const auto it = params.is_object() ? params.find("text") : params.end();
+	return it != params.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
 } // namespace
 
 const char *CueName(Cue cue)
@@ -47,6 +54,7 @@ std::vector<Effect> VoiceListener::BeginSegment(int64_t, Trigger trigger)
 	trigger_ = trigger;
 	status_.state = State::Listening;
 	status_.transcript.clear();
+	status_.keptDraft.clear();
 	return {CueEffect(Cue::Start)};
 }
 
@@ -67,6 +75,7 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 	case Interpretation::Kind::Miss:
 	case Interpretation::Kind::Shown:
 		status_.message = interpretation.message;
+		status_.keptDraft = interpretation.keptDraft;
 		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
 		if (interpretation.kind == Interpretation::Kind::Miss) {
 			effects.push_back(CueEffect(Cue::Reject));
@@ -98,7 +107,8 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 		effects.push_back(CueEffect(Cue::Pending));
 		Effect tick;
 		tick.type = EffectType::ScheduleTick;
-		tick.atMs = nowMs + kPendingTimeoutMs;
+		tick.atMs = nowMs +
+			    (interpretation.action.timeoutMs > 0 ? interpretation.action.timeoutMs : kPendingTimeoutMs);
 		tick.seq = ++tickSeq_;
 		// One instant, written down once: the tick fires at it and the UI counts down to
 		// it. Two independent notions of "when this expires" is how a countdown and a
@@ -159,6 +169,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ClearPending();
 		status_.state = State::Disabled;
 		status_.transcript.clear();
+		status_.keptDraft.clear();
 		return effects;
 
 	case EventType::ModelReady:
@@ -286,6 +297,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ClearPending();
 		status_.transcript.clear();
 		status_.message.clear();
+		status_.keptDraft.clear();
 		if (status_.state != State::Disabled && status_.state != State::NotReady) {
 			status_.state = State::Idle;
 		}
@@ -301,6 +313,20 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		// it ran out). Ignoring the tick there would leave the command pending with no
 		// timer at all once that segment missed; instead it expires now, the segment
 		// carries on, and its answer finds nothing pending.
+		if (status_.pending.runOnTimeout) {
+			// A chat draft: the window closing is the send, not the cancel. Exactly what
+			// confirming does, segment kept as the UI's Confirm keeps it; the Escape key
+			// and Cancel are the way to stop it before then.
+			Interpretation send;
+			send.kind = Interpretation::Kind::Control;
+			send.control = Interpretation::Control::ConfirmPending;
+			const State segment = status_.state;
+			effects = ApplyInterpretation(send, event.nowMs);
+			if (segment == State::Listening || segment == State::Thinking) {
+				status_.state = segment;
+			}
+			return effects;
+		}
 		ClearPending();
 		status_.message = "The command timed out.";
 		if (status_.state == State::Pending) {
@@ -315,10 +341,9 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 nlohmann::json VoiceListener::StatusJson() const
 {
 	nlohmann::json j = {
-		{"state", StateName(status_.state)},
-		{"message", status_.message},
-		{"transcript", status_.transcript},
-		{"device", status_.device},
+		{"state", StateName(status_.state)}, {"message", status_.message},
+		{"transcript", status_.transcript},  {"device", status_.device},
+		{"keptDraft", status_.keptDraft},
 	};
 	if (!status_.pending.commandId.empty()) {
 		j["pending"] = {
@@ -328,6 +353,12 @@ nlohmann::json VoiceListener::StatusJson() const
 			// The instant, not a duration. VoiceEngine::PublishState turns it into the
 			// remainingMs the UI actually renders -- this class has no clock, by design.
 			{"deadlineMs", status_.pending.deadlineMs},
+			// A chat draft: whether the window closing sends it, how long the window is,
+			// and the message as it will be posted, for the Multichat composer. Shown,
+			// never logged.
+			{"runOnTimeout", status_.pending.runOnTimeout},
+			{"timeoutMs", status_.pending.timeoutMs},
+			{"text", TextParam(status_.pending.params)},
 		};
 	} else {
 		j["pending"] = nullptr;

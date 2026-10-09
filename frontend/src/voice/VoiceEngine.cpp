@@ -574,7 +574,13 @@ void VoiceEngine::Deliver(const std::vector<Effect> &effects, uint64_t generatio
 			// runs on timeout (P3) that is a send with no take-it-back window at all.
 			// Clamping is still the only thing to do, but it must not be silent: this is
 			// the one line that tells you an interpretation step got slow.
-			if (remaining < 0) {
+			// A chat draft that sends on timeout (P3) is logged whatever the debug
+			// components: it is about to reach other people with no take-back window, and
+			// the UI is showing what is left of it (none), not a fresh countdown.
+			if (remaining < 0 && listener_->Snapshot().pending.runOnTimeout) {
+				HostLog("[voice] a chat draft's countdown was already " + std::to_string(-remaining) +
+					" ms spent when it was scheduled; it is sent with no window left");
+			} else if (remaining < 0) {
 				DBG(LogCat::Voice, "pending deadline was already %lld ms past when scheduled",
 				    static_cast<long long>(-remaining));
 			}

@@ -41,6 +41,13 @@ struct PendingAction {
 	// into the window, and a duration restarted on arrival would hide exactly that. The
 	// UI is told what is LEFT, never how long the window was. 0 when nothing is pending.
 	int64_t deadlineMs = 0;
+	// True for a chat draft in the countdown send mode: when its window closes it is SENT,
+	// where an ordinary pending command is dropped. This is the only difference between
+	// the two, so a draft needs no second timer and no second pending slot.
+	bool runOnTimeout = false;
+	// How long the window is; 0 uses VoiceListener::kPendingTimeoutMs. The deadline above
+	// is computed from it once, when the action becomes pending.
+	int64_t timeoutMs = 0;
 };
 
 // What a transcript meant. P1 always answers Shown; P2 supplies the real interpreter.
@@ -59,6 +66,10 @@ struct Interpretation {
 	Control control = Control::None;
 	std::string message; // shown to the user when Miss or Shown
 	PendingAction action;
+	// Miss only: a chat message refused before it became a draft because it was too long.
+	// It is not sent and not lost: the Multichat composer takes it over to edit (the spec's
+	// "too long" row, draft kept).
+	std::string keptDraft;
 };
 
 enum class Trigger { Ptt, Wake };
@@ -126,6 +137,9 @@ struct Status {
 	std::string transcript; // the last recognized text (never logged)
 	PendingAction pending;  // commandId empty when nothing is pending
 	std::string device;     // set by the engine, not the listener
+	// The last chat message refused as too long (Interpretation::keptDraft), until the
+	// next segment, a cancel or turning voice off. Shown, never logged.
+	std::string keptDraft;
 };
 
 // Pure: no clock, no threads, no libobs, no I/O. Every input is an Event carrying its
@@ -133,7 +147,8 @@ struct Status {
 // makes the whole interaction testable in a headless smoke run.
 class VoiceListener {
 public:
-	// How long a command waits for a spoken confirmation before it is dropped.
+	// How long a command waits for a spoken confirmation before it is dropped, unless the
+	// action names its own window (PendingAction::timeoutMs).
 	static constexpr int64_t kPendingTimeoutMs = 8000;
 
 	explicit VoiceListener(Interpreter interpret);

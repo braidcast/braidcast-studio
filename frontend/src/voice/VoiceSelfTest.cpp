@@ -595,6 +595,15 @@ Voice::Interpretation TestInterpret(const std::string &text, const Voice::Interp
 		out.action.commandId = text.substr(8);
 		out.action.summary = "confirm " + out.action.commandId;
 		out.action.needsConfirmWord = true;
+	} else if (text.rfind("draft ", 0) == 0) {
+		// What the countdown send mode produces: pending, and sent when its window closes.
+		out.kind = Voice::Interpretation::Kind::Pending;
+		out.action.commandId = text.substr(6);
+		out.action.summary = "draft " + out.action.commandId;
+		out.action.runOnTimeout = true;
+		out.action.timeoutMs = 3000;
+		out.action.needsConfirmWord = false;
+		out.action.params = {{"text", "hello"}};
 	} else if (text == "yes" && ctx.pending) {
 		out.kind = Voice::Interpretation::Kind::Control;
 		out.control = Voice::Interpretation::Control::ConfirmPending;
@@ -946,6 +955,58 @@ void TestVoiceListener(Tally &t)
 		t.Check("listener", "a UI confirmation mid-segment keeps the segment",
 			fx == "run:streaming.stop,cue:accept" && stillListening &&
 				EffectNames(l->Handle(Transcript("yes", 2900))).find("run:") == std::string::npos);
+	}
+
+	// 29. A draft runs when its timer expires, where a command would be dropped, and its
+	// window is its own (3 s here), not the 8 s a command gets.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		t.Check("listener", "a draft waits and schedules its own send",
+			EffectNames(fx) == "cue:pending,tick" && l->Current() == S::Pending && fx.back().atMs == 4400 &&
+				l->Snapshot().pending.deadlineMs == 4400);
+		const nlohmann::json json = l->StatusJson();
+		t.Check("listener", "a draft's state carries its text and window",
+			json["pending"].value("runOnTimeout", false) && json["pending"].value("timeoutMs", 0) == 3000 &&
+				json["pending"].value("text", "") == "hello");
+		Event tick = Ev(EventType::Tick, 4400);
+		tick.seq = fx.back().seq;
+		t.Check("listener", "a draft sends when the timer expires",
+			EffectNames(l->Handle(tick)) == "run:chat.send,cue:accept" && l->Current() == S::Idle);
+	}
+
+	// 30. Cancelling a draft before the timer stops it being sent, and its tick then finds
+	// nothing.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		const bool cancelled = EffectNames(l->Handle(Ev(EventType::Cancel, 1500))) == "cue:cancel" &&
+				       l->Snapshot().pending.commandId.empty();
+		Event tick = Ev(EventType::Tick, 4400);
+		tick.seq = fx.back().seq;
+		t.Check("listener", "cancelling a draft does not send it", cancelled && l->Handle(tick).empty());
+	}
+
+	// 31. A draft whose window closes while the key is held is sent, and the segment
+	// carries on (as a UI confirmation mid-segment does); its answer finds nothing pending.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		l->Handle(Ev(EventType::PttDown, 4000));
+		Event tick = Ev(EventType::Tick, 4400);
+		tick.seq = fx.back().seq;
+		const std::string sent = EffectNames(l->Handle(tick));
+		const bool stillListening = l->Current() == S::Listening;
+		l->Handle(Ev(EventType::PttUp, 4600));
+		t.Check("listener", "a draft's window closing mid-segment sends it and keeps the segment",
+			sent == "run:chat.send,cue:accept" && stillListening &&
+				EffectNames(l->Handle(Transcript("yes", 4900))) == "cue:reject");
 	}
 }
 
@@ -1790,6 +1851,119 @@ void TestChatCommands(Tally &t)
 
 	// Chat messages never ask for confirmation at match time; the send mode decides.
 	t.Check("chatcmd", "a chat message is not a confirm-at-match command", !toChat.needsConfirm);
+}
+
+void TestChatDrafts(Tally &t)
+{
+	using namespace Voice;
+	using Kind = Interpretation::Kind;
+
+	// A fixed studio with two live chats and one person who has spoken, so the send mode is
+	// the only thing that varies. The send mode reaches Interpret as a SendPolicy, which is
+	// what InterpretTranscript reads from the engine's settings.
+	CommandCandidates studio;
+	studio.scenes = {"BRB"};
+	studio.platforms = {"twitch", "youtube"};
+	studio.people = {"Dave"};
+	studio.replyRoutes = {{"twitch", "twitch:100", ""}};
+	InterpretContext ctx;
+	SendPolicy instantMode;
+	instantMode.mode = "instant";
+	SendPolicy countdownMode;
+	countdownMode.countdownSec = 4.0;
+	SendPolicy sayMode;
+	sayMode.mode = "say";
+
+	const Interpretation instant = Interpret("send to chat hello everyone", ctx, studio, instantMode);
+	t.Check("drafts", "instant mode sends immediately",
+		instant.kind == Kind::Instant && instant.action.commandId == "chat.send" &&
+			instant.action.params.value("text", "") == "hello everyone");
+
+	const Interpretation countdown = Interpret("send to chat hello everyone", ctx, studio, countdownMode);
+	t.Check("drafts", "countdown mode drafts and sends on the timer",
+		countdown.kind == Kind::Pending && countdown.action.runOnTimeout &&
+			countdown.action.timeoutMs == 4000 && !countdown.action.needsConfirmWord);
+
+	const Interpretation waitForWord = Interpret("send to chat hello everyone", ctx, studio, sayMode);
+	t.Check("drafts", "say mode waits for the word",
+		waitForWord.kind == Kind::Pending && !waitForWord.action.runOnTimeout &&
+			waitForWord.action.needsConfirmWord);
+
+	// Where it goes: every live chat, one platform, or the one chat a person spoke in.
+	t.Check("drafts", "a message to chat goes to every live platform",
+		countdown.action.params["platforms"] == nlohmann::json::array({"twitch", "youtube"}));
+	const Interpretation reply = Interpret("reply to Dave good game", ctx, studio, countdownMode);
+	t.Check("drafts", "a reply is addressed to the one chat the person spoke in",
+		reply.kind == Kind::Pending && reply.action.params.value("accountId", "") == "twitch:100" &&
+			!reply.action.params.contains("platforms") &&
+			reply.action.params.value("text", "") == "@Dave good game");
+	CommandCandidates lost = studio;
+	lost.replyRoutes.clear();
+	const Interpretation unrouted = Interpret("reply to Dave good game", ctx, lost, countdownMode);
+	t.Check("drafts", "a reply with nowhere to go is refused, not widened",
+		unrouted.kind == Kind::Miss && unrouted.message.find("Dave") != std::string::npos);
+
+	// "send" confirms a waiting draft.
+	PendingAction draft;
+	draft.commandId = "chat.send";
+	draft.summary = "Send to chat: hello";
+	InterpretContext withDraft;
+	withDraft.pending = &draft;
+	t.Check("drafts", "'send' confirms a waiting draft",
+		Interpret("send", withDraft, studio).control == Interpretation::Control::ConfirmPending);
+	t.Check("drafts", "'send' with nothing waiting is a miss", Interpret("send", ctx, studio).kind == Kind::Miss);
+
+	// A message a platform will not take whole is refused before it is drafted, names the
+	// platform, and is kept for the composer.
+	const std::string tooLong(300, 'x');
+	const Interpretation big = Interpret("send to chat " + tooLong, ctx, studio, countdownMode);
+	t.Check("drafts", "an over-long message is refused with a reason",
+		big.kind == Kind::Miss && big.message.find("too long for YouTube") != std::string::npos &&
+			big.keptDraft == tooLong);
+
+	// Push-to-talk: words no command claims are a message to every live chat. Always-listen:
+	// never.
+	const Interpretation spoken = Interpret("good game everyone!", ctx, studio, countdownMode);
+	t.Check("drafts", "unclaimed push-to-talk speech is a message to chat",
+		spoken.kind == Kind::Pending && spoken.action.params.value("text", "") == "good game everyone!");
+	InterpretContext wake;
+	wake.trigger = Trigger::Wake;
+	t.Check("drafts", "unclaimed always-listen speech never reaches chat",
+		Interpret("good game everyone", wake, studio, countdownMode).kind == Kind::Miss);
+	t.Check("drafts", "a failed studio command is not posted to chat",
+		Interpret("switch to the weather forecast", ctx, studio, countdownMode).kind == Kind::Miss);
+
+	// With nothing live there is nowhere to send, and the refusal says so rather than the
+	// message disappearing.
+	const Interpretation nowhere = InterpretTranscript("send to chat hello", ctx);
+	const bool live = !CurrentCandidates().platforms.empty();
+	t.Check("drafts", "with nothing live the refusal explains",
+		live || (nowhere.kind == Kind::Miss && !nowhere.message.empty()));
+
+	// Running: a reply whose chat has ended fails out loud and is never widened to the
+	// platform, and a message to chats with none live fails too. Both skip when chat is
+	// live, since then they would post.
+	if (live) {
+		t.Skip("drafts", "a reply to a chat that ended fails out loud", "chat is live");
+		t.Skip("drafts", "a message with no live chat fails out loud", "chat is live");
+	} else {
+		auto fails = [](const nlohmann::json &params) {
+			PendingAction action;
+			action.commandId = "chat.send";
+			action.params = params;
+			bool failedCleanly = false;
+			RunCommand(action,
+				   [&](bool ok, std::string message) { failedCleanly = !ok && !message.empty(); });
+			return failedCleanly;
+		};
+		t.Check("drafts", "a reply to a chat that ended fails out loud",
+			fails({{"text", "@Dave hi"},
+			       {"accountId", "twitch:100"},
+			       {"profileUuid", ""},
+			       {"replyTo", "Dave"}}));
+		t.Check("drafts", "a message with no live chat fails out loud",
+			fails({{"text", "hi"}, {"platforms", nlohmann::json::array({"twitch"})}}));
+	}
 }
 
 void TestVoiceFeedback(Tally &t)
