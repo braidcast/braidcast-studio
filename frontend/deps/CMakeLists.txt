@@ -39,3 +39,7 @@ target_compile_definitions(
 )
 
 set_target_properties(braidcast-sqlite PROPERTIES FOLDER deps)
+
+# whisper.cpp for voice control, built by its own wrapper directory so its compile
+# settings stay out of this one (see whisper-build/CMakeLists.txt).
+add_subdirectory(whisper-build)

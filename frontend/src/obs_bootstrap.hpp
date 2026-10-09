@@ -687,6 +687,12 @@ void RunNativeThemeSelfTest();
 // has teeth), then asserts a Default preview ref restores it. Removes the source and
 // the ref on every path; touches no config. Gated by the caller to the smoke path.
 void RunScreenshotGateSelfTest();
+
+// Voice control: the settings table, SHA-256, the model catalog, the ring, the
+// resampler, the mute guard, the capture tap, the listener state machine and (when
+// BRAIDCAST_SELFTEST_VOICE_MODELS names a model directory) the recognizer on a
+// bundled fixture. Logs "[selftest] voice overall -> PASS|FAIL (BUG)".
+void RunVoiceSelfTest();
 // `drainCefTasks` is main.cpp's bounded CefDoMessageLoopWork pump (the frontend
 // owns CEF, so it is injected rather than called directly); see the header
 // comment for why Stop must pump between its source-removal sweep and

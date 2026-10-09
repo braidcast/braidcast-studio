@@ -359,6 +359,8 @@ target_sources(
     src/update/update_check.hpp
     src/update/update_version.cpp
     src/update/update_version.hpp
+    # Voice control: whisper.cpp speech commands and chat dictation (frontend/src/voice).
+    src/voice/VoiceSelfTest.cpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
@@ -650,6 +652,8 @@ target_link_libraries(
     dwrite
     # DetourAttach, for the DLL-blocklist hook on NtMapViewOfSection.
     Detours::Detours
+    # whisper.cpp (static, CPU backend) for voice control; see deps/whisper-build.
+    whisper
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this
@@ -732,6 +736,9 @@ set_source_files_properties(
 # pointer through its PVOID parameter, which /W4 flags as C4152 -- that
 # conversion is the Detours API's own calling convention.
 set_source_files_properties(src/util/win_dll_blocklist.c PROPERTIES COMPILE_OPTIONS "/wd4201;/wd4152")
+
+# Voice TUs that include obs.h, whose math headers use nameless structs (C4201).
+set_source_files_properties(src/voice/VoiceSelfTest.cpp PROPERTIES COMPILE_OPTIONS "/wd4201")
 
 # Place the exe in the OBS rundir (bin/64bit) like other targets; keep a distinct
 # OUTPUT_NAME so it does not collide with the legacy obs64 in a shared rundir
