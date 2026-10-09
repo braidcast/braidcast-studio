@@ -157,6 +157,12 @@ void Recognizer::SetPrompt(std::string prompt)
 	prompt_ = std::move(prompt);
 }
 
+void Recognizer::SetLanguage(std::string language)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	language_ = language.empty() ? std::string("en") : std::move(language);
+}
+
 void Recognizer::Start(const std::string &modelPath, int threads)
 {
 	Stop();
@@ -326,9 +332,16 @@ Recognizer::Result Recognizer::Transcribe(int threads)
 	}
 
 	const std::string prompt = BuildPrompt();
+	std::string language;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		language = language_;
+	}
 	whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
 	params.n_threads = std::max(1, threads);
-	params.language = "en";
+	// An English-only model ignores it; the multilingual one needs it, or it would
+	// guess the language from every short command.
+	params.language = language.c_str();
 	params.translate = false;
 	params.no_timestamps = true;
 	params.single_segment = false;

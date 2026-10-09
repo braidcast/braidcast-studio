@@ -92,6 +92,10 @@ public:
 	// budget, which mirrors whisper's own behaviour: whisper_full keeps the LAST tokens
 	// of a long prompt (src/whisper.cpp:7046 and the prompt_past1 take below it).
 	void SetPrompt(std::string prompt);
+	// The language the speech model transcribes in, a whisper code ("en" by default).
+	// Any time; read as each transcription starts. The wake check stays English: the
+	// tiny model is English-only, and the phrase is a name.
+	void SetLanguage(std::string language);
 
 	// Call before Start; changing it needs a Stop/Start, because the voice activity and
 	// wake models are loaded on the worker. When either fails to load, the worker logs
@@ -150,6 +154,7 @@ private:
 	// refuses meanwhile, as it does while a segment is in flight. Under mutex_.
 	bool wakeBusy_ = false;
 	std::string prompt_;
+	std::string language_ = "en";
 	std::atomic<bool> ready_{false};
 	// Read by the abort callback on whisper's threads. Stop sets stopping_; the worker
 	// sets the deadline (steady-clock ms) for each inference and clears it after.

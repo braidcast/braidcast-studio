@@ -65,9 +65,15 @@ bool SettingsSetVoice(const json &params, json &result, std::string &error)
 		error = "The wake phrase needs at least one word.";
 		return false;
 	}
+	// A language change implies a model change when the model in hand cannot do that
+	// language: an English-only model would transcribe German as nonsense, and the
+	// multilingual one is not offered for English. A model that still fits is kept.
+	if (next.language != current.language && !IsSelectableModel(next.model, next.language)) {
+		next.model = ModelForLanguage(next.language);
+	}
 	// The field table accepts any string for `model` (the catalog is the list, and it
-	// is not visible from the settings module); validate it here.
-	if (!IsSelectableModel(next.model)) {
+	// is not visible from the settings module); validate it here, for the language.
+	if (!IsSelectableModel(next.model, next.language)) {
 		error = "unknown speech model '" + next.model + "'";
 		return false;
 	}

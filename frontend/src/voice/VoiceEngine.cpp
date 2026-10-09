@@ -212,6 +212,7 @@ void VoiceEngine::Start()
 	started_ = true;
 	CpuSupportsVoice(cpuReason_);
 	settings_.Load();
+	Downloads().SetLanguage(settings_.language);
 	HostLog(std::string("[voice] engine start: ") + (settings_.enabled ? "enabled" : "disabled") + ", model " +
 		settings_.model + (cpuReason_.empty() ? "" : ", unsupported CPU"));
 	if (settings_.enabled && cpuReason_.empty()) {
@@ -370,6 +371,7 @@ void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int th
 		PostEvent(event, generation);
 	});
 	runtime->recognizer.SetContinuous(continuous);
+	runtime->recognizer.SetLanguage(settings_.language);
 	runtime->recognizer.Start(path, threads);
 }
 
@@ -501,6 +503,8 @@ void VoiceEngine::ApplySettings(const VoiceSettings &next)
 	const bool runtimeChanged = settings_.model != next.model || settings_.triggerMode != next.triggerMode ||
 				    settings_.wakePhrase != next.wakePhrase || settings_.language != next.language;
 	settings_ = next;
+	// Which models the Voice tab offers follows the language.
+	Downloads().SetLanguage(settings_.language);
 	if (!started_) {
 		return;
 	}

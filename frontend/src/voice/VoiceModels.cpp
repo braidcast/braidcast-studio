@@ -76,13 +76,26 @@ const ModelInfo *FindModel(const std::string &id)
 	return nullptr;
 }
 
-bool IsSelectableModel(const std::string &id)
+bool IsSelectableModel(const std::string &id, const std::string &language)
 {
 	const ModelInfo *m = FindModel(id);
-	if (!m || m->kind != ModelKind::Speech || m->multilingual) {
+	if (!m || m->kind != ModelKind::Speech) {
+		return false;
+	}
+	const bool english = language.empty() || language == "en";
+	if (m->multilingual) {
+		return !english;
+	}
+	if (!english) {
 		return false;
 	}
 	return id != "small.en-q5_1" || P0::kOfferSmallModel;
+}
+
+std::string ModelForLanguage(const std::string &language)
+{
+	return (language.empty() || language == "en") ? std::string(P0::kDefaultModelId)
+						      : std::string(kMultilingualModelId);
 }
 
 std::string ModelsDir()
@@ -324,15 +337,23 @@ void ModelDownloader::CancelAll()
 	}
 }
 
+void ModelDownloader::SetLanguage(const std::string &language)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	language_ = language;
+}
+
 nlohmann::json ModelDownloader::StatusFor(const ModelInfo &m) const
 {
 	Progress p;
+	std::string language;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		auto it = progress_.find(m.id);
 		if (it != progress_.end()) {
 			p = it->second;
 		}
+		language = language_;
 	}
 	std::string state = "absent";
 	if (p.active) {
@@ -346,7 +367,7 @@ nlohmann::json ModelDownloader::StatusFor(const ModelInfo &m) const
 		{"id", m.id},
 		{"label", m.label},
 		{"kind", m.kind == ModelKind::Vad ? "vad" : "speech"},
-		{"selectable", IsSelectableModel(m.id)},
+		{"selectable", IsSelectableModel(m.id, language)},
 		{"multilingual", m.multilingual},
 		{"bytes", m.bytes},
 		{"received", p.active ? p.received : (state == "ready" ? m.bytes : 0)},

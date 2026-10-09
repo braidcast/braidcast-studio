@@ -254,11 +254,11 @@ void TestModelCatalog(Tally &t)
 	t.Check("models", "catalog ids unique, hashes and urls well formed", shapes);
 	const Voice::ModelInfo *vad = Voice::FindModel(Voice::kVadModelId);
 	t.Check("models", "VAD model present and kind Vad", vad && vad->kind == Voice::ModelKind::Vad);
-	t.Check("models", "P0 default is selectable", Voice::IsSelectableModel(Voice::P0::kDefaultModelId));
+	t.Check("models", "P0 default is selectable", Voice::IsSelectableModel(Voice::P0::kDefaultModelId, "en"));
 	t.Check("models", "multilingual is not in the English picker",
-		!Voice::IsSelectableModel(Voice::kMultilingualModelId));
+		!Voice::IsSelectableModel(Voice::kMultilingualModelId, "en"));
 	t.Check("models", "unknown id rejected",
-		Voice::FindModel("nope") == nullptr && !Voice::IsSelectableModel("nope"));
+		Voice::FindModel("nope") == nullptr && !Voice::IsSelectableModel("nope", "en"));
 }
 
 void TestModelVerifyAndCommit(Tally &t)
@@ -2474,6 +2474,41 @@ void TestVoiceBridge(Tally &t)
 	Dispatch("settings.setVoice", SettingsFields::ToJson(VoiceSettingsTable(), original), result, error);
 }
 
+void TestLanguageSelection(Tally &t)
+{
+	t.Check("language", "English uses an English-only model",
+		Voice::ModelForLanguage("en") != Voice::kMultilingualModelId);
+	t.Check("language", "another language uses the multilingual model",
+		Voice::ModelForLanguage("de") == Voice::kMultilingualModelId);
+	t.Check("language", "the multilingual model becomes selectable for a non-English language",
+		Voice::IsSelectableModel(Voice::kMultilingualModelId, "de") &&
+			!Voice::IsSelectableModel(Voice::kMultilingualModelId, "en"));
+	t.Check("language", "an English-only model is not offered for another language",
+		!Voice::IsSelectableModel(Voice::P0::kDefaultModelId, "de"));
+
+	// Setting a language through the bridge switches the model rather than leaving the
+	// user on an English-only one that will transcribe German as nonsense.
+	const VoiceSettings original = Voice::Engine().Settings();
+	nlohmann::json result;
+	std::string error;
+	t.Check("language", "setting a language switches the model",
+		Dispatch("settings.setVoice", nlohmann::json{{"language", "de"}}, result, error) &&
+			result["settings"]["model"] == Voice::kMultilingualModelId);
+	bool offered = false;
+	for (const nlohmann::json &m : result["models"]) {
+		offered = offered || (m.value("id", "") == Voice::kMultilingualModelId && m.value("selectable", false));
+	}
+	t.Check("language", "and the Voice tab is offered the multilingual model", offered);
+	result.clear();
+	error.clear();
+	t.Check("language", "going back to English switches back",
+		Dispatch("settings.setVoice", nlohmann::json{{"language", "en"}}, result, error) &&
+			result["settings"]["model"] != Voice::kMultilingualModelId);
+
+	// Put back what the run found, in memory and on disk.
+	Dispatch("settings.setVoice", SettingsFields::ToJson(VoiceSettingsTable(), original), result, error);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
@@ -2501,6 +2536,7 @@ const Case kCases[] = {
 	&TestAlwaysListenWiring,
 	&TestVoiceHotkeys,
 	&TestVoiceBridge,
+	&TestLanguageSelection,
 	&TestTextNormalize,
 	&TestFuzzyMatch,
 	&TestCommandMatcher,

@@ -34,8 +34,14 @@ inline constexpr const char *kMultilingualModelId = "base-q5_1";
 
 const ModelInfo *const *ModelCatalog(size_t &count);
 const ModelInfo *FindModel(const std::string &id);
-// The English speech models the Voice tab offers (small.en only when P0 said it fits).
-bool IsSelectableModel(const std::string &id);
+// The speech models offered for `language` (a VoiceLanguages code). English gets the
+// English-only models (small.en only when P0 said it fits), which are faster and better
+// at English; every other language needs the multilingual one, which is why it is
+// otherwise hidden.
+bool IsSelectableModel(const std::string &id, const std::string &language);
+// The model to use for `language` when the current one does not fit it: the P0 default
+// for English, the multilingual model for anything else.
+std::string ModelForLanguage(const std::string &language);
 
 // <config>/voice/models, created on demand.
 std::string ModelsDir();
@@ -65,9 +71,13 @@ public:
 	bool Cancel(const std::string &id);
 	// Bridge::Shutdown, before the async drain.
 	void CancelAll();
-	// {models: [status...]} for voice.model.status.
+	// {models: [status...]} for voice.model.status. `selectable` is for the language
+	// SetLanguage last named.
 	nlohmann::json StatusJson() const;
 	nlohmann::json StatusFor(const ModelInfo &m) const;
+	// UI thread (the engine, as its settings change). Stored under the downloader's own
+	// mutex, because download workers build statuses too.
+	void SetLanguage(const std::string &language);
 
 private:
 	struct Progress {
@@ -83,6 +93,7 @@ private:
 
 	mutable std::mutex mutex_;
 	std::map<std::string, Progress> progress_;
+	std::string language_ = "en";
 };
 
 // Process-wide downloader (function-local static, so it outlives detached workers).
