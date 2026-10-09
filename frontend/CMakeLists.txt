@@ -393,6 +393,8 @@ target_sources(
     src/voice/WavFile.hpp
     src/voice/Recognizer.cpp
     src/voice/Recognizer.hpp
+    src/voice/VadEndpointer.cpp
+    src/voice/VadEndpointer.hpp
     src/voice/VoiceEngine.cpp
     src/voice/VoiceEngine.hpp
     src/voice/VoiceBridge.cpp
@@ -791,6 +793,7 @@ set_source_files_properties(
   src/voice/MicMuteGuard.cpp
   src/voice/VoiceCapture.cpp
   src/voice/Recognizer.cpp
+  src/voice/VadEndpointer.cpp
   src/voice/VoiceEngine.cpp
   src/voice/VoiceBridge.cpp
   src/voice/VoiceModels.cpp

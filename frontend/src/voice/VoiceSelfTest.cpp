@@ -23,6 +23,7 @@
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
 #include "voice/TextNormalize.hpp"
+#include "voice/VadEndpointer.hpp"
 #include "voice/VoiceCapture.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceEngine.hpp"
@@ -1207,6 +1208,77 @@ void TestRecognizer(Tally &t)
 	t.Check("recognizer", "stop is idempotent", (rec.Stop(), true));
 }
 
+void TestVadEndpointer(Tally &t)
+{
+	const std::optional<std::string> modelDir = Env::Raw("BRAIDCAST_SELFTEST_VOICE_MODELS");
+	if (!modelDir || modelDir->empty()) {
+		t.Skip("vad", "finds speech in the fixture", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
+		return;
+	}
+	using VadState = Voice::VadEndpointer::State;
+	Voice::VadEndpointer vad;
+	std::string error;
+	if (!vad.Start(*modelDir + "/ggml-silero-v5.1.2.bin", 1, error)) {
+		t.Check("vad", "the VAD model loads", false);
+		HostLog("[selftest] voice-vad load error: " + error);
+		return;
+	}
+	t.Check("vad", "the VAD model loads", true);
+
+	// Silence stays silent.
+	const std::vector<float> silence(Voice::kVoiceSampleRate, 0.f);
+	VadState state = VadState::Silence;
+	for (size_t offset = 0; offset + 1600 <= silence.size(); offset += 1600) {
+		state = vad.Push(silence.data() + offset, 1600);
+	}
+	t.Check("vad", "silence is not speech", state == VadState::Silence);
+
+	// The spoken fixture is. Its own trailing silence may already end the utterance, so
+	// the end is looked for over the fixture and the silence after it together.
+	Voice::WavData wav;
+	const std::string wavPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
+	if (wavPath.empty() || !Voice::LoadWavMono(wavPath, wav, error)) {
+		t.Check("vad", "fixture available", false);
+		return;
+	}
+	vad.Reset();
+	bool sawSpeech = false;
+	int ends = 0;
+	for (size_t offset = 0; offset + 1600 <= wav.samples.size(); offset += 1600) {
+		const VadState s = vad.Push(wav.samples.data() + offset, 1600);
+		sawSpeech = sawSpeech || s == VadState::Speech;
+		ends += s == VadState::Ended ? 1 : 0;
+	}
+	t.Check("vad", "finds speech in the fixture", sawSpeech);
+	for (int second = 0; second < 2; ++second) {
+		for (size_t offset = 0; offset + 1600 <= silence.size(); offset += 1600) {
+			state = vad.Push(silence.data() + offset, 1600);
+			ends += state == VadState::Ended ? 1 : 0;
+		}
+	}
+	t.Check("vad", "silence ends the utterance", ends >= 1 && state == VadState::Silence);
+
+	// A pause shorter than the hold-off does not end it; a longer one does. Speech is
+	// whatever of the fixture first reads as speech, then digital silence follows.
+	vad.Reset();
+	state = VadState::Silence;
+	for (size_t offset = 0; offset + 1600 <= wav.samples.size() && state != VadState::Speech; offset += 1600) {
+		state = vad.Push(wav.samples.data() + offset, 1600);
+	}
+	bool endedEarly = false;
+	for (size_t pushedMs = 0; pushedMs < 300; pushedMs += 100) {
+		endedEarly = endedEarly || vad.Push(silence.data(), 1600) == VadState::Ended;
+	}
+	bool ended = false;
+	for (size_t pushedMs = 300; pushedMs < 1500 && !ended; pushedMs += 100) {
+		ended = vad.Push(silence.data(), 1600) == VadState::Ended;
+	}
+	t.Check("vad", "it waits out a short pause first", state == VadState::Speech && !endedEarly && ended);
+
+	vad.Stop();
+	t.Check("vad", "stop is idempotent", (vad.Stop(), !vad.Ready()));
+}
+
 void TestVoiceEngine(Tally &t)
 {
 	Voice::VoiceEngine &engine = Voice::Engine();
@@ -2140,14 +2212,15 @@ void TestVoiceBridge(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,   &TestCpuGate,       &TestLogCategory,    &TestVoiceSettingsTable,
-	&TestSha256,          &TestHttpCancel,    &TestModelCatalog,   &TestModelVerifyAndCommit,
-	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,      &TestMicMuteGuard,
-	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
-	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
-	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints, &TestRecentChatters,
-	&TestChatterFeed,     &TestChatLimits,    &TestChatCommands,   &TestChatDrafts,
+	&TestWhisperLinked,   &TestCpuGate,         &TestLogCategory,   &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel,      &TestModelCatalog,  &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,        &TestResampler,     &TestMicMuteGuard,
+	&TestVoiceCapture,    &TestVoiceListener,   &TestWavFile,       &TestRecognizerWithoutModel,
+	&TestRecognizer,      &TestVadEndpointer,   &TestVoiceEngine,   &TestVoiceHotkeys,
+	&TestVoiceBridge,     &TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher,
+	&TestBridgeSeams,     &TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints,
+	&TestRecentChatters,  &TestChatterFeed,     &TestChatLimits,    &TestChatCommands,
+	&TestChatDrafts,
 };
 
 } // namespace
