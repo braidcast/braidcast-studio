@@ -327,6 +327,18 @@ void EmitAudioChanged();
 // channel-0 bind that would skip the canvas scene links.
 bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 
+// The one implementation of "make this scene item visible / invisible" and "mute or
+// unmute this source", with everything that goes with them: the undo entry, the
+// sceneItems.changed event and the persist for visibility; the persist for the mute.
+// sceneItems.setVisible, audio.setMuted and voice control all call these, so a rule
+// added to one path applies to every path. `itemParams` addresses the item exactly as
+// sceneItems.setVisible's params do ({canvas?, scene?, group?, id}); the undo entry and
+// the event need that address, not just the item. `error` covers the action only
+// (no such item, no source); the methods keep their own messages for bad params.
+// UI thread.
+bool SetSceneItemVisible(const json &itemParams, bool visible, std::string &error);
+bool SetSourceMuted(obs_source_t *source, bool muted, std::string &error);
+
 // The WHOLE-STREAM lifecycle, shared by streaming.start/stop, the tray menu's Start
 // all / Stop all, and the start/stop hotkeys, so no entry point can drive a bare
 // MultistreamEngine::StartAllEnabled/StopAll again. The tray and the hotkeys used to do

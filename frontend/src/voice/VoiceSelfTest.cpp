@@ -1316,6 +1316,67 @@ void TestCommandMatcher(Tally &t)
 	t.Check("matcher", "switching scenes does not", !match("switch to BRB").needsConfirm);
 }
 
+// The seams have to behave exactly like the methods, persistence and events included, so
+// the visibility case drives a real scene the way sceneItems.setVisible is addressed. A
+// throwaway scene and source keep the user's studio untouched; both are removed after.
+void TestBridgeSeams(Tally &t)
+{
+	const char *kScene = "braidcast voice seam scene";
+	const char *kSource = "braidcast voice seam source";
+	nlohmann::json result;
+	std::string error;
+	if (!Bridge::Dispatch("scenes.create", nlohmann::json{{"name", kScene}}, result, error)) {
+		t.Skip("seams", "visibility seam", "could not create the test scene: " + error);
+		return;
+	}
+	const bool added = Bridge::Dispatch(
+		"sources.create", nlohmann::json{{"type", "color_source"}, {"name", kSource}, {"scene", kScene}},
+		result, error);
+	const int64_t id = added ? result.value("id", static_cast<int64_t>(0)) : 0;
+	if (!added || id == 0) {
+		t.Skip("seams", "visibility seam", "could not add the test item: " + error);
+	} else {
+		const nlohmann::json item = {{"scene", kScene}, {"id", id}};
+		auto visible = [&] {
+			OBSSourceAutoRelease scene = obs_get_source_by_name(kScene);
+			obs_sceneitem_t *found =
+				scene ? obs_scene_find_sceneitem_by_id(obs_scene_from_source(scene), id) : nullptr;
+			return found && obs_sceneitem_visible(found);
+		};
+		error.clear();
+		t.Check("seams", "visibility seam hides",
+			Bridge::SetSceneItemVisible(item, false, error) && !visible());
+		t.Check("seams", "visibility seam shows", Bridge::SetSceneItemVisible(item, true, error) && visible());
+		error.clear();
+		t.Check("seams", "visibility seam refuses an item that is not there",
+			!Bridge::SetSceneItemVisible(nlohmann::json{{"scene", kScene}, {"id", id + 1000}}, false,
+						     error) &&
+				!error.empty());
+		Bridge::Dispatch("sceneItems.remove", item, result, error);
+		OBSSourceAutoRelease source = obs_get_source_by_name(kSource);
+		if (source) {
+			obs_source_remove(source);
+		}
+	}
+	Bridge::Dispatch("scenes.remove", nlohmann::json{{"name", kScene}}, result, error);
+
+	// A private source: it is on no channel and in no scene, so nothing the user owns is
+	// muted, and nothing persists it.
+	OBSSourceAutoRelease muteable = obs_source_create_private("color_source", "braidcast voice seam mute", nullptr);
+	if (!muteable) {
+		t.Skip("seams", "mute seam", "could not create the test source");
+		return;
+	}
+	obs_source_set_muted(muteable, false);
+	error.clear();
+	t.Check("seams", "mute seam mutes",
+		Bridge::SetSourceMuted(muteable, true, error) && obs_source_muted(muteable));
+	t.Check("seams", "mute seam unmutes",
+		Bridge::SetSourceMuted(muteable, false, error) && !obs_source_muted(muteable));
+	t.Check("seams", "mute seam refuses a null source",
+		!Bridge::SetSourceMuted(nullptr, true, error) && !error.empty());
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1399,7 +1460,7 @@ const Case kCases[] = {
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,      &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
-	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher,
+	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
 };
 
 } // namespace

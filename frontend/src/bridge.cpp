@@ -4045,20 +4045,10 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &error)
 {
 	const bool visible = params.is_object() && params.value("visible", false);
-	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
-	obs_sceneitem_t *item = nullptr;
 	int64_t id = 0;
-	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
+	if (!ItemIdFromParams(params, id, error) || !SetSceneItemVisible(params, visible, error)) {
 		return false;
 	}
-	json before = StateBase(params, item);
-	before["visible"] = obs_sceneitem_visible(item);
-	json after = StateBase(params, item);
-	after["visible"] = visible;
-	obs_sceneitem_set_visible(item, visible);
-	CommitSceneItemChange(params, sceneSource);
-	obs_source_release(sceneSource);
-	RecordUndo(visible ? "Show" : "Hide", ApplyVisible, before, after);
 	result = json{{"id", id}, {"visible", visible}};
 	return true;
 }
@@ -9742,8 +9732,9 @@ bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 		error = "audio.setMuted: no source for the given 'uuid'/'source'";
 		return false;
 	}
-	obs_source_set_muted(source, muted);
-	PersistSourceState(source);
+	if (!SetSourceMuted(source, muted, error)) {
+		return false;
+	}
 	result = json{{"uuid", obs_source_get_uuid(source)}, {"muted", muted}};
 	return true;
 }
@@ -12225,6 +12216,38 @@ bool SwitchDefaultProgramScene(const std::string &sceneUuid)
 	ObsBootstrap::ApplyCanvasSceneLinks(sceneUuid);
 	EmitScenesChanged(std::string());
 	SceneCollection::Save();
+	return true;
+}
+
+bool SetSceneItemVisible(const json &itemParams, bool visible, std::string &error)
+{
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(itemParams, sceneSource, item, id, error)) {
+		return false;
+	}
+	json before = StateBase(itemParams, item);
+	before["visible"] = obs_sceneitem_visible(item);
+	json after = StateBase(itemParams, item);
+	after["visible"] = visible;
+	obs_sceneitem_set_visible(item, visible);
+	CommitSceneItemChange(itemParams, sceneSource);
+	obs_source_release(sceneSource);
+	RecordUndo(visible ? "Show" : "Hide", ApplyVisible, before, after);
+	return true;
+}
+
+bool SetSourceMuted(obs_source_t *source, bool muted, std::string &error)
+{
+	if (!source) {
+		error = "there is no source to mute or unmute";
+		return false;
+	}
+	obs_source_set_muted(source, muted);
+	// A global channel's mute persists through its own store, anything else with the
+	// scene collection; PersistSourceState picks which.
+	PersistSourceState(source);
 	return true;
 }
 
