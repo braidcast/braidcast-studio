@@ -75,6 +75,9 @@ inline constexpr const char *kSessionsChanged = "sessions.changed";
 inline constexpr const char *kScheduleChanged = "schedule.changed";
 inline constexpr const char *kStreamingStartFailed = "streaming.startFailed";
 inline constexpr const char *kStreamingMetadataMismatch = "streaming.metadataMismatch";
+inline constexpr const char *kVoiceState = "voice.state";
+inline constexpr const char *kSettingsVoiceChanged = "settings.voiceChanged";
+inline constexpr const char *kVoiceModelStatus = "voice.model.status";
 } // namespace EventNames
 
 #endif // OBS_MULTISTREAM_FRONTEND_EVENT_NAMES_HPP_

@@ -1,10 +1,12 @@
 #include "obs_bootstrap.hpp"
 
 #include "log.hpp"
+#include "util/file_util.hpp"
 #include "util/http_client.hpp"
 #include "util/sha256.hpp"
 #include "util/time_util.hpp"
 #include "voice/VoiceCpu.hpp"
+#include "voice/VoiceModels.hpp"
 #include "voice/VoiceSettings.hpp"
 
 #include <obs.hpp>
@@ -146,10 +148,65 @@ void TestHttpCancel(Tally &t)
 	t.Check("http", "cancel ends a stalled connect within 3 s", status == 0 && elapsed < 3000);
 }
 
+void TestModelCatalog(Tally &t)
+{
+	size_t n = 0;
+	const Voice::ModelInfo *const *all = Voice::ModelCatalog(n);
+	bool shapes = n >= 5;
+	for (size_t i = 0; i < n; ++i) {
+		const std::string sha = all[i]->sha256;
+		shapes = shapes && sha.size() == 64 && sha.find_first_not_of("0123456789abcdef") == std::string::npos &&
+			 all[i]->bytes > 0 && std::string(all[i]->url).rfind("https://", 0) == 0;
+		for (size_t j = i + 1; j < n; ++j) {
+			shapes = shapes && std::string(all[i]->id) != all[j]->id;
+		}
+	}
+	t.Check("models", "catalog ids unique, hashes and urls well formed", shapes);
+	const Voice::ModelInfo *vad = Voice::FindModel(Voice::kVadModelId);
+	t.Check("models", "VAD model present and kind Vad", vad && vad->kind == Voice::ModelKind::Vad);
+	t.Check("models", "P0 default is selectable", Voice::IsSelectableModel(Voice::P0::kDefaultModelId));
+	t.Check("models", "multilingual is not in the English picker",
+		!Voice::IsSelectableModel(Voice::kMultilingualModelId));
+	t.Check("models", "unknown id rejected",
+		Voice::FindModel("nope") == nullptr && !Voice::IsSelectableModel("nope"));
+}
+
+void TestModelVerifyAndCommit(Tally &t)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "braidcast-voice-models-selftest";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const std::string abcSha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+	const fs::path part = dir / "m.bin.part";
+	{
+		std::ofstream f(part, std::ios::binary);
+		f << "abc";
+	}
+	std::string error;
+	t.Check("models", "verify accepts size and hash match",
+		Voice::VerifyFile(part.u8string(), 3, abcSha.c_str(), error, nullptr));
+	t.Check("models", "verify rejects size mismatch",
+		!Voice::VerifyFile(part.u8string(), 4, abcSha.c_str(), error, nullptr) && !error.empty());
+	t.Check("models", "verify rejects hash mismatch",
+		!Voice::VerifyFile(part.u8string(), 3, std::string(64, '0').c_str(), error, nullptr));
+
+	const fs::path final = dir / "m.bin";
+	const bool committed = Voice::CommitDownload(part.u8string(), final.u8string(), abcSha, error);
+	std::string marker;
+	FileUtil::ReadUtf8File((final.u8string() + ".verified"), marker);
+	t.Check("models", "commit renames .part and writes the marker",
+		committed && fs::exists(final) && !fs::exists(part) && marker == abcSha);
+	fs::remove_all(dir, ec);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked, &TestCpuGate, &TestLogCategory, &TestVoiceSettingsTable, &TestSha256, &TestHttpCancel,
+	&TestWhisperLinked, &TestCpuGate,    &TestLogCategory,  &TestVoiceSettingsTable,
+	&TestSha256,        &TestHttpCancel, &TestModelCatalog, &TestModelVerifyAndCommit,
 };
 
 } // namespace
