@@ -122,6 +122,33 @@
   const LOG_HINT_ID = "voice-log-hint";
   const CUE_VOLUME_ID = "voice-cue-volume";
   const CUE_HINT_ID = "voice-cue-hint";
+  const SEND_MODE_ID = "voice-send-mode";
+  const COUNTDOWN_ID = "voice-countdown";
+  const SEND_HINT_ID = "voice-send-hint";
+
+  // How a dictated chat message goes out, safest first. The host refuses anything else.
+  const SEND_MODES: { value: VoiceSettingsState["sendMode"]; label: string }[] = [
+    { value: "countdown", label: "Show it, then send it" },
+    { value: "say", label: "Wait until I say \u201csend\u201d" },
+    { value: "instant", label: "Send it straight away" },
+  ];
+
+  function applySendMode(value: string): void {
+    const mode = SEND_MODES.find((m) => m.value === value);
+    if (mode) {
+      void apply({ sendMode: mode.value });
+    }
+  }
+
+  // A cleared or non-numeric box keeps the last good value; the host clamps to 1-10.
+  function applyCountdown(input: HTMLInputElement): void {
+    const seconds = input.valueAsNumber;
+    if (Number.isFinite(seconds)) {
+      void apply({ countdownSec: seconds });
+    } else {
+      input.value = String(s.countdownSec);
+    }
+  }
 </script>
 
 {#if !loaded}
@@ -188,6 +215,43 @@
     {#if cueWarning}
       <p class="note status warn" role="status">{cueWarning}</p>
     {/if}
+  </section>
+
+  <section class="group">
+    <h4>Chat messages</h4>
+    <div class="field">
+      <label class="flabel" for={SEND_MODE_ID}>Sending a dictated message</label>
+      <select
+        id={SEND_MODE_ID}
+        value={s.sendMode}
+        aria-describedby={SEND_HINT_ID}
+        onchange={(e) => applySendMode(e.currentTarget.value)}
+      >
+        {#each SEND_MODES as m (m.value)}
+          <option value={m.value}>{m.label}</option>
+        {/each}
+      </select>
+    </div>
+    {#if s.sendMode === "countdown"}
+      <div class="field">
+        <label class="flabel" for={COUNTDOWN_ID}>Show it for (seconds)</label>
+        <input
+          id={COUNTDOWN_ID}
+          class="num"
+          type="number"
+          min="1"
+          max="10"
+          step="1"
+          value={s.countdownSec}
+          onchange={(e) => applyCountdown(e.currentTarget)}
+        />
+      </div>
+    {/if}
+    <p id={SEND_HINT_ID} class="dim note">
+      Say "send to chat", "reply to" someone who just chatted, or name a platform, and the message appears above the
+      Multichat composer before it goes, so you can cancel or edit it. With push-to-talk, anything that is not a
+      command is a message to chat. Sending straight away skips that look, which is quick and unforgiving.
+    </p>
   </section>
 
   <section class="group">
@@ -285,6 +349,7 @@
     color: var(--color-muted);
     cursor: default;
   }
+  .num,
   select {
     background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
@@ -294,6 +359,10 @@
     width: 100%;
     max-width: 320px;
   }
+  .num {
+    max-width: 120px;
+  }
+  .num:focus,
   select:focus {
     outline: none;
     border-color: var(--color-accent);
