@@ -1625,6 +1625,52 @@ void TestRecentChatters(Tally &t)
 		kai && kai->platform == "youtube");
 }
 
+void TestChatterFeed(Tally &t)
+{
+	// The hub's ring is process-wide; the smoke run has no live chat, so this checks the
+	// wiring rather than real traffic: a body shaped exactly like the one the hub's fan-out
+	// point admits is fed through the same helper the hub calls. Whatever the ring held is
+	// put back, so a run with chat live loses nobody.
+	const int64_t now = TimeUtil::NowMs();
+	const std::vector<Chat::Chatter> before = Chat::Chatters().Recent(now);
+	Chat::Chatters().Clear();
+	const OAuth::DestinationId dest{"twitch:100", ""};
+
+	const nlohmann::json message = {
+		{"platform", "twitch"},
+		{"author", {{"id", "u42"}, {"name", "Dave"}}},
+		{"fragments", nlohmann::json::array()},
+	};
+	Chat::NoteChatMessage(message, "self-id", dest, now);
+	const std::vector<Chat::Chatter> fed = Chat::Chatters().Recent(now);
+	t.Check("chatterfeed", "a message adds its author", fed.size() == 1);
+	t.Check("chatterfeed", "the author keeps the destination it spoke on",
+		fed.size() == 1 && fed[0].accountId == "twitch:100" && fed[0].platform == "twitch");
+
+	const nlohmann::json own = {
+		{"platform", "twitch"},
+		{"author", {{"id", "self-id"}, {"name", "Me"}}},
+		{"fragments", nlohmann::json::array()},
+	};
+	Chat::NoteChatMessage(own, "self-id", dest, now);
+	t.Check("chatterfeed", "our own message is skipped", Chat::Chatters().Recent(now).size() == 1);
+
+	const nlohmann::json anonymous = {{"platform", "kick"}, {"author", {{"name", "Mo"}}}};
+	Chat::NoteChatMessage(anonymous, "self-id", dest, now);
+	t.Check("chatterfeed", "an author without an id still counts", Chat::Chatters().Recent(now).size() == 2);
+
+	const nlohmann::json malformed = {{"platform", "twitch"}, {"fragments", nlohmann::json::array()}};
+	Chat::NoteChatMessage(malformed, "self-id", dest, now);
+	Chat::NoteChatMessage(nlohmann::json{{"platform", "twitch"}, {"author", "Dave"}}, "self-id", dest, now);
+	t.Check("chatterfeed", "a message with no author is ignored", Chat::Chatters().Recent(now).size() == 2);
+
+	Chat::Chatters().Clear();
+	for (auto it = before.rbegin(); it != before.rend(); ++it) {
+		Chat::Chatters().Note(it->platform, it->authorId, it->displayName, {it->accountId, it->profileUuid},
+				      it->lastSeenMs);
+	}
+}
+
 void TestVoiceFeedback(Tally &t)
 {
 	Voice::VoiceFeedback feedback;
@@ -1775,6 +1821,7 @@ const Case kCases[] = {
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
 	&TestCommandRegistry, &TestVoiceFeedback, &TestAudioEndpoints, &TestRecentChatters,
+	&TestChatterFeed,
 };
 
 } // namespace

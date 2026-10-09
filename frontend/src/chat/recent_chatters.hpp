@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "../oauth/provider.hpp" // OAuth::DestinationId
 
 namespace Chat {
@@ -76,6 +78,13 @@ RecentChatters &Chatters();
 // recent speaker under it, compared case-insensitively. A name heard on two platforms is
 // one person to the ear, and BestMatch would call two equal names ambiguous.
 std::vector<Chatter> DistinctByName(const std::vector<Chatter> &recent);
+
+// Feeds one chat.message body into Chatters(), as the hub's fan-out point admits it from
+// `dest`. `selfUserId` is the account's own user id, whose lines are skipped: the local
+// echo of an outbound message takes the same path as a real one, and "reply to me" is not
+// a thing. A body with no author object adds nothing. Called on a transport worker.
+void NoteChatMessage(const nlohmann::json &body, const std::string &selfUserId, const OAuth::DestinationId &dest,
+		     int64_t nowMs);
 
 } // namespace Chat
 

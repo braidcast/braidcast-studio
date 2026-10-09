@@ -89,6 +89,27 @@ void RecentChatters::Clear()
 	entries_.clear();
 }
 
+void NoteChatMessage(const nlohmann::json &body, const std::string &selfUserId, const OAuth::DestinationId &dest,
+		     int64_t nowMs)
+{
+	if (!body.is_object()) {
+		return;
+	}
+	const auto author = body.find("author");
+	if (author == body.end() || !author->is_object()) {
+		return;
+	}
+	const auto text = [](const nlohmann::json &obj, const char *key) {
+		const auto it = obj.find(key);
+		return it != obj.end() && it->is_string() ? it->get<std::string>() : std::string();
+	};
+	const std::string id = text(*author, "id");
+	if (!selfUserId.empty() && id == selfUserId) {
+		return;
+	}
+	Chatters().Note(text(body, "platform"), id, text(*author, "name"), dest, nowMs);
+}
+
 RecentChatters &Chatters()
 {
 	static RecentChatters ring;

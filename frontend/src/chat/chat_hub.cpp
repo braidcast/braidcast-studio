@@ -23,6 +23,7 @@
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
 #include "chat_history.hpp"
 #include "chat_transport.hpp"
+#include "recent_chatters.hpp"
 
 namespace Chat {
 
@@ -185,7 +186,8 @@ void ChatHub::Start()
 		// a send can route a local echo of an outbound message through the IDENTICAL
 		// pipeline a real incoming message takes (stop-guard, event split, identity stamp,
 		// state cache, fallback-id synthesis, overlay fan-out, alive-guarded UI post).
-		std::function<void(const json &payload)> emitFn = [this, dest, canceled](const json &payload) {
+		std::function<void(const json &payload)> emitFn = [this, dest, canceled,
+								   selfId = acct.userId](const json &payload) {
 			if (canceled()) {
 				return; // generation or destination stopped; drop late emits
 			}
@@ -250,6 +252,12 @@ void ChatHub::Start()
 					    body.value("id", std::string()).c_str());
 					return;
 				}
+				// Remember who spoke, so voice control can resolve "reply to Dave"
+				// against people the user actually just heard from. After the
+				// dedupe, so a re-delivered line is not a new utterance; here
+				// rather than in each transport because this is the one fan-out
+				// point for every platform.
+				NoteChatMessage(body, selfId, dest, TimeUtil::NowMs());
 				// Fan chat messages (never connection-state frames) to overlay
 				// widgets as a named `chat` SSE event, HERE on the emitting worker
 				// rather than after the UI hop (mirrors EventHub::Ingest).
