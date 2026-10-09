@@ -25,6 +25,10 @@
     cueVolume: 0.6,
     sendMode: "countdown",
     countdownSec: 3,
+    triggerMode: "ptt",
+    wakePhrase: "Braidcast",
+    readBack: false,
+    language: "en",
   };
 
   let s = $state<VoiceSettingsState>({ ...DEFAULTS });

@@ -4,6 +4,7 @@
 #include "bridge.hpp"
 #include "event_names.hpp"
 #include "util/json_util.hpp"
+#include "voice/TextNormalize.hpp"
 #include "voice/VoiceEngine.hpp"
 #include "voice/VoiceModels.hpp"
 #include "voice/VoiceP0Defaults.hpp"
@@ -56,6 +57,12 @@ bool SettingsSetVoice(const json &params, json &result, std::string &error)
 	const VoiceSettings &current = Engine().Settings();
 	VoiceSettings next = current;
 	if (!SettingsFields::ApplyPatch(VoiceSettingsTable(), params, next, error)) {
+		return false;
+	}
+	// A wake phrase with no word in it can never be heard, so always-listen would sit
+	// there doing nothing; refuse it rather than store it.
+	if (Normalize(next.wakePhrase).tokens.empty()) {
+		error = "The wake phrase needs at least one word.";
 		return false;
 	}
 	// The field table accepts any string for `model` (the catalog is the list, and it

@@ -5,6 +5,7 @@
 #include "voice/VoiceP0Defaults.hpp"
 
 #include <string>
+#include <vector>
 
 // Voice control preferences, persisted to voice.json beside general.json. The field
 // table (VoiceSettingsTable) is the one wire <-> file <-> member mapping. `model` is
@@ -27,11 +28,27 @@ struct VoiceSettings {
 	std::string sendMode = "countdown";
 	// How long the countdown runs, in seconds (1 to 10).
 	double countdownSec = 3.0;
+	// How a command starts:
+	//   "ptt"  - hold the hotkey (the default: nothing is transcribed until you do)
+	//   "wake" - listen continuously, and act only on what follows the wake phrase
+	std::string triggerMode = "ptt";
+	// What has to be said first in "wake" mode. Matched fuzzily, so near misses still
+	// work, which is also why it should be distinctive. Not "chat": streamers say that
+	// to their viewers all the time.
+	std::string wakePhrase = "Braidcast";
+	// Speak a short confirmation after a command runs (monitoring device only).
+	bool readBack = false;
+	// The recognition language. "en" uses the English-only models; anything else needs
+	// the multilingual model, which the Voice tab offers once a language is picked.
+	std::string language = "en";
 
 	void Load();
 	bool Save() const;
 };
 
 const SettingsFields::Table<VoiceSettings> &VoiceSettingsTable();
+
+// The recognition languages settings.setVoice accepts, as whisper language codes.
+const std::vector<std::string> &VoiceLanguages();
 
 #endif // OBS_MULTISTREAM_FRONTEND_VOICE_SETTINGS_HPP_

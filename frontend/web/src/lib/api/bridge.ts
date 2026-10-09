@@ -402,6 +402,16 @@ export interface VoiceSettingsState {
   sendMode: "countdown" | "say" | "instant";
   /** The countdown's length in seconds, 1 to 10. */
   countdownSec: number;
+  /** How a command starts: hold the push-to-talk key ("ptt", the default), or listen
+   * continuously and act only on what follows the wake phrase ("wake"). */
+  triggerMode: "ptt" | "wake";
+  /** What opens a command in "wake" mode; matched fuzzily. Default "Braidcast". */
+  wakePhrase: string;
+  /** Speak a short confirmation after a command runs (monitoring device only). */
+  readBack: boolean;
+  /** The recognition language, a whisper code; anything but "en" needs the
+   * multilingual model. */
+  language: string;
 }
 
 /** One catalog entry and its download state (voice.model.status). */
@@ -2310,8 +2320,9 @@ export interface ObsMethods {
   // full post-apply state (snapDistance clamped 0..100 server-side).
   "settings.getGeneral": GeneralSettings;
   "settings.setGeneral": GeneralSettings;
-  // Voice control. setVoice applies any present subset ({enabled, model,
-  // logTranscripts, cueVolume}) and answers the full payload; it also emits settings.voiceChanged.
+  // Voice control. setVoice applies any present subset of VoiceSettingsState and answers
+  // the full payload; it also emits settings.voiceChanged. A wake phrase with no word in
+  // it is refused.
   // A download's progress arrives as voice.model.status events, one model per event.
   "settings.getVoice": VoicePayload;
   "settings.setVoice": VoicePayload;

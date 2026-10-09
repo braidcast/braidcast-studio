@@ -156,6 +156,33 @@ void TestVoiceSettingsTable(Tally &t)
 			modes.sendMode == "instant");
 	SettingsFields::ApplyPatch(table, nlohmann::json{{"countdownSec", 60.0}}, modes, modeError);
 	t.Check("settings", "the countdown clamps", modes.countdownSec <= 10.0);
+
+	VoiceSettings listen;
+	std::string listenError;
+	t.Check("settings", "push-to-talk is the default trigger", listen.triggerMode == "ptt");
+	t.Check("settings", "the default wake phrase is Braidcast", listen.wakePhrase == "Braidcast");
+	t.Check("settings", "read-back is off by default", !listen.readBack);
+	t.Check("settings", "the default language is English", listen.language == "en");
+
+	t.Check("settings", "always-listen applies",
+		SettingsFields::ApplyPatch(table, nlohmann::json{{"triggerMode", "wake"}}, listen, listenError) &&
+			listen.triggerMode == "wake");
+	t.Check("settings", "an unknown trigger mode is refused",
+		!SettingsFields::ApplyPatch(table, nlohmann::json{{"triggerMode", "telepathy"}}, listen, listenError));
+	t.Check("settings", "a supported language applies",
+		SettingsFields::ApplyPatch(table, nlohmann::json{{"language", "de"}}, listen, listenError) &&
+			listen.language == "de");
+	t.Check("settings", "an unsupported language is refused",
+		!SettingsFields::ApplyPatch(table, nlohmann::json{{"language", "xx"}}, listen, listenError));
+	t.Check("settings", "an over-long wake phrase is refused",
+		!SettingsFields::ApplyPatch(table, nlohmann::json{{"wakePhrase", std::string(200, 'x')}}, listen,
+					    listenError));
+	// Every offered language is one whisper knows; whisper_lang_id is -1 otherwise.
+	bool whisperKnowsAll = true;
+	for (const std::string &language : VoiceLanguages()) {
+		whisperKnowsAll = whisperKnowsAll && whisper_lang_id(language.c_str()) >= 0;
+	}
+	t.Check("settings", "whisper knows every offered language", whisperKnowsAll && VoiceLanguages().size() == 15);
 }
 
 void TestSha256(Tally &t)
@@ -2073,6 +2100,10 @@ void TestVoiceBridge(Tally &t)
 			t.Skip("bridge", "enabling before the model is downloaded is refused", "the model is present");
 		}
 	}
+
+	t.Check("bridge", "a wake phrase with no word in it is refused",
+		!Dispatch("settings.setVoice", nlohmann::json{{"wakePhrase", " ?! "}}, result, error) &&
+			!error.empty() && Voice::Engine().Settings().wakePhrase == original.wakePhrase);
 
 	t.Check("bridge", "voice.state answers",
 		Dispatch("voice.state", nlohmann::json::object(), result, error) && result.contains("state") &&

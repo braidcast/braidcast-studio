@@ -21,7 +21,18 @@ export const VOICE_STATE_EMPTY: VoiceState = {
   pending: null,
   keptDraft: "",
   ready: { cpu: true, cpuReason: "", model: false, mic: false },
-  settings: { enabled: false, model: "", logTranscripts: false, cueVolume: 0, sendMode: "countdown", countdownSec: 3 },
+  settings: {
+    enabled: false,
+    model: "",
+    logTranscripts: false,
+    cueVolume: 0,
+    sendMode: "countdown",
+    countdownSec: 3,
+    triggerMode: "ptt",
+    wakePhrase: "",
+    readBack: false,
+    language: "en",
+  },
 };
 
 class VoiceStore {

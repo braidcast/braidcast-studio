@@ -28,6 +28,10 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
       cueVolume: 0.6,
       sendMode: "countdown",
       countdownSec: 3,
+      triggerMode: "ptt",
+      wakePhrase: "Braidcast",
+      readBack: false,
+      language: "en",
     },
     ...overrides,
   };
@@ -68,6 +72,10 @@ const off: VoiceSettingsState = {
   cueVolume: 0.6,
   sendMode: "countdown",
   countdownSec: 3,
+  triggerMode: "ptt",
+  wakePhrase: "Braidcast",
+  readBack: false,
+  language: "en",
 };
 
 describe("voiceIndicator", () => {
@@ -222,6 +230,10 @@ describe("voiceEnableGate", () => {
     cueVolume: 0.6,
     sendMode: "countdown",
     countdownSec: 3,
+    triggerMode: "ptt",
+    wakePhrase: "Braidcast",
+    readBack: false,
+    language: "en",
   };
 
   it("allows turning on once the chosen model is on disk", () => {
