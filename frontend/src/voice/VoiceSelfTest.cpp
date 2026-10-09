@@ -8,13 +8,16 @@
 #include "util/time_util.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceModels.hpp"
+#include "voice/VoiceResampler.hpp"
 #include "voice/VoiceRing.hpp"
 #include "voice/VoiceSettings.hpp"
 
 #include <obs.hpp>
 #include <whisper.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -274,11 +277,116 @@ void TestSpscRing(Tally &t)
 	t.Check("ring", "200k samples cross threads in order", orderOk);
 }
 
+// Fill `out` with `frames` samples of a sine at `hz`, sampled at `rate`.
+void FillSine(std::vector<float> &out, size_t frames, double hz, double rate)
+{
+	out.resize(frames);
+	for (size_t i = 0; i < frames; ++i) {
+		out[i] = static_cast<float>(std::sin(6.283185307179586 * hz * static_cast<double>(i) / rate));
+	}
+}
+
+double Rms(const float *p, size_t n)
+{
+	if (n == 0) {
+		return 0.0;
+	}
+	double sum = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		sum += static_cast<double>(p[i]) * p[i];
+	}
+	return std::sqrt(sum / static_cast<double>(n));
+}
+
+// How much of a 16 kHz signal is a sine at `hz` (any phase), against everything else,
+// in dB: a least-squares fit of sin and cos at that frequency over p[0..n).
+double ToneSnrDb(const float *p, size_t n, double hz)
+{
+	double ss = 0.0, cc = 0.0, sc = 0.0, ys = 0.0, yc = 0.0, yy = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		const double phase = 6.283185307179586 * hz * static_cast<double>(i) / Voice::kVoiceSampleRate;
+		const double s = std::sin(phase);
+		const double c = std::cos(phase);
+		ss += s * s;
+		cc += c * c;
+		sc += s * c;
+		ys += p[i] * s;
+		yc += p[i] * c;
+		yy += static_cast<double>(p[i]) * p[i];
+	}
+	const double det = ss * cc - sc * sc;
+	if (det <= 0.0) {
+		return 0.0;
+	}
+	const double a = (ys * cc - yc * sc) / det;
+	const double b = (yc * ss - ys * sc) / det;
+	const double tone = a * ys + b * yc;
+	return 10.0 * std::log10(tone / std::max(yy - tone, 1e-30));
+}
+
+// Run a whole buffer through a Downsampler in kMaxInFrames blocks.
+std::vector<float> RunDownsampler(Voice::Downsampler &down, const std::vector<float> &in)
+{
+	std::vector<float> out(Voice::Downsampler::kMaxOutFrames);
+	std::vector<float> all;
+	size_t offset = 0;
+	while (offset < in.size()) {
+		const size_t chunk = std::min<size_t>(Voice::Downsampler::kMaxInFrames, in.size() - offset);
+		const size_t n = down.Process(in.data() + offset, chunk, out.data());
+		all.insert(all.end(), out.begin(), out.begin() + n);
+		offset += chunk;
+	}
+	return all;
+}
+
+void TestResampler(Tally &t)
+{
+	std::vector<float> in;
+
+	// A 1 kHz tone is inside the pass band, so it survives at about the same level.
+	Voice::Downsampler down(48000);
+	FillSine(in, 48000, 1000.0, 48000.0);
+	const std::vector<float> got = RunDownsampler(down, in);
+	t.Check("resample", "48k -> 16k frame count", got.size() >= 15980 && got.size() <= 16000);
+	// Skip the filter's warm-up before measuring.
+	t.Check("resample", "1 kHz passes at full level",
+		std::fabs(Rms(got.data() + 128, got.size() - 128) - 0.7071) < 0.02);
+
+	// 12 kHz is above the 8 kHz Nyquist of the output and must not alias back in.
+	Voice::Downsampler alias(48000);
+	FillSine(in, 48000, 12000.0, 48000.0);
+	const std::vector<float> aliased = RunDownsampler(alias, in);
+	t.Check("resample", "12 kHz is rejected, not aliased", Rms(aliased.data() + 128, aliased.size() - 128) < 0.01);
+
+	// 44.1 kHz is the other common mix rate, and its ratio is not an integer.
+	Voice::Downsampler odd(44100);
+	FillSine(in, 44100, 1000.0, 44100.0);
+	const std::vector<float> oddOut = RunDownsampler(odd, in);
+	t.Check("resample", "44.1k -> 16k frame count", oddOut.size() >= 15980 && oddOut.size() <= 16010);
+	// A fractional ratio is where a decimator that picks the nearest input sample jitters;
+	// interpolating keeps the tone clean (measured 62 dB; the nearest pick gave 28 dB).
+	t.Check("resample", "44.1k: 1 kHz stays a clean 1 kHz tone",
+		oddOut.size() > 128 && ToneSnrDb(oddOut.data() + 128, oddOut.size() - 128, 1000.0) > 40.0);
+
+	// 16 kHz in is a pass-through, sample for sample.
+	Voice::Downsampler same(16000);
+	FillSine(in, 1600, 1000.0, 16000.0);
+	std::vector<float> out(Voice::Downsampler::kMaxOutFrames);
+	const size_t n = same.Process(in.data(), 1600, out.data());
+	t.Check("resample", "16k in is passed through unchanged", n == 1600 && out[10] == in[10]);
+
+	// An over-long input block must be refused rather than overrun the output.
+	Voice::Downsampler guard(48000);
+	const std::vector<float> huge(Voice::Downsampler::kMaxInFrames + 1, 0.f);
+	t.Check("resample", "over-long block refused", guard.Process(huge.data(), huge.size(), out.data()) == 0);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
-	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,    &TestSpscRing,
+	&TestWhisperLinked,   &TestCpuGate,    &TestLogCategory,  &TestVoiceSettingsTable,
+	&TestSha256,          &TestHttpCancel, &TestModelCatalog, &TestModelVerifyAndCommit,
+	&TestPostToUiDelayed, &TestSpscRing,   &TestResampler,
 };
 
 } // namespace
