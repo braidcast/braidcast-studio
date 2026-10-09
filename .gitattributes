@@ -11,3 +11,6 @@
 *.vcxproj.filters text eol=crlf
 
 cmake/ALL_BUILD.vcxproj.user.in text eol=crlf
+
+# Generated audio (frontend/assets/voice): never touched by line-ending conversion.
+*.wav binary

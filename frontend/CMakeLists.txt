@@ -910,8 +910,8 @@ install(DIRECTORY "${_web_dist}/" DESTINATION "${OBS_DATA_DESTINATION}/braidcast
 # The voice recognizer's test fixture. Copied to the rundir for the smoke test only,
 # and deliberately NOT installed: it is a test asset, not something users need. It
 # lives in selftest-data/ rather than data/ because set_target_properties_obs installs
-# all of data/ (target_install_resources). The cue WAVs added in P2 are the opposite
-# case and do get install() rules.
+# all of data/ (target_install_resources). The cue WAVs below are the opposite case
+# and do get an install() rule.
 add_custom_command(
   TARGET ${_target}
   POST_BUILD
@@ -921,6 +921,24 @@ add_custom_command(
   COMMENT "Copying voice data (recognizer fixture) to the run directory"
   VERBATIM
 )
+
+# The voice command cues ship with the app, so the rundir copy has a matching install()
+# rule: the copy alone would leave the installed package silent, because the rundir is
+# not what gets packaged. They live in assets/ rather than data/ for the reason the
+# fixture does: target_install_resources would also ship all of data/ to
+# data/braidcast-frontend, where nothing reads it. Only cues/ ships; make-cues.py, which
+# generates them, stays in the tree.
+set(_voice_cues "${CMAKE_CURRENT_SOURCE_DIR}/assets/voice/cues")
+add_custom_command(
+  TARGET ${_target}
+  POST_BUILD
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${_voice_cues}"
+    "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/braidcast/voice/cues"
+  COMMENT "Copying voice cues to the run directory"
+  VERBATIM
+)
+install(DIRECTORY "${_voice_cues}" DESTINATION "${OBS_DATA_DESTINATION}/braidcast/voice" COMPONENT Runtime)
 
 # Drop the OBS-style portable marker into the DEV rundir only, so an in-tree build
 # runs self-contained against <rundir>/bin/64bit/config instead of the shared
