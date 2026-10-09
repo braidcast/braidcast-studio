@@ -111,6 +111,7 @@
 #include "scene/scene_persistence.hpp"
 #include "scene/transitions.hpp"
 #include "target_destinations.hpp"
+#include "voice/CommandRegistry.hpp"
 #include "voice/VoiceEngine.hpp"
 #include "UndoManager.hpp"
 
@@ -1948,6 +1949,9 @@ bool ObsBootstrap::Start()
 	// Voice control: after the global audio channels are seeded (it binds the mic slot)
 	// and after the frontend hotkeys exist (push-to-talk drives it). Disabled by default
 	// (voice.json enabled=false), so this only loads a model when the user opted in.
+	// The command registry goes in first: installing an interpreter rebuilds the
+	// listener, which would restart a runtime that Start had already brought up.
+	Voice::InstallCommands();
 	Voice::Engine().Start();
 
 	// Bring up the embedded MCP server last (after the bridge + stores + audio are

@@ -4,6 +4,7 @@
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/StorePaths.hpp"
+#include "scene/transitions.hpp"
 #include "util/file_util.hpp"
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
@@ -13,6 +14,7 @@
 #include "util/string_util.hpp"
 #include "util/time_util.hpp"
 #include "voice/CommandMatcher.hpp"
+#include "voice/CommandRegistry.hpp"
 #include "voice/FuzzyMatch.hpp"
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
@@ -1377,6 +1379,133 @@ void TestBridgeSeams(Tally &t)
 		!Bridge::SetSourceMuted(nullptr, true, error) && !error.empty());
 }
 
+void TestCommandRegistry(Tally &t)
+{
+	using namespace Voice;
+	using Kind = Interpretation::Kind;
+
+	// The smoke run has at least one scene, so the candidates are never empty.
+	const CommandCandidates candidates = CurrentCandidates();
+	t.Check("registry", "the current scene list is not empty", !candidates.scenes.empty());
+	t.Check("registry", "audio candidates come from the global channels", !candidates.audioSources.empty());
+
+	// The prompt bias carries the command phrases and the studio's own names, and is
+	// bounded: a studio with 200 sources must not push a 10 KB prompt at whisper.
+	const std::string prompt = PromptBias();
+	t.Check("registry", "the prompt names a command phrase", prompt.find("switch to") != std::string::npos);
+	t.Check("registry", "the prompt is bounded", prompt.size() <= kMaxPromptChars);
+
+	// Interpretation: a command that cannot be resolved is a miss with a reason, not a
+	// silent nothing.
+	InterpretContext ctx;
+	const Interpretation missed = InterpretTranscript("switch to a scene that does not exist", ctx);
+	t.Check("registry", "an unresolvable scene is a miss with a reason",
+		missed.kind == Kind::Miss && !missed.message.empty());
+	t.Check("registry", "ordinary speech is a miss",
+		InterpretTranscript("so anyway I was saying", ctx).kind == Kind::Miss);
+
+	// Both lifecycle commands become pending actions rather than running.
+	const Interpretation stop = InterpretTranscript("stop the stream", ctx);
+	t.Check("registry", "stopping the stream is pending, not instant",
+		stop.kind == Kind::Pending && stop.action.commandId == "streaming.stop" &&
+			stop.action.needsConfirmWord);
+	const Interpretation live = InterpretTranscript("go live", ctx);
+	t.Check("registry", "going live is pending, not instant",
+		live.kind == Kind::Pending && live.action.commandId == "streaming.start");
+
+	// Confirmation words only count while something is pending, and while something is,
+	// nothing else does.
+	t.Check("registry", "'yes' with nothing pending is a miss", InterpretTranscript("yes", ctx).kind == Kind::Miss);
+	PendingAction pending;
+	pending.commandId = "streaming.stop";
+	pending.summary = "Stop streaming?";
+	InterpretContext withPending;
+	withPending.pending = &pending;
+	const Interpretation yes = InterpretTranscript("yes", withPending);
+	t.Check("registry", "'yes' confirms a pending command",
+		yes.kind == Kind::Control && yes.control == Interpretation::Control::ConfirmPending);
+	const Interpretation no = InterpretTranscript("never mind", withPending);
+	t.Check("registry", "'never mind' cancels it",
+		no.kind == Kind::Control && no.control == Interpretation::Control::CancelPending);
+	t.Check("registry", "another command while one is pending is a miss",
+		InterpretTranscript("go live", withPending).kind == Kind::Miss);
+
+	// A muted microphone, in a fixed studio so the mic's name is known. Always-listen
+	// honours the user's mute; push-to-talk does not, and our own push-to-talk mute
+	// never counts.
+	CommandCandidates studio;
+	studio.scenes = {"BRB"};
+	studio.audioSources = {"Desktop Audio", "Mic/Aux"};
+	studio.micSource = "Mic/Aux";
+	InterpretContext muted;
+	muted.trigger = Trigger::Wake;
+	muted.mutedSeen = true;
+	t.Check("registry", "a muted mic in always-listen ignores an ordinary command",
+		Interpret("switch to BRB", muted, studio).kind == Kind::Ignored);
+	t.Check("registry", "a muted mic in always-listen still allows unmuting it",
+		Interpret("unmute mic", muted, studio).kind == Kind::Instant);
+	t.Check("registry", "a muted mic in always-listen does not unmute something else",
+		Interpret("unmute desktop audio", muted, studio).kind == Kind::Ignored);
+	InterpretContext pttUserMuted;
+	pttUserMuted.mutedSeen = true;
+	t.Check("registry", "push-to-talk on a mic the user muted acts normally",
+		Interpret("switch to BRB", pttUserMuted, studio).kind == Kind::Instant);
+	InterpretContext ours;
+	ours.pttMuted = true;
+	t.Check("registry", "our own push-to-talk mute blocks nothing",
+		Interpret("switch to BRB", ours, studio).kind == Kind::Instant);
+
+	// Running a scene switch reports back. It switches to the scene already on program,
+	// so the run leaves the studio as it found it.
+	OBSSourceAutoRelease program = Transitions::GetProgramScene();
+	const char *programName = program ? obs_source_get_name(program) : nullptr;
+	if (programName) {
+		PendingAction action;
+		action.commandId = "scenes.setCurrent";
+		action.summary = std::string("Switch to ") + programName;
+		action.params = {{"name", programName}};
+		bool ran = false;
+		bool ok = false;
+		RunCommand(action, [&](bool succeeded, std::string) {
+			ran = true;
+			ok = succeeded;
+		});
+		t.Check("registry", "running a scene switch reports back", ran && ok);
+	} else {
+		t.Skip("registry", "running a scene switch reports back", "no program scene");
+	}
+
+	// Actions naming something that has since disappeared fail cleanly, each with a
+	// reason.
+	auto fails = [](const char *method, const nlohmann::json &params) {
+		PendingAction gone;
+		gone.commandId = method;
+		gone.params = params;
+		bool failedCleanly = false;
+		RunCommand(gone, [&](bool succeeded, std::string message) {
+			failedCleanly = !succeeded && !message.empty();
+		});
+		return failedCleanly;
+	};
+	t.Check("registry", "an action whose target vanished fails with a reason",
+		fails("scenes.setCurrent", {{"name", "a scene that was deleted"}}));
+	t.Check("registry", "showing a source that is not in the scene fails with a reason",
+		fails("sceneItems.setVisible", {{"source", "a source that was deleted"}, {"visible", true}}));
+	t.Check("registry", "muting an audio source that is gone fails with a reason",
+		fails("audio.setMuted", {{"source", "a source that was deleted"}, {"muted", true}}));
+
+	// Anything without a typed branch goes to the bridge registry by name.
+	PendingAction state;
+	state.commandId = "voice.state";
+	state.summary = "Read the voice state";
+	bool dispatched = false;
+	RunCommand(state, [&](bool succeeded, std::string message) {
+		dispatched = succeeded && message == "Read the voice state";
+	});
+	t.Check("registry", "other commands fall through to the bridge registry", dispatched);
+	t.Check("registry", "an unknown method fails with a reason", fails("no.such.method", nlohmann::json::object()));
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1461,6 +1590,7 @@ const Case kCases[] = {
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,        &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,   &TestVoiceBridge,
 	&TestTextNormalize,   &TestFuzzyMatch,    &TestCommandMatcher, &TestBridgeSeams,
+	&TestCommandRegistry,
 };
 
 } // namespace

@@ -27,6 +27,9 @@ using ActionRunner =
 // Plays a feedback sound (P2) and speaks a confirmation (P4).
 using CueSink = std::function<void(Cue)>;
 using SpeechSink = std::function<void(const std::string &)>;
+// Builds whisper's initial prompt from what the user is likely to say (P2's command
+// registry: command phrases and the studio's names). Called on the UI thread.
+using PromptSource = std::function<std::string()>;
 
 // The composition root for voice control: it owns the ring, the capture, the recognizer,
 // the listener and the mute guard, and it is the only place that knows which thread each
@@ -90,6 +93,7 @@ public:
 	void SetActionRunner(ActionRunner fn);
 	void SetCueSink(CueSink fn);
 	void SetSpeechSink(SpeechSink fn);
+	void SetPromptSource(PromptSource fn);
 
 private:
 	struct Runtime;
@@ -109,6 +113,7 @@ private:
 	void HandleOnUi(const Event &event, uint64_t generation);
 	void Deliver(const std::vector<Effect> &effects, uint64_t generation);
 	void UpdateArmed();
+	void RefreshPrompt();
 
 	mutable std::mutex runtimeMutex_; // guards runtime_ for the hotkey thread's reads
 	std::shared_ptr<Runtime> runtime_;
@@ -121,6 +126,7 @@ private:
 	ActionRunner runAction_;
 	CueSink playCue_;
 	SpeechSink speak_;
+	PromptSource prompt_;
 	std::string cpuReason_;
 	ModelState modelState_ = ModelState::Unloaded;
 	bool started_ = false;

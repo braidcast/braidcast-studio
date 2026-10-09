@@ -14,6 +14,10 @@ struct CommandCandidates {
 	std::vector<std::string> scenes;
 	std::vector<std::string> sources;      // scene items in the current scene
 	std::vector<std::string> audioSources; // global audio channels
+	// The source on the user's microphone channel (GlobalAudio::PrimaryMicChannel), ""
+	// when none is bound: what "unmute mic" has to resolve to before it may pass a
+	// muted mic in always-listen mode.
+	std::string micSource;
 };
 
 enum class SlotKind { None, Scene, Source, AudioSource };

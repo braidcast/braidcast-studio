@@ -27,7 +27,8 @@ namespace {
 // it drained, so it never has to hold a whole segment.
 constexpr size_t kRingSamples = static_cast<size_t>(kVoiceSampleRate) * 3;
 
-// P1's interpreter: show what was heard, act on nothing. P2 replaces it.
+// The interpreter until one is installed: show what was heard, act on nothing. The
+// command registry (Voice::InstallCommands) replaces it at startup.
 Interpretation ShowOnly(const std::string &text, const InterpretContext &)
 {
 	Interpretation out;
@@ -108,6 +109,25 @@ void VoiceEngine::SetCueSink(CueSink fn)
 void VoiceEngine::SetSpeechSink(SpeechSink fn)
 {
 	speak_ = std::move(fn);
+}
+
+void VoiceEngine::SetPromptSource(PromptSource fn)
+{
+	prompt_ = std::move(fn);
+}
+
+// The prompt biases whisper toward this studio's own scene and source names, so it is
+// rebuilt as each segment opens (scenes are renamed while the app runs) and once the
+// model is up. On the UI thread, where the studio may be read, rather than on the
+// hotkey thread that opens the segment: the recognizer reads the prompt only when the
+// segment closes, at least kMinSegmentMs later, so the event that announced the
+// segment has long been handled by then.
+void VoiceEngine::RefreshPrompt()
+{
+	std::shared_ptr<Runtime> runtime = CurrentRuntime();
+	if (runtime && prompt_) {
+		runtime->recognizer.SetPrompt(prompt_());
+	}
 }
 
 const VoiceSettings &VoiceEngine::Settings() const
@@ -494,6 +514,10 @@ void VoiceEngine::HandleOnUi(const Event &event, uint64_t generation)
 		// and the explicit transcript setting. Nothing else in the feature ever writes
 		// recognized text.
 		DBG(LogCat::Voice, "transcript: %s", event.text.c_str());
+	}
+	if (event.type == EventType::ModelReady || event.type == EventType::WakeMatched ||
+	    (event.type == EventType::PttDown && event.ok)) {
+		RefreshPrompt();
 	}
 	Deliver(listener_->Handle(event), generation);
 	UpdateArmed();
