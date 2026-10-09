@@ -2,6 +2,7 @@
 
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
+#include "multistream/StorePaths.hpp"
 #include "util/file_util.hpp"
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
@@ -1100,6 +1101,66 @@ void TestVoiceEngine(Tally &t)
 	engine.ApplySettings(original);
 }
 
+// Registration is verified through libobs's own registry rather than the hotkey store's
+// globals, so a hotkey that was declared but never registered still fails.
+obs_hotkey_id FindHotkey(const char *name)
+{
+	struct Search {
+		const char *name;
+		obs_hotkey_id id;
+	} search{name, OBS_INVALID_HOTKEY_ID};
+	obs_enum_hotkeys(
+		[](void *param, obs_hotkey_id id, obs_hotkey_t *hotkey) {
+			auto *s = static_cast<Search *>(param);
+			const char *registered = obs_hotkey_get_name(hotkey);
+			if (registered && std::string(registered) == s->name) {
+				s->id = id;
+				return false;
+			}
+			return true;
+		},
+		&search);
+	return search.id;
+}
+
+void TestVoiceHotkeys(Tally &t)
+{
+	const obs_hotkey_id ptt = FindHotkey("Braidcast.Voice.PushToTalk");
+	const obs_hotkey_id cancel = FindHotkey("Braidcast.Voice.Cancel");
+	t.Check("hotkeys", "push-to-talk is registered", ptt != OBS_INVALID_HOTKEY_ID);
+	t.Check("hotkeys", "cancel is registered", cancel != OBS_INVALID_HOTKEY_ID);
+	// The existing four keep their OBSBasic.* names so saved bindings still match.
+	t.Check("hotkeys", "the existing streaming hotkeys survived the refactor",
+		FindHotkey("OBSBasic.StartStreaming") != OBS_INVALID_HOTKEY_ID &&
+			FindHotkey("OBSBasic.StopStreaming") != OBS_INVALID_HOTKEY_ID);
+	t.Check("hotkeys", "the virtual camera hotkeys survived the refactor",
+		FindHotkey("OBSBasic.StartVirtualCam") != OBS_INVALID_HOTKEY_ID &&
+			FindHotkey("OBSBasic.StopVirtualCam") != OBS_INVALID_HOTKEY_ID);
+
+	// Cancel defaults to Escape. A binding saved in hotkeys.json wins over the default,
+	// so the check only applies while there is none.
+	OBSDataAutoRelease saved = LoadStoreData(MultistreamBasicPath("hotkeys.json"));
+	if (saved && obs_data_has_user_value(saved, "Braidcast.Voice.Cancel")) {
+		t.Skip("hotkeys", "cancel defaults to Escape", "hotkeys.json has a saved binding for it");
+		return;
+	}
+	struct Bound {
+		obs_hotkey_id id;
+		bool escape;
+	} bound{cancel, false};
+	obs_enum_hotkey_bindings(
+		[](void *param, size_t, obs_hotkey_binding_t *binding) {
+			auto *b = static_cast<Bound *>(param);
+			if (obs_hotkey_binding_get_hotkey_id(binding) == b->id &&
+			    obs_hotkey_binding_get_key_combination(binding).key == OBS_KEY_ESCAPE) {
+				b->escape = true;
+			}
+			return true;
+		},
+		&bound);
+	t.Check("hotkeys", "cancel defaults to Escape", bound.escape);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
@@ -1107,7 +1168,7 @@ const Case kCases[] = {
 	&TestSha256,          &TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit,
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
-	&TestRecognizer,      &TestVoiceEngine,
+	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys,
 };
 
 } // namespace

@@ -8,11 +8,13 @@
 #include "scene/scene_items.hpp"
 #include "VirtualCamManager.hpp"
 #include "util/async_task.hpp"
+#include "voice/VoiceEngine.hpp"
 
 #include <obs.hpp>
 #include <util/dstr.hpp>
 #include <util/platform.h>
 
+#include <iterator>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -278,11 +280,16 @@ bool IdFromParams(const json &params, obs_hotkey_id &id, std::string &error)
 	return false;
 }
 
-// The frontend hotkey ids we own, so we can unregister exactly them on teardown.
-obs_hotkey_id g_startStreamingId = OBS_INVALID_HOTKEY_ID;
-obs_hotkey_id g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
-obs_hotkey_id g_startVirtualCamId = OBS_INVALID_HOTKEY_ID;
-obs_hotkey_id g_stopVirtualCamId = OBS_INVALID_HOTKEY_ID;
+// Every frontend hotkey in one table: adding one is a row, not another copy of the
+// id / callback / register / unregister quartet. `onRelease` is only true for
+// push-to-talk, the one hotkey where letting go means something.
+struct FrontendHotkey {
+	const char *name;
+	const char *description;
+	void (*action)(bool pressed);
+	bool onRelease;
+	obs_key_t defaultKey;
+};
 
 // Drive the whole-stream lifecycle through Bridge::StartStreamingAllAdoptingSchedule /
 // StopStreamingAll -- literally the same functions streaming.start/stop call by default, so
@@ -291,25 +298,20 @@ obs_hotkey_id g_stopVirtualCamId = OBS_INVALID_HOTKEY_ID;
 // left a hotkey stop with the chat transports and viewer poller still running against
 // broadcasts that had ended.
 //
-// Fired on key-down only (pressed==true) from libobs's hotkey thread. The shared functions
-// marshal to the UI thread themselves (the engine's binding list and encoder cache are
-// UI-thread-owned) and carry the MultistreamAlive() guard plus the streaming.changed push,
-// so nothing is left for these handlers to add.
-void OnStartStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+// Fired on key-down only from libobs's hotkey thread (FrontendHotkeyCallback drops the
+// release for every row but push-to-talk). The shared functions marshal to the UI thread
+// themselves (the engine's binding list and encoder cache are UI-thread-owned) and carry
+// the MultistreamAlive() guard plus the streaming.changed push, so nothing is left for
+// these handlers to add.
+void ActionStartStreaming(bool)
 {
-	if (!pressed) {
-		return;
-	}
 	// Adopting: the hotkey has no way to ask the user whether a due schedule entry
 	// should take over, so it adopts by default -- see StartStreamingAllAdoptingSchedule.
 	Bridge::StartStreamingAllAdoptingSchedule();
 }
 
-void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+void ActionStopStreaming(bool)
 {
-	if (!pressed) {
-		return;
-	}
 	Bridge::StopStreamingAll();
 }
 
@@ -317,13 +319,10 @@ void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hot
 // methods use (MethodVirtualCamStart/Stop). The manager's output start/stop signals
 // fire onChanged -> EmitVirtualCamChanged, so unlike streaming these need no manual
 // mirror emit here. Fired on key-down only from libobs's hotkey thread; the manager
-// state is UI-thread-owned, so hop via PostToUi (the marshal OnStart/StopStreaming
-// use); the MultistreamAlive() guard drops a task CefShutdown drains after teardown.
-void OnStartVirtualCam(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+// state is UI-thread-owned, so hop via PostToUi; the MultistreamAlive() guard drops a
+// task CefShutdown drains after teardown.
+void ActionStartVirtualCam(bool)
 {
-	if (!pressed) {
-		return;
-	}
 	AsyncTask::PostToUi([] {
 		if (!ObsBootstrap::MultistreamAlive()) {
 			return;
@@ -335,17 +334,56 @@ void OnStartVirtualCam(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*h
 	});
 }
 
-void OnStopVirtualCam(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+void ActionStopVirtualCam(bool)
 {
-	if (!pressed) {
-		return;
-	}
 	AsyncTask::PostToUi([] {
 		if (!ObsBootstrap::MultistreamAlive()) {
 			return;
 		}
 		ObsBootstrap::VirtualCam().Stop();
 	});
+}
+
+void ActionVoicePushToTalk(bool pressed)
+{
+	// libobs hotkey thread, press and release both. The engine opens the recognizer
+	// segment and mutes the mic from here rather than from a posted UI task, so the
+	// first syllable is not lost to UI latency.
+	Voice::Engine().OnPtt(pressed);
+}
+
+void ActionVoiceCancel(bool)
+{
+	Voice::Engine().OnCancelKey();
+}
+
+// The first four names keep their OBSBasic.* spelling: that is what users' saved
+// hotkeys.json already contains, and renaming them would silently unbind everyone.
+// The voice hotkeys are new, so they use our own namespace.
+constexpr FrontendHotkey kFrontendHotkeys[] = {
+	{"OBSBasic.StartStreaming", "Start Streaming", &ActionStartStreaming, false, OBS_KEY_NONE},
+	{"OBSBasic.StopStreaming", "Stop Streaming", &ActionStopStreaming, false, OBS_KEY_NONE},
+	{"OBSBasic.StartVirtualCam", "Start Virtual Camera", &ActionStartVirtualCam, false, OBS_KEY_NONE},
+	{"OBSBasic.StopVirtualCam", "Stop Virtual Camera", &ActionStopVirtualCam, false, OBS_KEY_NONE},
+	// Voice control. No default binding for push-to-talk: a key the user did not choose
+	// would mute their microphone at a surprising moment.
+	{"Braidcast.Voice.PushToTalk", "Voice Control: Push to Talk", &ActionVoicePushToTalk, true, OBS_KEY_NONE},
+	{"Braidcast.Voice.Cancel", "Voice Control: Cancel", &ActionVoiceCancel, false, OBS_KEY_ESCAPE},
+};
+
+// The ids we own, in table order, so teardown unregisters exactly them. Empty while
+// unregistered, which is also what keeps a second RegisterFrontendHotkeys from
+// registering every row twice.
+std::vector<obs_hotkey_id> g_frontendIds;
+
+// libobs calls this on its hotkey thread for press and release alike.
+void FrontendHotkeyCallback(void *data, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+{
+	const auto *entry = static_cast<const FrontendHotkey *>(data);
+	if (!pressed && !entry->onRelease) {
+		return;
+	}
+	entry->action(pressed);
 }
 
 // --- per-scene "switch to scene" hotkeys ------------------------------------
@@ -376,8 +414,8 @@ std::string SelectSceneDescription(const std::string &sceneName)
 // SAME seam scenes.setCurrent uses (Bridge::SwitchDefaultProgramScene ->
 // Transitions::SetProgramScene + ApplyCanvasSceneLinks), never a raw channel-0 bind,
 // so linked additional-canvas scenes stay in sync. The engine/bridge state is
-// UI-thread-owned, so hop there via PostToUi (the marshal OnStart/StopStreaming use);
-// the MultistreamAlive() guard drops a task CefShutdown drains after teardown.
+// UI-thread-owned, so hop there via PostToUi (the marshal the virtual camera actions
+// use); the MultistreamAlive() guard drops a task CefShutdown drains after teardown.
 void OnSelectScene(void *data, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
 {
 	if (!pressed) {
@@ -463,21 +501,19 @@ void SyncSceneHotkeys()
 
 void RegisterFrontendHotkeys()
 {
-	if (g_startStreamingId == OBS_INVALID_HOTKEY_ID) {
-		g_startStreamingId = obs_hotkey_register_frontend("OBSBasic.StartStreaming", "Start Streaming",
-								  OnStartStreaming, nullptr);
-	}
-	if (g_stopStreamingId == OBS_INVALID_HOTKEY_ID) {
-		g_stopStreamingId = obs_hotkey_register_frontend("OBSBasic.StopStreaming", "Stop Streaming",
-								 OnStopStreaming, nullptr);
-	}
-	if (g_startVirtualCamId == OBS_INVALID_HOTKEY_ID) {
-		g_startVirtualCamId = obs_hotkey_register_frontend("OBSBasic.StartVirtualCam", "Start Virtual Camera",
-								   OnStartVirtualCam, nullptr);
-	}
-	if (g_stopVirtualCamId == OBS_INVALID_HOTKEY_ID) {
-		g_stopVirtualCamId = obs_hotkey_register_frontend("OBSBasic.StopVirtualCam", "Stop Virtual Camera",
-								  OnStopVirtualCam, nullptr);
+	if (g_frontendIds.empty()) {
+		for (const FrontendHotkey &entry : kFrontendHotkeys) {
+			const obs_hotkey_id id = obs_hotkey_register_frontend(entry.name, entry.description,
+									      &FrontendHotkeyCallback,
+									      const_cast<FrontendHotkey *>(&entry));
+			g_frontendIds.push_back(id);
+			if (entry.defaultKey != OBS_KEY_NONE) {
+				// A default binding, applied before Load() so a saved binding still wins.
+				obs_key_combination_t combo = {};
+				combo.key = entry.defaultKey;
+				obs_hotkey_load_bindings(id, &combo, 1);
+			}
+		}
 	}
 
 	// Register a switch hotkey for every existing global scene before Load, so their
@@ -488,29 +524,19 @@ void RegisterFrontendHotkeys()
 	// Apply saved bindings now that every hotkey id (frontend + per-scene + source/etc.)
 	// exists.
 	Load();
-	HostLog("[hotkeys] frontend hotkeys registered (Start/Stop Streaming + Start/Stop Virtual Camera + " +
-		std::to_string(g_sceneHotkeys.size()) + " scene switch); bindings loaded from " +
+	HostLog("[hotkeys] frontend hotkeys registered (" + std::to_string(std::size(kFrontendHotkeys)) +
+		" frontend + " + std::to_string(g_sceneHotkeys.size()) + " scene switch); bindings loaded from " +
 		MultistreamBasicPath("hotkeys.json"));
 }
 
 void UnregisterFrontendHotkeys()
 {
-	if (g_startStreamingId != OBS_INVALID_HOTKEY_ID) {
-		obs_hotkey_unregister(g_startStreamingId);
-		g_startStreamingId = OBS_INVALID_HOTKEY_ID;
+	for (const obs_hotkey_id id : g_frontendIds) {
+		if (id != OBS_INVALID_HOTKEY_ID) {
+			obs_hotkey_unregister(id);
+		}
 	}
-	if (g_stopStreamingId != OBS_INVALID_HOTKEY_ID) {
-		obs_hotkey_unregister(g_stopStreamingId);
-		g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
-	}
-	if (g_startVirtualCamId != OBS_INVALID_HOTKEY_ID) {
-		obs_hotkey_unregister(g_startVirtualCamId);
-		g_startVirtualCamId = OBS_INVALID_HOTKEY_ID;
-	}
-	if (g_stopVirtualCamId != OBS_INVALID_HOTKEY_ID) {
-		obs_hotkey_unregister(g_stopVirtualCamId);
-		g_stopVirtualCamId = OBS_INVALID_HOTKEY_ID;
-	}
+	g_frontendIds.clear();
 
 	g_sceneHotkeysActive = false;
 	for (auto &kv : g_sceneHotkeys) {
