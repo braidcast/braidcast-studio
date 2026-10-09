@@ -8,6 +8,7 @@
 #include "util/time_util.hpp"
 #include "voice/VoiceCpu.hpp"
 #include "voice/VoiceModels.hpp"
+#include "voice/VoiceRing.hpp"
 #include "voice/VoiceSettings.hpp"
 
 #include <obs.hpp>
@@ -17,6 +18,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <windows.h>
 
@@ -218,11 +221,64 @@ void TestPostToUiDelayed(Tally &t)
 	t.Check("async", "PostToUiDelayed defers even on the UI thread", !ran.load(std::memory_order_acquire));
 }
 
+void TestSpscRing(Tally &t)
+{
+	Voice::SpscRing ring(8);
+	const float in[5] = {1.f, 2.f, 3.f, 4.f, 5.f};
+	float out[8] = {};
+	t.Check("ring", "write then read returns the same samples",
+		ring.Write(in, 5) == 5 && ring.Available() == 5 && ring.Read(out, 5) == 5 && out[0] == 1.f &&
+			out[4] == 5.f && ring.Available() == 0);
+
+	// Capacity is 8, so the 9th sample of a 9-sample write is dropped and counted.
+	const std::vector<float> big(9, 7.f);
+	const size_t wrote = ring.Write(big.data(), big.size());
+	t.Check("ring", "overflow drops the newest and counts it", wrote == 8 && ring.Dropped() == 1);
+	ring.Reset();
+	t.Check("ring", "reset empties the ring and the drop count", ring.Available() == 0 && ring.Dropped() == 0);
+
+	// Wrap-around: write and read repeatedly across the buffer end.
+	Voice::SpscRing wrapRing(4);
+	bool wrapOk = true;
+	float one = 0.f;
+	for (int i = 0; i < 20; ++i) {
+		const float v = static_cast<float>(i);
+		wrapOk = wrapOk && wrapRing.Write(&v, 1) == 1 && wrapRing.Read(&one, 1) == 1 && one == v;
+	}
+	t.Check("ring", "wraps without losing order", wrapOk);
+
+	// Stress: one producer thread, this thread consuming, checking the sequence.
+	Voice::SpscRing stress(1024);
+	constexpr int kTotal = 200000;
+	std::thread producer([&] {
+		int sent = 0;
+		while (sent < kTotal) {
+			const float v = static_cast<float>(sent % 1000);
+			if (stress.Write(&v, 1) == 1) {
+				++sent;
+			}
+		}
+	});
+	int got = 0;
+	bool orderOk = true;
+	while (got < kTotal) {
+		float v = 0.f;
+		if (stress.Read(&v, 1) == 1) {
+			orderOk = orderOk && v == static_cast<float>(got % 1000);
+			++got;
+		}
+	}
+	producer.join();
+	// A full ring refuses a write and counts it as dropped; the producer then retries, so
+	// the count is not zero here. Order and completeness are what this case is about.
+	t.Check("ring", "200k samples cross threads in order", orderOk);
+}
+
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
 	&TestWhisperLinked, &TestCpuGate,      &TestLogCategory,          &TestVoiceSettingsTable, &TestSha256,
-	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,
+	&TestHttpCancel,    &TestModelCatalog, &TestModelVerifyAndCommit, &TestPostToUiDelayed,    &TestSpscRing,
 };
 
 } // namespace

@@ -371,6 +371,7 @@ target_sources(
     src/voice/VoiceSettings.hpp
     src/voice/VoiceModels.cpp
     src/voice/VoiceModels.hpp
+    src/voice/VoiceRing.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).
