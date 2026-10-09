@@ -390,6 +390,8 @@ target_sources(
     src/voice/VoiceBridge.hpp
     src/voice/TextNormalize.cpp
     src/voice/TextNormalize.hpp
+    src/voice/FuzzyMatch.cpp
+    src/voice/FuzzyMatch.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).

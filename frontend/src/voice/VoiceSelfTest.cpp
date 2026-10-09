@@ -12,6 +12,7 @@
 #include "util/sha256.hpp"
 #include "util/string_util.hpp"
 #include "util/time_util.hpp"
+#include "voice/FuzzyMatch.hpp"
 #include "voice/MicMuteGuard.hpp"
 #include "voice/Recognizer.hpp"
 #include "voice/TextNormalize.hpp"
@@ -1188,6 +1189,47 @@ void TestTextNormalize(Tally &t)
 		message.Original(0, 4) == "send Hello, World! to chat");
 }
 
+void TestFuzzyMatch(Tally &t)
+{
+	using Voice::Similarity;
+
+	t.Check("fuzzy", "identical is 1", Similarity("gameplay", "gameplay") > 0.999);
+	t.Check("fuzzy", "a contained phrase scores above the threshold",
+		Similarity("gameplay", "gameplay cam") >= Voice::kSlotAcceptThreshold);
+	t.Check("fuzzy", "a one-letter slip still matches",
+		Similarity("gameplay", "game play") >= Voice::kSlotAcceptThreshold);
+	t.Check("fuzzy", "an unrelated name does not match", Similarity("gameplay", "starting soon") < 0.4);
+	t.Check("fuzzy", "an empty query matches nothing", Similarity("", "gameplay") == 0.0);
+	t.Check("fuzzy", "a longer container scores lower than a tighter one",
+		Similarity("brb", "brb screen") > Similarity("brb", "brb screen with a very long name"));
+	t.Check("fuzzy", "case and spacing do not matter", Similarity("be right back", "Be Right  Back") > 0.999);
+	// Containment counts whole words only: "art" is not "Starting Soon".
+	t.Check("fuzzy", "a word inside another word is not containment",
+		Similarity("art", "starting soon") < Voice::kSlotAcceptThreshold);
+
+	// The best-of helper is what the matcher actually calls: it returns the winner only
+	// when it is both good enough and clearly ahead of the runner-up.
+	const std::vector<std::string> scenes = {"Gameplay Cam", "Starting Soon", "BRB"};
+	Voice::SlotMatch match = Voice::BestMatch("gameplay", scenes);
+	t.Check("fuzzy", "best match picks the right scene", match.ok && match.index == 0);
+
+	match = Voice::BestMatch("weather forecast", scenes);
+	t.Check("fuzzy", "no candidate above the threshold is a miss", !match.ok && !match.ambiguous);
+
+	const std::vector<std::string> twins = {"Game One", "Game Two"};
+	match = Voice::BestMatch("game", twins);
+	t.Check("fuzzy", "two equally good candidates are ambiguous, not a coin flip", !match.ok && match.ambiguous);
+
+	match = Voice::BestMatch("game one", twins);
+	t.Check("fuzzy", "a clear winner among similar names is accepted", match.ok && match.index == 0);
+
+	match = Voice::BestMatch("brb", {"BRB 2", "BRB"});
+	t.Check("fuzzy", "an exact name beats a longer one containing it", match.ok && match.index == 1);
+
+	match = Voice::BestMatch("anything", {});
+	t.Check("fuzzy", "an empty candidate list is a miss", !match.ok && !match.ambiguous);
+}
+
 // Every voice method goes through Bridge::Dispatch, exactly as the web reaches it.
 bool Dispatch(const char *method, const nlohmann::json &params, nlohmann::json &result, std::string &error)
 {
@@ -1271,7 +1313,7 @@ const Case kCases[] = {
 	&TestPostToUiDelayed, &TestSpscRing,      &TestResampler,    &TestMicMuteGuard,
 	&TestVoiceCapture,    &TestVoiceListener, &TestWavFile,      &TestRecognizerWithoutModel,
 	&TestRecognizer,      &TestVoiceEngine,   &TestVoiceHotkeys, &TestVoiceBridge,
-	&TestTextNormalize,
+	&TestTextNormalize,   &TestFuzzyMatch,
 };
 
 } // namespace
