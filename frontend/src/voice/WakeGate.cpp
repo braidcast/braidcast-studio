@@ -70,4 +70,21 @@ WakeResult MatchWakePhrase(const std::string &text, const std::string &wakePhras
 	return result;
 }
 
+WokenUtterance ConfirmWake(const std::string &transcript, const std::string &wakePhrase)
+{
+	WokenUtterance out;
+	const WakeResult wake = MatchWakePhrase(transcript, wakePhrase);
+	if (!wake.matched) {
+		out.reason = "That did not start with the wake phrase, so I ignored it.";
+		return out;
+	}
+	if (Normalize(wake.remainder).tokens.empty()) {
+		out.reason = "I heard the wake phrase, but no command after it.";
+		return out;
+	}
+	out.ok = true;
+	out.command = wake.remainder;
+	return out;
+}
+
 } // namespace Voice

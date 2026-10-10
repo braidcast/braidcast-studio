@@ -1542,6 +1542,21 @@ void TestWakeGate(Tally &t)
 	// Part of the phrase is not the phrase: one common word must never wake the app.
 	t.Check("wake", "part of a longer phrase does not match",
 		!MatchWakePhrase("hey everyone welcome back", "hey braidcast").matched);
+
+	// The speech model's re-match (N-I2). A woken utterance whose transcript does not open
+	// with the phrase was a tiny-model false positive and is dropped, never interpreted:
+	// otherwise "send to chat ..." said to the room would be posted.
+	const Voice::WokenUtterance woken = Voice::ConfirmWake("Braidcast, switch to gameplay.", phrase);
+	t.Check("wake", "a confirmed wake hands on the command alone",
+		woken.ok && woken.command == "switch to gameplay." && woken.reason.empty());
+	const Voice::WokenUtterance stray = Voice::ConfirmWake("send to chat we are so back", phrase);
+	t.Check("wake", "a wake the speech model does not confirm is dropped with a reason",
+		!stray.ok && stray.command.empty() && !stray.reason.empty());
+	t.Check("wake", "so is one the speech model spells as another word",
+		!Voice::ConfirmWake("Broadcast, mute mic.", phrase).ok);
+	const Voice::WokenUtterance alone = Voice::ConfirmWake("Braidcast.", phrase);
+	t.Check("wake", "the phrase alone is a miss that says so",
+		!alone.ok && alone.reason == "I heard the wake phrase, but no command after it.");
 }
 
 void TestVoiceEngine(Tally &t)

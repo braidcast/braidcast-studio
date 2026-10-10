@@ -597,14 +597,14 @@ void Recognizer::FinishWoken()
 	result.wake = true;
 	if (result.ok) {
 		// The tiny model only decided; the text comes from the speech model, which may
-		// split or spell the phrase differently, so it is matched again here.
-		const WakeResult wake = MatchWakePhrase(result.text, continuous_.wakePhrase);
-		if (wake.matched) {
-			result.text = wake.remainder;
-		}
-		if (result.text.empty()) {
-			result.ok = false;
-			result.error = "I heard the wake phrase, but no command after it.";
+		// split or spell the phrase differently, so it is matched again here, and an
+		// utterance it does not open is dropped unread (ConfirmWake).
+		const WokenUtterance woken = ConfirmWake(result.text, continuous_.wakePhrase);
+		result.ok = woken.ok;
+		result.text = woken.ok ? woken.command : std::string();
+		result.error = woken.reason;
+		if (!woken.ok) {
+			DBG(LogCat::Voice, "recognizer: woken utterance dropped: %s", woken.reason.c_str());
 		}
 	}
 	audio_.clear();
