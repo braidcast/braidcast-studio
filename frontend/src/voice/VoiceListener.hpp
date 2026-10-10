@@ -31,6 +31,10 @@ struct PendingAction {
 	// RunCommand fall through to Bridge::Dispatch and reach the whole registry. Keep it
 	// that way: a second id namespace means a translation table nobody maintains.
 	std::string commandId;
+	// Which pending action this is: set by the listener as it becomes pending, never
+	// reused, 0 before then. A UI confirm names it (voice.confirm's `id`), so a click meant
+	// for one draft cannot confirm whatever is pending by the time it lands.
+	uint64_t id = 0;
 	std::string summary; // one line for the UI and the confirmation prompt
 	nlohmann::json params = nlohmann::json::object();
 	bool readBack = false;        // speak the summary back (P4)
@@ -120,6 +124,10 @@ struct Event {
 	bool pttMuted = false;  // Transcript: as InterpretContext::pttMuted
 	int64_t nowMs = 0;
 	uint64_t seq = 0; // Tick only: which scheduled tick this is
+	// Confirm and Cancel from the UI: the pending action meant (PendingAction::id). A
+	// Confirm must name the one pending; a Cancel may name none (0), as the cancel key
+	// does, and is ignored when it names another.
+	uint64_t pendingId = 0;
 };
 
 enum class EffectType { PlayCue, Run, ReadBack, ScheduleTick };
@@ -174,7 +182,8 @@ private:
 	bool modelReady_ = false;
 	bool micReady_ = false;
 	Trigger trigger_ = Trigger::Ptt;
-	uint64_t tickSeq_ = 0; // incremented per scheduled timeout; stale ticks are ignored
+	uint64_t tickSeq_ = 0;    // incremented per scheduled timeout; stale ticks are ignored
+	uint64_t pendingSeq_ = 0; // the last PendingAction::id handed out
 };
 
 } // namespace Voice

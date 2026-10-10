@@ -114,6 +114,7 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 
 	case Interpretation::Kind::Pending: {
 		status_.pending = interpretation.action;
+		status_.pending.id = ++pendingSeq_;
 		status_.message = interpretation.action.summary;
 		status_.state = State::Pending;
 		effects.push_back(CueEffect(Cue::Pending));
@@ -290,8 +291,9 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 
 	case EventType::Confirm: {
 		// The UI's Confirm button: the same action as a spoken yes, so it goes through the
-		// same code. Nothing pending, nothing to do.
-		if (status_.pending.commandId.empty()) {
+		// same code. Nothing pending, or another action pending than the one the click was
+		// for (it expired and something else is waiting now), nothing to do.
+		if (status_.pending.commandId.empty() || event.pendingId != status_.pending.id) {
 			return effects;
 		}
 		Interpretation confirm;
@@ -311,6 +313,11 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 	case EventType::Cancel:
 		// The cancel hotkey: abandon a segment being recorded, a pending command, or
 		// both. Silent when there was nothing to cancel, so a stray press is not noise.
+		// A UI Cancel naming a pending action that is no longer the one waiting does
+		// nothing: the click was for something already gone.
+		if (event.pendingId != 0 && event.pendingId != status_.pending.id) {
+			return effects;
+		}
 		if (status_.state == State::Listening || status_.state == State::Thinking ||
 		    !status_.pending.commandId.empty()) {
 			effects.push_back(CueEffect(Cue::Cancel));
@@ -368,6 +375,7 @@ nlohmann::json VoiceListener::StatusJson() const
 	};
 	if (!status_.pending.commandId.empty()) {
 		j["pending"] = {
+			{"id", status_.pending.id},
 			{"commandId", status_.pending.commandId},
 			{"summary", status_.pending.summary},
 			{"needsConfirmWord", status_.pending.needsConfirmWord},

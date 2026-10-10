@@ -44,6 +44,14 @@ json VoicePayload()
 	};
 }
 
+// voice.confirm's and voice.cancel's `id`: the pending action meant (voice.state's
+// pending.id), or 0 when none is named. Anything but a positive integer names none.
+uint64_t PendingIdOf(const json &params)
+{
+	const auto it = params.is_object() ? params.find("id") : params.end();
+	return it != params.end() && it->is_number_unsigned() ? it->get<uint64_t>() : 0;
+}
+
 } // namespace
 
 bool SettingsGetVoice(const json &, json &result, std::string &)
@@ -136,20 +144,18 @@ bool ModelCancel(const json &params, json &result, std::string &error)
 	return true;
 }
 
-bool Confirm(const json &, json &result, std::string &error)
+bool Confirm(const json &params, json &result, std::string &error)
 {
-	if (!Engine().ConfirmPending()) {
-		error = "there is no command waiting for confirmation";
+	if (!Engine().ConfirmPending(PendingIdOf(params), error)) {
 		return false;
 	}
 	result = Engine().StateJson();
 	return true;
 }
 
-bool CancelCommand(const json &, json &result, std::string &error)
+bool CancelCommand(const json &params, json &result, std::string &error)
 {
-	if (!Engine().CancelPending()) {
-		error = "there is nothing to cancel";
+	if (!Engine().CancelPending(PendingIdOf(params), error)) {
 		return false;
 	}
 	result = Engine().StateJson();

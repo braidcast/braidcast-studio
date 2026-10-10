@@ -999,15 +999,17 @@ void TestVoiceListener(Tally &t)
 			oursOnly && seen.mutedSeen && !seen.pttMuted);
 	}
 
-	// 26. Confirming from the UI runs the pending command, exactly like saying yes.
+	// 26. Confirming from the UI runs the pending command, exactly like saying yes. The
+	// click names the action it was for (N-I5).
 	{
 		auto l = fresh();
 		l->Handle(Ev(EventType::PttDown, 100));
 		l->Handle(Ev(EventType::PttUp, 900));
 		l->Handle(Transcript("confirm streaming.stop", 1400));
+		Event click = Ev(EventType::Confirm, 1600);
+		click.pendingId = l->Snapshot().pending.id;
 		t.Check("listener", "a UI confirmation runs the pending command",
-			EffectNames(l->Handle(Ev(EventType::Confirm, 1600))) == "run:streaming.stop,cue:accept" &&
-				l->Current() == S::Idle);
+			EffectNames(l->Handle(click)) == "run:streaming.stop,cue:accept" && l->Current() == S::Idle);
 	}
 
 	// 27. Confirming with nothing pending does nothing at all.
@@ -1025,7 +1027,9 @@ void TestVoiceListener(Tally &t)
 		l->Handle(Ev(EventType::PttUp, 900));
 		l->Handle(Transcript("confirm streaming.stop", 1400));
 		l->Handle(Ev(EventType::PttDown, 2000));
-		const std::string fx = EffectNames(l->Handle(Ev(EventType::Confirm, 2100)));
+		Event click = Ev(EventType::Confirm, 2100);
+		click.pendingId = l->Snapshot().pending.id;
+		const std::string fx = EffectNames(l->Handle(click));
 		const bool stillListening = l->Current() == S::Listening;
 		l->Handle(Ev(EventType::PttUp, 2600));
 		t.Check("listener", "a UI confirmation mid-segment keeps the segment",
@@ -1115,6 +1119,39 @@ void TestVoiceListener(Tally &t)
 		t.Check("listener", "a confirmed command reads back without its question mark",
 			EffectNames(fx) == "run:streaming.stop,cue:accept,readback" &&
 				fx.back().text == "Do streaming.stop");
+	}
+
+	// 34. (N-I5) Every pending action has its own id, and a click from the UI must name
+	// the one pending now: a click meant for draft A that lands after A expired must not
+	// confirm what is pending by then, which can be "Stop streaming?".
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> first = l->Handle(Transcript("draft chat.send", 1400));
+		const uint64_t draftId = l->Snapshot().pending.id;
+		l->Handle(Ev(EventType::Cancel, 4000)); // the draft is dropped
+		l->Handle(Ev(EventType::PttDown, 5000));
+		l->Handle(Ev(EventType::PttUp, 5600));
+		l->Handle(Transcript("confirm streaming.stop", 6000));
+		const uint64_t stopId = l->Snapshot().pending.id;
+		t.Check("listener", "each pending action gets an id of its own, carried in the state",
+			draftId != 0 && stopId != 0 && stopId != draftId &&
+				l->StatusJson()["pending"].value("id", static_cast<uint64_t>(0)) == stopId);
+		Event late = Ev(EventType::Confirm, 6100);
+		late.pendingId = draftId;
+		const bool lateIgnored = l->Handle(late).empty() && l->Snapshot().pending.id == stopId;
+		Event bare = Ev(EventType::Confirm, 6200);
+		const bool bareIgnored = l->Handle(bare).empty() && l->Snapshot().pending.id == stopId;
+		t.Check("listener", "a UI confirmation for another action, or for none, does nothing",
+			lateIgnored && bareIgnored && l->Current() == S::Pending);
+		Event lateCancel = Ev(EventType::Cancel, 6300);
+		lateCancel.pendingId = draftId;
+		const bool cancelIgnored = l->Handle(lateCancel).empty() && l->Snapshot().pending.id == stopId;
+		const bool keyCancels = EffectNames(l->Handle(Ev(EventType::Cancel, 6400))) == "cue:cancel" &&
+					l->Snapshot().pending.commandId.empty();
+		t.Check("listener", "a UI cancel for another action does nothing; the cancel key needs no id",
+			cancelIgnored && keyCancels && !first.empty());
 	}
 }
 
@@ -2591,6 +2628,10 @@ void TestVoiceBridge(Tally &t)
 	error.clear();
 	t.Check("bridge", "confirming with nothing pending is refused",
 		!Dispatch("voice.confirm", nlohmann::json::object(), result, error) && !error.empty());
+	t.Check("bridge", "confirming an action that is not pending is refused",
+		!Dispatch("voice.confirm", nlohmann::json{{"id", 12345}}, result, error) && !error.empty());
+	t.Check("bridge", "cancelling an action that is not pending is refused",
+		!Dispatch("voice.cancel", nlohmann::json{{"id", 12345}}, result, error) && !error.empty());
 	t.Check("bridge", "cancelling with nothing to cancel is refused",
 		!Dispatch("voice.cancel", nlohmann::json::object(), result, error) && !error.empty());
 	t.Check("bridge", "getVoice carries the cue warning field",

@@ -24,11 +24,15 @@ bool ModelStatus(const json &params, json &result, std::string &error);
 bool ModelDownload(const json &params, json &result, std::string &error);
 // voice.model.cancel {id}: {cancelled, models}; refused when no download is running.
 bool ModelCancel(const json &params, json &result, std::string &error);
-// voice.confirm: runs the pending command, as a spoken yes would; answers voice.state.
-// Refused when nothing is pending.
+// voice.confirm {id}: runs the pending command, as a spoken yes would; answers
+// voice.state. `id` is required and must be the pending action's (voice.state's
+// pending.id): refused when nothing is pending, when no id is given, or when another
+// action is pending by now.
 bool Confirm(const json &params, json &result, std::string &error);
-// voice.cancel: drops the pending command or the segment in flight, as the cancel key
-// does; answers voice.state. Refused when there is nothing to cancel.
+// voice.cancel {id?}: drops the pending command or the segment in flight, as the cancel
+// key does; answers voice.state. Refused when there is nothing to cancel, or when `id`
+// is given and is not the pending action's. Without an id it drops whatever is in
+// flight, which fails safe: nothing is sent or run.
 bool CancelCommand(const json &params, json &result, std::string &error);
 
 } // namespace Voice::BridgeMethods

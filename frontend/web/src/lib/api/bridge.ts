@@ -432,6 +432,10 @@ export interface VoiceModelStatus {
 
 /** A command waiting for a confirmation (voice.state's `pending`). */
 export interface VoicePendingAction {
+  /** Which pending action this is; never reused. voice.confirm must name it ({id}), and
+   * voice.cancel may ({id}), so a click meant for one action cannot act on whatever is
+   * pending by the time it lands: the host refuses a mismatch and changes nothing. */
+  id: number;
   commandId: string;
   summary: string;
   needsConfirmWord: boolean;
@@ -2342,6 +2346,10 @@ export interface ObsMethods {
   // Confirm or drop the pending voice command from the UI, as a spoken yes or the cancel
   // key would. Both answer the new voice.state and throw when there is nothing to act on
   // (the command timed out a moment earlier, say).
+  // confirm {id}: id required, the pending action's (pending.id); refused without it or
+  // when another action is pending by now. cancel {id?}: refused when an id is given and
+  // is not the pending action's; without one it drops whatever is in flight (safe: nothing
+  // is sent or run).
   "voice.confirm": VoiceState;
   "voice.cancel": VoiceState;
   // Advanced app settings (process priority/stream delay/auto-reconnect/network/

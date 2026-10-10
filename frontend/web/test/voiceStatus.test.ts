@@ -42,6 +42,7 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
 
 function pending(overrides: Partial<VoicePendingAction> = {}): VoicePendingAction {
   return {
+    id: 1,
     commandId: "streaming.stop",
     summary: "Stop streaming?",
     needsConfirmWord: true,

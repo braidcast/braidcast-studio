@@ -736,28 +736,46 @@ nlohmann::json VoiceEngine::StateJson() const
 	return state;
 }
 
-bool VoiceEngine::ConfirmPending()
+bool VoiceEngine::ConfirmPending(uint64_t id, std::string &error)
 {
-	if (!started_ || listener_->Snapshot().pending.commandId.empty()) {
+	const PendingAction &pending = listener_->Snapshot().pending;
+	if (!started_ || pending.commandId.empty()) {
+		error = "there is no command waiting for confirmation";
 		return false;
 	}
-	HandleOnUi(MakeEvent(EventType::Confirm), generation_.load(std::memory_order_acquire));
+	if (id == 0 || id != pending.id) {
+		// A confirmation must say what it confirms: a click on draft A that lands after A
+		// expired must not confirm what is pending now, which may be "Stop streaming?".
+		error = id == 0 ? "voice.confirm needs the id of the pending action it confirms"
+				: "that action is no longer the one waiting for confirmation";
+		return false;
+	}
+	Event confirm = MakeEvent(EventType::Confirm);
+	confirm.pendingId = id;
+	HandleOnUi(confirm, generation_.load(std::memory_order_acquire));
 	return true;
 }
 
-bool VoiceEngine::CancelPending()
+bool VoiceEngine::CancelPending(uint64_t id, std::string &error)
 {
 	const State state = listener_->Current();
-	if (!started_ || (listener_->Snapshot().pending.commandId.empty() && state != State::Listening &&
-			  state != State::Thinking)) {
+	const PendingAction &pending = listener_->Snapshot().pending;
+	if (!started_ || (pending.commandId.empty() && state != State::Listening && state != State::Thinking)) {
 		// A stray click is not a cancel: the listener's Cancel would also clear what the
 		// indicator shows.
+		error = "there is nothing to cancel";
+		return false;
+	}
+	if (id != 0 && id != pending.id) {
+		error = "that action is no longer the one waiting";
 		return false;
 	}
 	// The listener only: a segment in flight is abandoned there and its transcript, when
 	// it comes, finds nobody waiting. The recognizer and the mute guard belong to the
 	// hotkey thread, and the key coming up still ends and releases them.
-	HandleOnUi(MakeEvent(EventType::Cancel), generation_.load(std::memory_order_acquire));
+	Event cancel = MakeEvent(EventType::Cancel);
+	cancel.pendingId = id;
+	HandleOnUi(cancel, generation_.load(std::memory_order_acquire));
 	return true;
 }
 

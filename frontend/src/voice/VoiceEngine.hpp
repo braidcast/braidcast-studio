@@ -95,9 +95,13 @@ public:
 
 	// UI thread. Confirm or drop the pending command from the UI rather than by voice:
 	// the same listener events as a spoken yes and the cancel key. False, doing nothing,
-	// when there is nothing to confirm (or to cancel: no pending command and no segment).
-	bool ConfirmPending();
-	bool CancelPending();
+	// with the reason in `error`, when there is nothing to confirm (or to cancel: no
+	// pending command and no segment), or when `id` is not the pending action's
+	// (PendingAction::id): the click was for an action that has since expired or been
+	// replaced. Confirm must name the action; Cancel may pass 0 to mean whatever is in
+	// flight, since dropping fails safe (nothing is sent or run).
+	bool ConfirmPending(uint64_t id, std::string &error);
+	bool CancelPending(uint64_t id, std::string &error);
 
 	void SetInterpreter(Interpreter fn);
 	void SetActionRunner(ActionRunner fn);
