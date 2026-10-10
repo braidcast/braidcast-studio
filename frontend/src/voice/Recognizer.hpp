@@ -35,6 +35,9 @@ public:
 		bool ok = false;
 		std::string text;  // cleaned transcript, never logged here
 		std::string error; // why, when ok is false
+		// With ok false: nothing usable was heard (too short, silence, a wake the speech
+		// model did not confirm), which is a miss, not a failure of the recognizer.
+		bool miss = false;
 		bool mutedSeen = false;
 		int64_t inferenceMs = 0;
 		// Always-listen: the utterance was opened by the wake phrase (which is stripped

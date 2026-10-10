@@ -19,7 +19,14 @@ enum class State {
 	Pending,   // a command is waiting for confirmation
 };
 
-enum class Cue { Start, Accept, Reject, Pending, Cancel };
+// The spec's seven cues, by its names (Feedback): listening = Start, heard = Heard,
+// pending-tick = Pending, sent = Accept, cancelled = Cancel, miss = Reject, error =
+// Error. The enumerators keep their first names (and the WAV files theirs, by CueName),
+// with the two later ones appended. A miss is "that was not a command I could act on"
+// (nothing matched, an ambiguous name, nothing heard); an error is "something failed"
+// (recognition failed or ran too long, an action failed, the mic went away, a key press
+// refused because the model is not ready).
+enum class Cue { Start, Accept, Reject, Pending, Cancel, Heard, Error };
 const char *CueName(Cue cue);
 const char *StateName(State state);
 
@@ -129,8 +136,11 @@ enum class EventType {
 
 struct Event {
 	EventType type = EventType::Tick;
-	std::string text;       // transcript, or the reason for a failure
-	bool ok = true;         // PttDown accepted / ActionResult succeeded
+	std::string text; // transcript, or the reason for a failure
+	bool ok = true;   // PttDown accepted / ActionResult succeeded
+	// TranscribeFailed: nothing usable was heard (too short, silence, a wake the speech
+	// model did not confirm): a miss, not an error. Recognizer::Result::miss.
+	bool miss = false;
 	bool mutedSeen = false; // Transcript: as InterpretContext::mutedSeen
 	bool pttMuted = false;  // Transcript: as InterpretContext::pttMuted
 	int64_t nowMs = 0;

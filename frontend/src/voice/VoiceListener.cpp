@@ -7,7 +7,7 @@ namespace Voice {
 
 namespace {
 
-constexpr const char *kCueNames[] = {"start", "accept", "reject", "pending", "cancel"};
+constexpr const char *kCueNames[] = {"start", "accept", "reject", "pending", "cancel", "heard", "error"};
 
 // Why a pending action went away when its window closed.
 constexpr const char *kTimedOut = "The command timed out.";
@@ -85,7 +85,7 @@ std::vector<Effect> VoiceListener::BeginSegment(int64_t, Trigger trigger)
 std::vector<Effect> VoiceListener::EndSegment()
 {
 	status_.state = State::Thinking;
-	return {};
+	return {CueEffect(Cue::Heard)};
 }
 
 void VoiceListener::HoldDraft(int64_t nowMs, const char *why, std::vector<Effect> &effects)
@@ -255,7 +255,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 			return effects;
 		}
 		if (status_.state == State::Listening) {
-			effects.push_back(CueEffect(Cue::Reject));
+			effects.push_back(CueEffect(Cue::Error));
 		}
 		ClearPending();
 		status_.state = State::NotReady;
@@ -275,7 +275,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 			}
 			status_.message = event.text;
 			status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
-			effects.push_back(CueEffect(Cue::Reject));
+			effects.push_back(CueEffect(Cue::Error));
 			return effects;
 		}
 		// Only Idle and Pending accept a new segment: a press while Listening or
@@ -313,14 +313,14 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		}
 		status_.message = event.text;
 		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
-		effects.push_back(CueEffect(Cue::Reject));
+		effects.push_back(CueEffect(event.miss ? Cue::Reject : Cue::Error));
 		ResolveDue(event.nowMs, effects);
 		return effects;
 
 	case EventType::ActionResult:
 		status_.message = event.text;
 		if (!event.ok) {
-			effects.push_back(CueEffect(Cue::Reject));
+			effects.push_back(CueEffect(Cue::Error));
 		}
 		return effects;
 

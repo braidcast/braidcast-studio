@@ -328,6 +328,7 @@ Recognizer::Result Recognizer::Transcribe(int threads)
 
 	if (audio_.size() - preRollTaken_ < MsToSamples(kMinSegmentMs)) {
 		result.error = "That was too short to hear.";
+		result.miss = true;
 		return result;
 	}
 
@@ -380,6 +381,7 @@ Recognizer::Result Recognizer::Transcribe(int threads)
 	result.ok = !result.text.empty();
 	if (!result.ok) {
 		result.error = "I did not hear anything.";
+		result.miss = true;
 	}
 	// Sizes and timings only: the transcript itself is never logged here.
 	DBG(LogCat::Voice, "recognizer: %zu samples, %lld ms inference, %s", audio_.size(),
@@ -603,6 +605,7 @@ void Recognizer::FinishWoken()
 		result.ok = woken.ok;
 		result.text = woken.ok ? woken.command : std::string();
 		result.error = woken.reason;
+		result.miss = !woken.ok;
 		if (!woken.ok) {
 			DBG(LogCat::Voice, "recognizer: woken utterance dropped: %s", woken.reason.c_str());
 		}

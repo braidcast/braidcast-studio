@@ -738,8 +738,9 @@ void TestVoiceListener(Tally &t)
 		const std::string down = EffectNames(l->Handle(Ev(EventType::PttDown, 100)));
 		t.Check("listener", "key down plays the start cue and listens",
 			down == "cue:start" && l->Current() == S::Listening);
-		l->Handle(Ev(EventType::PttUp, 900));
-		t.Check("listener", "key up moves to thinking", l->Current() == S::Thinking);
+		const std::string up = EffectNames(l->Handle(Ev(EventType::PttUp, 900)));
+		t.Check("listener", "key up moves to thinking and cues heard",
+			up == "cue:heard" && l->Current() == S::Thinking);
 		const std::string done = EffectNames(l->Handle(Transcript("run scenes.setCurrent", 1400)));
 		t.Check("listener", "a matched command runs and cues accept",
 			done == "run:scenes.setCurrent,cue:accept" && l->Current() == S::Idle);
@@ -841,7 +842,7 @@ void TestVoiceListener(Tally &t)
 		down.ok = false;
 		down.text = "The microphone is not available.";
 		t.Check("listener", "a refused key press reports why and stays idle",
-			EffectNames(l->Handle(down)) == "cue:reject" && l->Current() == S::Idle &&
+			EffectNames(l->Handle(down)) == "cue:error" && l->Current() == S::Idle &&
 				l->Snapshot().message == "The microphone is not available.");
 	}
 
@@ -860,7 +861,7 @@ void TestVoiceListener(Tally &t)
 		Event failed = Ev(EventType::TranscribeFailed, 1400);
 		failed.text = "Recognition failed.";
 		t.Check("listener", "a failed transcription returns to idle with a message",
-			EffectNames(l->Handle(failed)) == "cue:reject" && l->Current() == S::Idle &&
+			EffectNames(l->Handle(failed)) == "cue:error" && l->Current() == S::Idle &&
 				l->Snapshot().message == "Recognition failed.");
 	}
 
@@ -878,7 +879,7 @@ void TestVoiceListener(Tally &t)
 		auto l = fresh();
 		l->Handle(Ev(EventType::PttDown, 100));
 		t.Check("listener", "losing the mic while listening ends the segment",
-			EffectNames(l->Handle(Ev(EventType::MicLost, 300))) == "cue:reject" &&
+			EffectNames(l->Handle(Ev(EventType::MicLost, 300))) == "cue:error" &&
 				l->Current() == S::NotReady);
 	}
 
@@ -920,7 +921,7 @@ void TestVoiceListener(Tally &t)
 		result.ok = false;
 		result.text = "No scene called BRB.";
 		t.Check("listener", "a failed action reports why without changing state",
-			EffectNames(l->Handle(result)) == "cue:reject" && l->Current() == S::Idle &&
+			EffectNames(l->Handle(result)) == "cue:error" && l->Current() == S::Idle &&
 				l->Snapshot().message == "No scene called BRB.");
 	}
 
@@ -1233,6 +1234,7 @@ void TestVoiceListener(Tally &t)
 		f->Handle(Ev(EventType::PttUp, 4600));
 		Event failed = Ev(EventType::TranscribeFailed, 4900);
 		failed.text = "I did not hear anything.";
+		failed.miss = true;
 		const std::string afterFail = EffectNames(f->Handle(failed));
 		t.Check("listener", "so is one whose segment heard nothing",
 			afterFail.find("run:") == std::string::npos && f->Snapshot().pending.needsConfirmWord &&
@@ -1259,6 +1261,36 @@ void TestVoiceListener(Tally &t)
 			held == "cue:pending,tick" && l->Snapshot().pending.needsConfirmWord &&
 				!l->Snapshot().pending.runOnTimeout && l->Handle(stale).empty() &&
 				l->Current() == S::Pending);
+	}
+
+	// 39. The spec's seven cues: a miss and an error sound different. Nothing heard (a
+	// slip of the key, silence, a wake the speech model did not confirm) is a miss; a
+	// recognizer failure is an error. Every cue has its own name, which names its file.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		Event tooShort = Ev(EventType::TranscribeFailed, 1000);
+		tooShort.text = "That was too short to hear.";
+		tooShort.miss = true;
+		const std::string missed = EffectNames(l->Handle(tooShort));
+		l->Handle(Ev(EventType::PttDown, 2000));
+		l->Handle(Ev(EventType::PttUp, 2900));
+		Event slow = Ev(EventType::TranscribeFailed, 9000);
+		slow.text = "Recognition took too long.";
+		const std::string failed = EffectNames(l->Handle(slow));
+		bool named = true;
+		std::vector<std::string> names;
+		for (size_t i = 0; i < 7; ++i) {
+			const std::string name = CueName(static_cast<Cue>(i));
+			named = named && !name.empty() && std::find(names.begin(), names.end(), name) == names.end();
+			names.push_back(name);
+		}
+		t.Check("listener",
+			"nothing heard cues a miss, a recognizer failure an error, and all seven cues are named",
+			missed == "cue:reject" && failed == "cue:error" && named &&
+				std::string(CueName(Cue::Heard)) == "heard" &&
+				std::string(CueName(Cue::Error)) == "error");
 	}
 }
 
@@ -2624,7 +2656,8 @@ void TestVoiceFeedback(Tally &t)
 		HostLog("[selftest] voice-feedback start error: " + error);
 		return;
 	}
-	t.Check("feedback", "all five cues loaded", feedback.LoadedCues() == Voice::kCueCount);
+	t.Check("feedback", "all seven cues loaded",
+		feedback.LoadedCues() == Voice::kCueCount && Voice::kCueCount == 7);
 
 	OBSSourceAutoRelease source = obs_get_source_by_name(Voice::kFeedbackSourceName);
 	t.Check("feedback", "the source is private, so it is not in the user's source list", !source);

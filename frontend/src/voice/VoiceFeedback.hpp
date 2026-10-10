@@ -17,8 +17,8 @@ namespace Voice {
 
 inline constexpr const char *kFeedbackSourceId = "braidcast_voice_cues";
 inline constexpr const char *kFeedbackSourceName = "Braidcast Voice Cues";
-// One per Voice::Cue, in its order; the files are named by CueName.
-inline constexpr size_t kCueCount = 5;
+// One per Voice::Cue, in its order (the spec's seven); the files are named by CueName.
+inline constexpr size_t kCueCount = 7;
 
 // Plays the command cues to the user only. The source is private (it never appears in
 // the user's source list and nothing saves it) and monitor-only, so the cue reaches the

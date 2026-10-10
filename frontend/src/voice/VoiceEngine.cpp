@@ -379,6 +379,7 @@ void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int th
 		}
 		Event event = MakeEvent(result.ok ? EventType::Transcript : EventType::TranscribeFailed);
 		event.text = result.ok ? std::move(result.text) : std::move(result.error);
+		event.miss = result.miss;
 		event.mutedSeen = result.mutedSeen;
 		event.pttMuted = raw->segmentPttMuted;
 		PostEvent(event, generation);
