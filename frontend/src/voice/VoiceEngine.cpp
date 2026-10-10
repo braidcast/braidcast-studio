@@ -20,9 +20,22 @@
 #include <thread>
 #include <utility>
 
+#include <windows.h>
+
 namespace Voice {
 
 namespace {
+
+// The process that owns the foreground window, or 0 when no window is in front.
+uint32_t ForegroundProcessId()
+{
+	HWND foreground = GetForegroundWindow();
+	DWORD pid = 0;
+	if (foreground) {
+		GetWindowThreadProcessId(foreground, &pid);
+	}
+	return static_cast<uint32_t>(pid);
+}
 
 // What the ring has to hold is what arrives while the worker is busy in whisper. With
 // push-to-talk that audio is not wanted anyway, but always-listen hears all of it: a
@@ -590,8 +603,19 @@ void VoiceEngine::OnPtt(bool down)
 	PostEvent(event, generation);
 }
 
+bool CancelKeyApplies(uint32_t foregroundPid, uint32_t ownPid)
+{
+	return foregroundPid != ownPid;
+}
+
 void VoiceEngine::OnCancelKey()
 {
+	// In the app, Escape is the web UI's (closing a dialog); see CancelKeyApplies. Nothing
+	// at all happens then: the segment, the mute guard and a pending action are left
+	// alone, and the push-to-talk key coming up still ends and releases them.
+	if (!CancelKeyApplies(ForegroundProcessId(), static_cast<uint32_t>(GetCurrentProcessId()))) {
+		return;
+	}
 	const uint64_t generation = generation_.load(std::memory_order_acquire);
 	std::shared_ptr<Runtime> runtime = CurrentRuntime();
 	if (runtime) {

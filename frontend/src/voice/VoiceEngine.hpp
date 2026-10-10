@@ -80,7 +80,8 @@ public:
 	// A model finished downloading, so a selection that failed to load may now work.
 	void NoteModelsChanged();
 
-	// libobs hotkey thread.
+	// libobs hotkey thread. OnCancelKey does nothing while one of our own windows is in
+	// front (CancelKeyApplies).
 	void OnPtt(bool down);
 	void OnCancelKey();
 
@@ -168,6 +169,15 @@ private:
 	std::condition_variable retireCv_;
 	int retiring_ = 0;
 };
+
+// Whether the cancel key may cancel voice. It is a global libobs hotkey (Escape by
+// default) so that it works in a fullscreen game, but libobs fires it whichever window
+// has the focus, and inside the app Escape belongs to the web UI: closing a dialog must
+// not also drop a pending draft or command. So it applies only while another process is
+// in front. `foregroundPid` is the process owning the foreground window, 0 when there is
+// none (which counts as another process: nothing of ours is in front). In the app, the
+// UI's own Cancel is the way to cancel. Pure.
+bool CancelKeyApplies(uint32_t foregroundPid, uint32_t ownPid);
 
 // The process-wide engine.
 VoiceEngine &Engine();

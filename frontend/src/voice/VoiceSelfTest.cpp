@@ -1767,6 +1767,14 @@ void TestVoiceEngine(Tally &t)
 	t.Check("engine", "push-to-talk while disabled does nothing",
 		engine.StateJson()["state"] == "disabled" && (!mic || obs_source_muted(mic) == mutedBefore));
 
+	// N-I4: the cancel key (Escape by default, global) cancels voice from a game, never
+	// while one of our own windows is in front, where Escape belongs to the web UI.
+	t.Check("engine", "the cancel key does not cancel voice while the app is in front",
+		!Voice::CancelKeyApplies(4242, 4242));
+	t.Check("engine", "the cancel key cancels voice while another app is in front",
+		Voice::CancelKeyApplies(777, 4242));
+	t.Check("engine", "and when no window is in front", Voice::CancelKeyApplies(0, 4242));
+
 	// CanEnable explains itself rather than failing silently.
 	std::string reason;
 	const bool can = engine.CanEnable(reason);
