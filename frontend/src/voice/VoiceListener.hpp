@@ -52,6 +52,13 @@ struct PendingAction {
 	// How long the window is; 0 uses VoiceListener::kPendingTimeoutMs. The deadline above
 	// is computed from it once, when the action becomes pending.
 	int64_t timeoutMs = 0;
+	// A countdown draft whose window closed while a new segment was open (the key held,
+	// or the answer still being recognized): it is not sent then, but waits for that
+	// segment, so a "cancel" said just as the countdown ran out still wins. When the
+	// segment resolves without confirming or cancelling it, it is held for "send" rather
+	// than sent (VoiceListener::HoldDraft). Shown in voice.state as pending.due, so the
+	// UI keeps the draft on screen while the segment runs.
+	bool due = false;
 };
 
 // What a transcript meant. P1 always answers Shown; P2 supplies the real interpreter.
@@ -114,6 +121,10 @@ enum class EventType {
 	Confirm, // the UI's Confirm button: the same as a spoken yes
 	Cancel,  // the cancel hotkey or the UI's Cancel button: drop whatever is in flight
 	Tick,
+	// The engine found a countdown draft's window already mostly spent when it came to
+	// schedule its tick (CountdownSpent): hold it for "send" instead of sending at once.
+	// Carries the seq of the tick it replaces.
+	Lapsed,
 };
 
 struct Event {
@@ -162,6 +173,12 @@ public:
 	// action names its own window (PendingAction::timeoutMs).
 	static constexpr int64_t kPendingTimeoutMs = 8000;
 
+	// True when a countdown that should run for `windowMs` has less than half of it left
+	// by the time it can be scheduled: the user would see a flash of a countdown, or none,
+	// and the take-back window the countdown exists for would not be there. Fails closed:
+	// such a draft is held for "send" rather than sent (EventType::Lapsed). Pure.
+	static bool CountdownSpent(int64_t remainingMs, int64_t windowMs) { return remainingMs * 2 < windowMs; }
+
 	explicit VoiceListener(Interpreter interpret);
 
 	std::vector<Effect> Handle(const Event &event);
@@ -175,6 +192,13 @@ private:
 	std::vector<Effect> BeginSegment(int64_t nowMs, Trigger trigger);
 	std::vector<Effect> EndSegment();
 	std::vector<Effect> ApplyInterpretation(const Interpretation &interpretation, int64_t nowMs);
+	// The countdown draft could not run its countdown: it waits for "send" on a fresh
+	// window, and expires into the composer if nobody says it.
+	void HoldDraft(int64_t nowMs, const char *why, std::vector<Effect> &effects);
+	// After a segment resolves: a draft that came due during it, and that the segment did
+	// not confirm or cancel, is held.
+	void ResolveDue(int64_t nowMs, std::vector<Effect> &effects);
+	bool SegmentOpen() const { return status_.state == State::Listening || status_.state == State::Thinking; }
 	bool Ready() const;
 
 	Interpreter interpret_;

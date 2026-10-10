@@ -1078,8 +1078,9 @@ void TestVoiceListener(Tally &t)
 		t.Check("listener", "cancelling a draft does not send it", cancelled && l->Handle(tick).empty());
 	}
 
-	// 31. A draft whose window closes while the key is held is sent, and the segment
-	// carries on (as a UI confirmation mid-segment does); its answer finds nothing pending.
+	// 31. (N-I3) A draft whose window closes while the key is held is NOT sent then: it
+	// waits for that segment, so a "cancel" said just as the countdown ran out wins. The
+	// state keeps the draft (due), so the UI can keep showing it while the segment runs.
 	{
 		auto l = fresh();
 		l->Handle(Ev(EventType::PttDown, 100));
@@ -1088,12 +1089,13 @@ void TestVoiceListener(Tally &t)
 		l->Handle(Ev(EventType::PttDown, 4000));
 		Event tick = Ev(EventType::Tick, 4400);
 		tick.seq = fx.back().seq;
-		const std::string sent = EffectNames(l->Handle(tick));
-		const bool stillListening = l->Current() == S::Listening;
+		const bool waited = l->Handle(tick).empty() && l->Current() == S::Listening &&
+				    l->Snapshot().pending.due && l->StatusJson()["pending"].value("due", false);
 		l->Handle(Ev(EventType::PttUp, 4600));
-		t.Check("listener", "a draft's window closing mid-segment sends it and keeps the segment",
-			sent == "run:chat.send,cue:accept" && stillListening &&
-				EffectNames(l->Handle(Transcript("yes", 4900))) == "cue:reject");
+		const std::string answer = EffectNames(l->Handle(Transcript("never mind", 4900)));
+		t.Check("listener", "a draft due mid-segment waits for it, and a cancel in it wins",
+			waited && answer == "cue:cancel" && l->Snapshot().pending.commandId.empty() &&
+				l->Current() == S::Idle);
 	}
 
 	// 32. "Read that back" speaks the pending command again and leaves it waiting, on the
@@ -1177,6 +1179,86 @@ void TestVoiceListener(Tally &t)
 			windowShown && expired == "cue:cancel" && l->Current() == S::Idle &&
 				l->Snapshot().pending.commandId.empty() && l->Snapshot().keptDraft == "held words" &&
 				l->Snapshot().message.find("not sent") != std::string::npos);
+	}
+
+	// 36. (N-I3) A draft due mid-segment is sent when that segment says send.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		l->Handle(Ev(EventType::PttDown, 4000));
+		Event tick = Ev(EventType::Tick, 4400);
+		tick.seq = fx.back().seq;
+		l->Handle(tick);
+		l->Handle(Ev(EventType::PttUp, 4600));
+		t.Check("listener", "a draft due mid-segment is sent when the segment says yes",
+			EffectNames(l->Handle(Transcript("yes", 4900))) == "run:chat.send,cue:accept" &&
+				l->Current() == S::Idle);
+	}
+
+	// 37. (N-I3) A draft due mid-segment that the segment neither sends nor cancels (a miss,
+	// a failed transcription) is held for "send" on a fresh window, never sent on its own;
+	// and when that window closes too, its text is kept.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		l->Handle(Ev(EventType::PttDown, 4000));
+		Event tick = Ev(EventType::Tick, 4400);
+		tick.seq = fx.back().seq;
+		l->Handle(tick);
+		l->Handle(Ev(EventType::PttUp, 4600));
+		const std::vector<Effect> held = l->Handle(Transcript("the weather is nice", 4900));
+		const PendingAction &p = l->Snapshot().pending;
+		const bool isHeld = EffectNames(held) == "cue:reject,cue:pending,tick" && l->Current() == S::Pending &&
+				    p.commandId == "chat.send" && !p.runOnTimeout && p.needsConfirmWord && !p.due &&
+				    p.deadlineMs == 4900 + VoiceListener::kPendingTimeoutMs &&
+				    l->Snapshot().message.find("not sent") != std::string::npos;
+		Event again = Ev(EventType::Tick, p.deadlineMs);
+		again.seq = held.back().seq;
+		const std::string expired = EffectNames(l->Handle(again));
+		t.Check("listener", "a draft due mid-segment that the segment misses is held, then kept",
+			isHeld && expired == "cue:cancel" && l->Snapshot().keptDraft == "hello");
+
+		auto f = fresh();
+		f->Handle(Ev(EventType::PttDown, 100));
+		f->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx2 = f->Handle(Transcript("draft chat.send", 1400));
+		f->Handle(Ev(EventType::PttDown, 4000));
+		Event tick2 = Ev(EventType::Tick, 4400);
+		tick2.seq = fx2.back().seq;
+		f->Handle(tick2);
+		f->Handle(Ev(EventType::PttUp, 4600));
+		Event failed = Ev(EventType::TranscribeFailed, 4900);
+		failed.text = "I did not hear anything.";
+		const std::string afterFail = EffectNames(f->Handle(failed));
+		t.Check("listener", "so is one whose segment heard nothing",
+			afterFail.find("run:") == std::string::npos && f->Snapshot().pending.needsConfirmWord &&
+				!f->Snapshot().pending.runOnTimeout && f->Current() == S::Pending);
+	}
+
+	// 38. (N-I3) A countdown already mostly spent when it is scheduled is never an instant
+	// send: the engine reports it Lapsed and the draft is held for "send".
+	{
+		t.Check("listener", "a countdown with less than half its window left counts as spent",
+			VoiceListener::CountdownSpent(-200, 3000) && VoiceListener::CountdownSpent(1400, 3000) &&
+				!VoiceListener::CountdownSpent(1500, 3000) &&
+				!VoiceListener::CountdownSpent(3000, 3000));
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("draft chat.send", 1400));
+		Event lapsed = Ev(EventType::Lapsed, 4500);
+		lapsed.seq = fx.back().seq;
+		const std::string held = EffectNames(l->Handle(lapsed));
+		Event stale = Ev(EventType::Tick, 4500);
+		stale.seq = fx.back().seq;
+		t.Check("listener", "a lapsed countdown is held for send, and its old tick sends nothing",
+			held == "cue:pending,tick" && l->Snapshot().pending.needsConfirmWord &&
+				!l->Snapshot().pending.runOnTimeout && l->Handle(stale).empty() &&
+				l->Current() == S::Pending);
 	}
 }
 

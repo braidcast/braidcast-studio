@@ -12,6 +12,11 @@ constexpr const char *kCueNames[] = {"start", "accept", "reject", "pending", "ca
 // Why a pending action went away when its window closed.
 constexpr const char *kTimedOut = "The command timed out.";
 constexpr const char *kDraftExpired = "The draft expired and was not sent; its text is kept.";
+// Why a countdown draft was held for "send" instead of sent.
+constexpr const char *kHeldAfterSegment =
+	"The countdown ran out while you were speaking, so it was not sent. Say send to post it, or cancel.";
+constexpr const char *kHeldLapsed =
+	"The countdown was over before it could be shown, so it was not sent. Say send to post it, or cancel.";
 constexpr const char *kStateNames[] = {"disabled", "notReady", "idle", "listening", "thinking", "pending"};
 
 Effect CueEffect(Cue cue)
@@ -81,6 +86,29 @@ std::vector<Effect> VoiceListener::EndSegment()
 {
 	status_.state = State::Thinking;
 	return {};
+}
+
+void VoiceListener::HoldDraft(int64_t nowMs, const char *why, std::vector<Effect> &effects)
+{
+	status_.pending.runOnTimeout = false;
+	status_.pending.needsConfirmWord = true;
+	status_.pending.due = false;
+	status_.pending.timeoutMs = kPendingTimeoutMs;
+	status_.message = why;
+	Effect tick;
+	tick.type = EffectType::ScheduleTick;
+	tick.atMs = nowMs + kPendingTimeoutMs;
+	tick.seq = ++tickSeq_;
+	status_.pending.deadlineMs = tick.atMs;
+	effects.push_back(CueEffect(Cue::Pending));
+	effects.push_back(tick);
+}
+
+void VoiceListener::ResolveDue(int64_t nowMs, std::vector<Effect> &effects)
+{
+	if (!status_.pending.commandId.empty() && status_.pending.due && !SegmentOpen()) {
+		HoldDraft(nowMs, kHeldAfterSegment, effects);
+	}
 }
 
 std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &interpretation, int64_t nowMs)
@@ -274,7 +302,9 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ctx.trigger = trigger_;
 		ctx.mutedSeen = event.mutedSeen;
 		ctx.pttMuted = event.pttMuted;
-		return ApplyInterpretation(interpret_(event.text, ctx), event.nowMs);
+		effects = ApplyInterpretation(interpret_(event.text, ctx), event.nowMs);
+		ResolveDue(event.nowMs, effects);
+		return effects;
 	}
 
 	case EventType::TranscribeFailed:
@@ -284,6 +314,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		status_.message = event.text;
 		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
 		effects.push_back(CueEffect(Cue::Reject));
+		ResolveDue(event.nowMs, effects);
 		return effects;
 
 	case EventType::ActionResult:
@@ -335,30 +366,45 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		}
 		return effects;
 
+	case EventType::Lapsed:
+		// The countdown was mostly spent before it was ever scheduled (CountdownSpent):
+		// never an instant send. Held for "send", or, with a segment open, left due for it.
+		if (status_.pending.commandId.empty() || !status_.pending.runOnTimeout || event.seq != tickSeq_) {
+			return effects;
+		}
+		if (SegmentOpen()) {
+			status_.pending.due = true;
+			return effects;
+		}
+		HoldDraft(event.nowMs, kHeldLapsed, effects);
+		return effects;
+
 	case EventType::Tick:
 		// Only the newest scheduled timeout counts: an older one refers to a command
 		// that was already confirmed, cancelled or replaced.
 		if (status_.pending.commandId.empty() || event.seq != tickSeq_) {
 			return effects;
 		}
-		// The deadline holds even mid-segment (the user pressed the key to answer just as
-		// it ran out). Ignoring the tick there would leave the command pending with no
-		// timer at all once that segment missed; instead it expires now, the segment
-		// carries on, and its answer finds nothing pending.
 		if (status_.pending.runOnTimeout) {
-			// A chat draft: the window closing is the send, not the cancel. Exactly what
-			// confirming does, segment kept as the UI's Confirm keeps it; the Escape key
-			// and Cancel are the way to stop it before then.
+			// A chat draft: the window closing is the send, not the cancel. But not while
+			// a new segment is open: the user may be saying "cancel" just as the countdown
+			// runs out, and sending first would make that too late. The draft waits for
+			// the segment instead (ResolveDue): sent if it says send, dropped if it says
+			// cancel, held for "send" otherwise.
+			if (SegmentOpen()) {
+				status_.pending.due = true;
+				return effects;
+			}
 			Interpretation send;
 			send.kind = Interpretation::Kind::Control;
 			send.control = Interpretation::Control::ConfirmPending;
-			const State segment = status_.state;
-			effects = ApplyInterpretation(send, event.nowMs);
-			if (segment == State::Listening || segment == State::Thinking) {
-				status_.state = segment;
-			}
-			return effects;
+			return ApplyInterpretation(send, event.nowMs);
 		}
+		// Any other command's deadline holds even mid-segment (the user pressed the key to
+		// answer just as it ran out). Ignoring the tick there would leave the command
+		// pending with no timer at all once that segment missed; instead it expires now,
+		// the segment carries on, and its answer finds nothing pending. Expiring fails
+		// safe; sending would not, which is why a draft waits above.
 		{
 			// A chat draft waiting for "send" (the say send mode) is not lost when its window
 			// closes, and not sent either: the text is kept for the composer, as a message
@@ -400,6 +446,10 @@ nlohmann::json VoiceListener::StatusJson() const
 			// and the message as it will be posted, for the Multichat composer. Shown,
 			// never logged.
 			{"runOnTimeout", status_.pending.runOnTimeout},
+			// The countdown ran out while a segment was open, and the draft waits for that
+			// segment's answer (PendingAction::due): keep it on screen, with nothing left
+			// to count down.
+			{"due", status_.pending.due},
 			// The window as it applies, the default one included, so the UI can show a time
 			// limit for every pending action, not only for a countdown.
 			{"timeoutMs", status_.pending.timeoutMs > 0 ? status_.pending.timeoutMs : kPendingTimeoutMs},

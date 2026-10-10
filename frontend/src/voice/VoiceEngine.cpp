@@ -671,18 +671,24 @@ void VoiceEngine::Deliver(const std::vector<Effect> &effects, uint64_t generatio
 		case EffectType::ScheduleTick: {
 			const uint64_t seq = effect.seq;
 			const int64_t remaining = effect.atMs - TimeUtil::NowMs();
-			// A deadline already in the past means the window was spent before the timer
-			// was ever armed -- the tick then fires immediately, and for a draft that
-			// runs on timeout (P3) that is a send with no take-it-back window at all.
-			// Clamping is still the only thing to do, but it must not be silent: this is
-			// the one line that tells you an interpretation step got slow.
-			// A chat draft that sends on timeout (P3) is logged whatever the debug
-			// components: it is about to reach other people with no take-back window, and
-			// the UI is showing what is left of it (none), not a fresh countdown.
-			if (remaining < 0 && listener_->Snapshot().pending.runOnTimeout) {
-				HostLog("[voice] a chat draft's countdown was already " + std::to_string(-remaining) +
-					" ms spent when it was scheduled; it is sent with no window left");
-			} else if (remaining < 0) {
+			// A deadline already (mostly) in the past means the window was spent before the
+			// timer was ever armed. For a chat draft that sends on timeout that would be a
+			// send with no take-it-back window at all, so it is never scheduled to send:
+			// the listener holds it for "send" instead (EventType::Lapsed), and the user
+			// sees why. Logged whatever the debug components: it is the one line that tells
+			// you an interpretation step got slow.
+			const PendingAction &pending = listener_->Snapshot().pending;
+			if (pending.runOnTimeout && VoiceListener::CountdownSpent(remaining, pending.timeoutMs)) {
+				HostLog("[voice] a chat draft's countdown had " +
+					std::to_string(std::max<int64_t>(0, remaining)) + " of " +
+					std::to_string(pending.timeoutMs) +
+					" ms left when it was scheduled; holding it for send instead");
+				Event lapsed = MakeEvent(EventType::Lapsed);
+				lapsed.seq = seq;
+				PostEvent(lapsed, generation);
+				break;
+			}
+			if (remaining < 0) {
 				DBG(LogCat::Voice, "pending deadline was already %lld ms past when scheduled",
 				    static_cast<long long>(-remaining));
 			}

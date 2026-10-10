@@ -49,6 +49,7 @@ function pending(overrides: Partial<VoicePendingAction> = {}): VoicePendingActio
     deadlineMs: 1_000_000,
     remainingMs: 8000,
     runOnTimeout: false,
+    due: false,
     timeoutMs: 0,
     text: "",
     ...overrides,

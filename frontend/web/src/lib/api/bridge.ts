@@ -449,6 +449,12 @@ export interface VoicePendingAction {
   /** A chat draft (commandId "chat.send") sends itself when its window closes; any other
    * pending command is dropped then. */
   runOnTimeout: boolean;
+  /** The countdown ran out while a new segment was open (state "listening" or
+   * "thinking"): the draft is NOT sent then but waits for that segment's answer, so a
+   * spoken "cancel" still wins (remainingMs is 0). Keep showing the draft and its Cancel
+   * while this is true, whatever `state` says. If the segment neither sends nor cancels
+   * it, the draft comes back as a held one (runOnTimeout false, waiting for "send"). */
+  due: boolean;
   /** How long the window is, in ms, for every pending action (the default 8 s window
    * included, e.g. a "say send" draft). Not for rendering a countdown: remainingMs is. */
   timeoutMs: number;
