@@ -147,8 +147,9 @@ struct Status {
 	std::string transcript; // the last recognized text (never logged)
 	PendingAction pending;  // commandId empty when nothing is pending
 	std::string device;     // set by the engine, not the listener
-	// The last chat message refused as too long (Interpretation::keptDraft), until the
-	// next segment, a cancel or turning voice off. Shown, never logged.
+	// The last chat message refused as too long (Interpretation::keptDraft), or a draft
+	// whose "say send" window closed unsent, until the next segment, a cancel or turning
+	// voice off. Shown, never logged.
 	std::string keptDraft;
 };
 

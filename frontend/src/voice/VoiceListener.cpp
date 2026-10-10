@@ -8,6 +8,10 @@ namespace Voice {
 namespace {
 
 constexpr const char *kCueNames[] = {"start", "accept", "reject", "pending", "cancel"};
+
+// Why a pending action went away when its window closed.
+constexpr const char *kTimedOut = "The command timed out.";
+constexpr const char *kDraftExpired = "The draft expired and was not sent; its text is kept.";
 constexpr const char *kStateNames[] = {"disabled", "notReady", "idle", "listening", "thinking", "pending"};
 
 Effect CueEffect(Cue cue)
@@ -355,8 +359,18 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 			}
 			return effects;
 		}
-		ClearPending();
-		status_.message = "The command timed out.";
+		{
+			// A chat draft waiting for "send" (the say send mode) is not lost when its window
+			// closes, and not sent either: the text is kept for the composer, as a message
+			// refused as too long is, and the reason says so. Silently dropping it is what
+			// the "say send" wording, which promises the message is held, cannot survive.
+			const std::string draft = TextParam(status_.pending.params);
+			ClearPending();
+			status_.message = draft.empty() ? kTimedOut : kDraftExpired;
+			if (!draft.empty()) {
+				status_.keptDraft = draft;
+			}
+		}
 		if (status_.state == State::Pending) {
 			status_.state = State::Idle;
 		}
@@ -386,7 +400,9 @@ nlohmann::json VoiceListener::StatusJson() const
 			// and the message as it will be posted, for the Multichat composer. Shown,
 			// never logged.
 			{"runOnTimeout", status_.pending.runOnTimeout},
-			{"timeoutMs", status_.pending.timeoutMs},
+			// The window as it applies, the default one included, so the UI can show a time
+			// limit for every pending action, not only for a countdown.
+			{"timeoutMs", status_.pending.timeoutMs > 0 ? status_.pending.timeoutMs : kPendingTimeoutMs},
 			{"text", TextParam(status_.pending.params)},
 		};
 	} else {

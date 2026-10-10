@@ -449,7 +449,8 @@ export interface VoicePendingAction {
   /** A chat draft (commandId "chat.send") sends itself when its window closes; any other
    * pending command is dropped then. */
   runOnTimeout: boolean;
-  /** How long the window is, in ms. Not for rendering a countdown: remainingMs is. */
+  /** How long the window is, in ms, for every pending action (the default 8 s window
+   * included, e.g. a "say send" draft). Not for rendering a countdown: remainingMs is. */
   timeoutMs: number;
   /** A chat draft's message, exactly as it will be posted ("" for anything else). */
   text: string;
@@ -465,8 +466,9 @@ export interface VoiceState {
   /** The bound microphone's name; "" when none is bound. */
   device: string;
   pending: VoicePendingAction | null;
-  /** The last dictated chat message refused as too long, kept for the Multichat composer to
-   * take over; "" when there is none. Cleared at the next utterance. */
+  /** The last dictated chat message refused as too long, or a "say send" draft whose window
+   * closed unsent, kept for the Multichat composer to take over; "" when there is none.
+   * Cleared at the next utterance. */
   keptDraft: string;
   /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic; and in
    * always-listen, whether it is running (`wake`) and, when it is not, why (`wakeReason`,

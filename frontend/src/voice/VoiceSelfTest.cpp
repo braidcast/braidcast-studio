@@ -671,6 +671,13 @@ Voice::Interpretation TestInterpret(const std::string &text, const Voice::Interp
 		out.action.timeoutMs = 3000;
 		out.action.needsConfirmWord = false;
 		out.action.params = {{"text", "hello"}};
+	} else if (text.rfind("hold ", 0) == 0) {
+		// What the "say send" mode produces: a draft that waits for the word.
+		out.kind = Voice::Interpretation::Kind::Pending;
+		out.action.commandId = text.substr(5);
+		out.action.summary = "hold " + out.action.commandId;
+		out.action.needsConfirmWord = true;
+		out.action.params = {{"text", "held words"}};
 	} else if (text.rfind("ask ", 0) == 0) {
 		// A confirm-tier command as the registry words it: a question, read back if asked.
 		out.kind = Voice::Interpretation::Kind::Pending;
@@ -1152,6 +1159,24 @@ void TestVoiceListener(Tally &t)
 					l->Snapshot().pending.commandId.empty();
 		t.Check("listener", "a UI cancel for another action does nothing; the cancel key needs no id",
 			cancelIgnored && keyCancels && !first.empty());
+	}
+
+	// 35. (W-14) A "say send" draft whose window closes is neither sent nor lost: the text
+	// is kept for the composer and the reason says so. Its window is visible in the state.
+	{
+		auto l = fresh();
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("hold chat.send", 1400));
+		const bool windowShown = l->StatusJson()["pending"].value("timeoutMs", 0) ==
+					 VoiceListener::kPendingTimeoutMs;
+		Event tick = Ev(EventType::Tick, 1400 + VoiceListener::kPendingTimeoutMs);
+		tick.seq = fx.back().seq;
+		const std::string expired = EffectNames(l->Handle(tick));
+		t.Check("listener", "a held draft that expires is kept, not sent, with a reason",
+			windowShown && expired == "cue:cancel" && l->Current() == S::Idle &&
+				l->Snapshot().pending.commandId.empty() && l->Snapshot().keptDraft == "held words" &&
+				l->Snapshot().message.find("not sent") != std::string::npos);
 	}
 }
 
