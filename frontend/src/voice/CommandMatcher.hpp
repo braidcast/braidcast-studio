@@ -53,11 +53,22 @@ struct CommandMatch {
 	// A chat command's message: the free-text remainder, in the user's own spelling and
 	// punctuation (Normalized::Original). Empty for every other command.
 	std::string messageText;
+	// Not a command, but so close to one that it was almost certainly meant as one: a
+	// misheard phrase ("and stream", "go life", "switch 2 BRB") or a command word with
+	// nothing after it ("mute"). ok is false and `message` says what was probably meant.
+	// A near miss is never dictated to chat by the push-to-talk fallback: posting a
+	// misheard "end stream" to every chat is the one outcome worse than doing nothing.
+	bool nearMiss = false;
+	// How sure the match is, 0 to 1, for the debug log (never the words): 1 for a phrase
+	// heard exactly, the slot's similarity when a name was resolved, a near miss's own
+	// closeness.
+	double score = 0.0;
 };
 
 // Matches an utterance against the command table. Anchored: the phrase must start the
-// utterance, so "I'll switch to BRB later" is conversation, not a command. Pure: no
-// libobs, no state.
+// utterance, so "I'll switch to BRB later" is conversation, not a command. When nothing
+// matches, the utterance is weighed as a near miss of each command (see nearMiss). Pure:
+// no libobs, no state.
 CommandMatch MatchCommand(const Normalized &said, const CommandCandidates &candidates);
 
 // Every phrase the matcher knows, for the whisper prompt bias.

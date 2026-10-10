@@ -470,11 +470,13 @@ Interpretation Interpret(const std::string &text, const InterpretContext &ctx, c
 		// The spec's fallback, push-to-talk only: an utterance no command claimed is a
 		// message to every live chat (hold the key, speak, done). Not in always-listen,
 		// where ambient speech must never reach chat; not a lone yes or cancel with
-		// nothing waiting; and with no chat live it is the ordinary miss, so a studio with
-		// no chat hears "I did not catch a command" rather than a lecture about chat.
+		// nothing waiting; not a near miss of a command ("and stream" is "end stream"
+		// misheard, and posting it to every chat is worse than doing nothing); and with
+		// no chat live it is the ordinary miss, so a studio with no chat hears "I did not
+		// catch a command" rather than a lecture about chat.
 		const bool controlWord = Matches(said.text, kConfirmWords) || Matches(said.text, kCancelWords) ||
 					 Matches(said.text, kReadBackWords);
-		if (match.commandId.empty() && ctx.trigger == Trigger::Ptt && !controlWord &&
+		if (match.commandId.empty() && !match.nearMiss && ctx.trigger == Trigger::Ptt && !controlWord &&
 		    !candidates.platforms.empty()) {
 			DBG(LogCat::Voice, "no command matched; dictating to chat");
 			CommandMatch dictated;
@@ -483,10 +485,12 @@ Interpretation Interpret(const std::string &text, const InterpretContext &ctx, c
 			dictated.messageText = said.Original(0, said.tokens.size() - 1);
 			return ChatDraft(dictated, candidates, send);
 		}
-		DBG(LogCat::Voice, "no command matched%s", match.ambiguous ? " (ambiguous slot)" : "");
+		// The score, never the words (the spec's observability rule).
+		DBG(LogCat::Voice, "no command matched%s (score %.2f)",
+		    match.nearMiss ? " (near miss)" : (match.ambiguous ? " (ambiguous slot)" : ""), match.score);
 		return Miss(match.message.empty() ? "I did not catch a command." : match.message);
 	}
-	DBG(LogCat::Voice, "matched %s", match.commandId.c_str());
+	DBG(LogCat::Voice, "matched %s (score %.2f)", match.commandId.c_str(), match.score);
 	if (match.commandId == kChatMethod) {
 		return ChatDraft(match, candidates, send);
 	}

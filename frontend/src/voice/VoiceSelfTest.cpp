@@ -1763,6 +1763,20 @@ void TestCommandMatcher(Tally &t)
 		{"go live", "streaming.start", "", nullptr, false},
 		{"stop the stream", "streaming.stop", "", nullptr, false},
 		{"end the stream now", "streaming.stop", "", nullptr, false},
+		// The spec's own example phrasings, each one (S-I2: "end stream" used to be chat).
+		{"switch to BRB", "scenes.setCurrent", "BRB", nullptr, false},
+		{"scene BRB", "scenes.setCurrent", "BRB", nullptr, false},
+		{"go to Starting Soon", "scenes.setCurrent", "Starting Soon", nullptr, false},
+		{"mute mic", "audio.setMuted", "Microphone", "muted", true},
+		{"unmute mic", "audio.setMuted", "Microphone", "muted", false},
+		{"show alerts", "sceneItems.setVisible", "Alerts", "visible", true},
+		{"hide webcam", "sceneItems.setVisible", "Webcam", "visible", false},
+		{"end stream", "streaming.stop", "", nullptr, false},
+		{"stop streaming", "streaming.stop", "", nullptr, false},
+		// And their plain variants.
+		{"stop stream", "streaming.stop", "", nullptr, false},
+		{"end streaming", "streaming.stop", "", nullptr, false},
+		{"start stream", "streaming.start", "", nullptr, false},
 		// Not commands.
 		{"I'll switch to BRB later", "", "", nullptr, false},
 		{"we should probably go to the store", "", "", nullptr, false},
@@ -1801,6 +1815,54 @@ void TestCommandMatcher(Tally &t)
 	const CommandMatch missing = MatchCommand(Normalize("switch to intermission"), candidates);
 	t.Check("matcher", "an unknown scene name is reported back",
 		!missing.ok && missing.message.find("intermission") != std::string::npos);
+
+	// Near misses: misheard commands, and command words with nothing after them. Each is a
+	// miss that says what was probably meant, so push-to-talk never posts it to chat. The
+	// second half must stay ordinary speech, which push-to-talk does post.
+	struct NearCase {
+		const char *said;
+		bool isNear;       // "near" is a macro in windows.h
+		const char *meant; // a part of the reason, for a near miss
+	};
+	const NearCase kNear[] = {
+		{"and stream", true, "'end stream'"},
+		{"end streem", true, "'end stream'"},
+		{"start a stream", true, "'start stream'"},
+		{"stop the streams", true, "'stop stream'"},
+		{"go life", true, "'go live'"},
+		{"switch two BRB", true, "'switch to BRB'"},
+		{"which to BRB", true, "'switch to BRB'"},
+		{"so webcam", true, "'show Webcam'"},
+		{"muted mic", true, "'mute Microphone'"},
+		{"mute", true, "after 'mute'"},
+		{"switch to the", true, "after 'switch to'"},
+		{"I'll switch to BRB later", false, ""},
+		{"we switch to BRB", false, ""},
+		{"nice stream", false, ""},
+		{"great stream everyone", false, ""},
+		{"end of stream", false, ""},
+		{"good game everyone", false, ""},
+		{"go home", false, ""},
+		{"go live soon", false, ""},
+		{"stop streaming for a second", false, ""},
+		{"thanks for the raid", false, ""},
+		{"so anyway I was saying", false, ""},
+	};
+	bool nearOk = true;
+	for (const NearCase &c : kNear) {
+		const CommandMatch got = match(c.said);
+		const bool ok = !got.ok && got.nearMiss == c.isNear &&
+				(!c.isNear || got.message.find(c.meant) != std::string::npos) &&
+				(c.isNear || got.message.empty());
+		if (!ok) {
+			nearOk = false;
+			HostLog(std::string("[selftest] voice-matcher near-miss case failed: '") + c.said +
+				"' -> near " + (got.nearMiss ? "yes" : "no") + ", ok " + (got.ok ? "yes" : "no"));
+		}
+	}
+	t.Check("matcher", "near misses are told from ordinary speech", nearOk);
+	t.Check("matcher", "a near miss carries its score", match("and stream").score > 0.5);
+	t.Check("matcher", "an exact phrase scores 1", match("end stream").score == 1.0);
 
 	// Destructive commands ask first, and so does going live.
 	t.Check("matcher", "stopping the stream needs confirmation", match("stop the stream").needsConfirm);
@@ -2296,6 +2358,24 @@ void TestChatDrafts(Tally &t)
 		Interpret("good game everyone", wake, studio, countdownMode).kind == Kind::Miss);
 	t.Check("drafts", "a failed studio command is not posted to chat",
 		Interpret("switch to the weather forecast", ctx, studio, countdownMode).kind == Kind::Miss);
+	// The spec's own "end stream" is the command, not a message (S-I2), and a misheard one
+	// is a miss that says what it heard, never a message either. Real chat is still chat.
+	const Interpretation endStream = Interpret("end stream", ctx, studio, countdownMode);
+	t.Check("drafts", "'end stream' stops the stream rather than posting to chat",
+		endStream.kind == Kind::Pending && endStream.action.commandId == "streaming.stop");
+	t.Check("drafts", "'start stream' starts it rather than posting to chat",
+		Interpret("start stream", ctx, studio, countdownMode).action.commandId == "streaming.start");
+	const Interpretation misheard = Interpret("and stream", ctx, studio, countdownMode);
+	t.Check("drafts", "a misheard command is a miss with a reason, not a message",
+		misheard.kind == Kind::Miss && misheard.message.find("end stream") != std::string::npos);
+	t.Check("drafts", "a bare command word is a miss, not a message",
+		Interpret("unmute", ctx, studio, countdownMode).kind == Kind::Miss);
+	const Interpretation later = Interpret("I'll switch to BRB later", ctx, studio, countdownMode);
+	t.Check("drafts", "a sentence that mentions a command is still a message",
+		later.kind == Kind::Pending && later.action.commandId == "chat.send" &&
+			later.action.params.value("text", "") == "I'll switch to BRB later");
+	t.Check("drafts", "'nice stream' is still a message",
+		Interpret("nice stream", ctx, studio, countdownMode).action.commandId == "chat.send");
 
 	// With nothing live there is nowhere to send, and the refusal says so rather than the
 	// message disappearing.
