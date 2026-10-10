@@ -5,6 +5,17 @@
 
 namespace Voice {
 
+namespace {
+
+// True on the thread that is inside the guard's own mute, so the "mute" handler, which
+// libobs runs synchronously on that thread, does not take it for the user's.
+thread_local bool t_guardMuting = false;
+
+// What the handler last saw the user ask for during the hold.
+constexpr int kNoWish = -1;
+
+} // namespace
+
 MicMuteGuard::~MicMuteGuard()
 {
 	Release();
@@ -19,15 +30,20 @@ bool MicMuteGuard::Engage(obs_source_t *mic)
 		return false;
 	}
 	weak_ = OBSGetWeakRef(mic);
+	userWish_.store(kNoWish, std::memory_order_release);
+	// Listening starts BEFORE the mic's state is read: a user mute that lands after the
+	// read is then signalled to the handler, and one that lands before it is in the read.
+	// Connecting after the guard's own mute left a gap where a mute from another thread
+	// was neither.
+	signal_handler_connect(obs_source_get_signal_handler(mic), "mute", &MicMuteGuard::OnMute, this);
+	listening_ = true;
 	wasMuted_ = obs_source_muted(mic);
 	if (!wasMuted_) {
 		// Register the override before muting, so no save can land in between.
 		GlobalAudio::SetPersistedMuteOverride(mic, false);
+		t_guardMuting = true;
 		obs_source_set_muted(mic, true);
-		// After our own mute, so it is not taken for the user's. A user mute between the
-		// two is already covered on the bridge path (NoteUserMute before the mute).
-		signal_handler_connect(obs_source_get_signal_handler(mic), "mute", &MicMuteGuard::OnMute, nullptr);
-		listening_ = true;
+		t_guardMuting = false;
 	}
 	engaged_.store(true, std::memory_order_release);
 	DBG(LogCat::Voice, "mic mute guard engaged (was %s)", wasMuted_ ? "muted" : "unmuted");
@@ -49,25 +65,37 @@ void MicMuteGuard::Release()
 		// decision. A mic that went away took its signal handler with it.
 		if (mic) {
 			signal_handler_disconnect(obs_source_get_signal_handler(mic), "mute", &MicMuteGuard::OnMute,
-						  nullptr);
+						  this);
 		}
 		listening_ = false;
 	}
 	bool keptMuted = false;
 	if (!wasMuted_) {
-		// Unmutes unless the user muted the mic during the hold, and clears the override,
-		// atomically with any NoteUserMute.
+		// What the handler saw becomes the user's recorded wish (it may have landed before
+		// the override was registered), then the hold ends: unmuted unless the user muted
+		// the mic during it, atomically with any NoteUserMute.
+		const int wish = userWish_.load(std::memory_order_acquire);
+		if (wish != kNoWish && mic) {
+			GlobalAudio::NoteUserMute(mic, wish != 0);
+		}
 		keptMuted = GlobalAudio::EndTemporaryMute(mic);
 	}
 	DBG(LogCat::Voice, "mic mute guard released%s%s", mic ? "" : " (the mic went away mid-hold)",
 	    keptMuted ? " (left muted: the user muted it during the hold)" : "");
 }
 
-void MicMuteGuard::OnMute(void *, calldata_t *params)
+void MicMuteGuard::OnMute(void *data, calldata_t *params)
 {
-	// Every "mute" on the held mic that is not the guard's own: the guard connects after
-	// its mute, to the held mic only, and disconnects before its unmute.
-	GlobalAudio::NoteHeldUserMute(calldata_bool(params, "muted"));
+	// Every "mute" on the held mic but the guard's own (t_guardMuting): the guard listens
+	// from before it reads the mic's state until before its unmute.
+	if (t_guardMuting) {
+		return;
+	}
+	const bool muted = calldata_bool(params, "muted");
+	static_cast<MicMuteGuard *>(data)->userWish_.store(muted ? 1 : 0, std::memory_order_release);
+	// And at once into the override, so a save mid-hold stores it (when the override is
+	// registered by then; Release records it in any case).
+	GlobalAudio::NoteHeldUserMute(muted);
 }
 
 } // namespace Voice

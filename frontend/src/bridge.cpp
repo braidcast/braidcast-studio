@@ -12245,11 +12245,10 @@ bool SetSourceMuted(obs_source_t *source, bool muted, std::string &error)
 		error = "there is no source to mute or unmute";
 		return false;
 	}
-	// The user's own choice, recorded before it is applied: if voice push-to-talk is
-	// holding this mic muted, a mute here would change nothing in libobs, and the end of
-	// the hold would undo it (GlobalAudio::NoteUserMute).
-	GlobalAudio::NoteUserMute(source, muted);
-	obs_source_set_muted(source, muted);
+	// The user's own choice, recorded with it: if voice push-to-talk is holding this mic
+	// muted, a mute here changes nothing in libobs, and the end of the hold would undo it
+	// (GlobalAudio::SetUserMuted).
+	GlobalAudio::SetUserMuted(source, muted);
 	// A global channel's mute persists through its own store, anything else with the
 	// scene collection; PersistSourceState picks which.
 	PersistSourceState(source);

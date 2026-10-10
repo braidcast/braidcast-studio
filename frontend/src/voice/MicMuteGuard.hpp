@@ -16,9 +16,10 @@ namespace Voice {
 // Engage, and the user did not mute it during the hold: if the user changed their own
 // mic's mute during the hold, their choice wins. An unmute shows in libobs; a mute does
 // not (the guard has already muted the mic, so muting it again changes nothing), so a
-// user mute is recorded where it is asked for (GlobalAudio::NoteUserMute): the bridge's
-// mute seam, and, for every other path (libobs's per-source mute hotkey included), the
-// mic's "mute" signal, which the guard listens to while it holds the mic. While engaged
+// user mute is recorded where it is asked for: the bridge's mute seam records it with
+// the mute (GlobalAudio::SetUserMuted), and for every other path (libobs's per-source
+// mute hotkey included) the guard hears the mic's "mute" signal, which it listens to for
+// the whole hold, and records it on release (GlobalAudio::NoteUserMute). While engaged
 // the persisted mute state is overridden (see GlobalAudio::SetPersistedMuteOverride) so
 // a save mid-hold stores what the user wants, never the guard's own mute.
 // The source is held weakly, so a mic removed mid-hold simply ends the guard.
@@ -47,6 +48,9 @@ private:
 	std::atomic<bool> engaged_{false};
 	bool wasMuted_ = false;
 	bool listening_ = false; // connected to the held mic's "mute" signal
+	// The last mute (1) or unmute (0) the user made during the hold, as the signal
+	// handler saw it, or -1 for none. Written on whichever thread muted the mic.
+	std::atomic<int> userWish_{-1};
 };
 
 } // namespace Voice

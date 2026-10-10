@@ -92,6 +92,19 @@ void GlobalAudio::NoteUserMute(obs_source_t *source, bool muted)
 	}
 }
 
+void GlobalAudio::SetUserMuted(obs_source_t *source, bool muted)
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	bool held = false;
+	if (OverrideForLocked(source, held)) {
+		g_muteOverrideValue = muted;
+		++g_muteOverrideEpoch;
+	}
+	// Under the lock: the "mute" signal it emits reaches only handlers that do not take
+	// it (MicMuteGuard's writes lock-free, NoteHeldUserMute).
+	obs_source_set_muted(source, muted);
+}
+
 void GlobalAudio::NoteHeldUserMute(bool muted)
 {
 	g_muteOverrideValue = muted;
