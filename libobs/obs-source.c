@@ -312,12 +312,17 @@ static bool obs_source_hotkey_mute(void *data, obs_hotkey_pair_id id, obs_hotkey
 
 	struct obs_source *source = data;
 
-	if (!pressed || obs_source_muted(source)) {
+	if (!pressed) {
 		return false;
 	}
 
+	/* Set (and signal "mute") even when the source is muted already: a frontend that
+	 * holds a temporary mute of its own (Braidcast's voice push-to-talk) learns from the
+	 * signal that the user asked for one too, and keeps it when its hold ends. The
+	 * return value still reports a change only, as the hotkey pair expects. */
+	const bool was_muted = obs_source_muted(source);
 	obs_source_set_muted(source, true);
-	return true;
+	return !was_muted;
 }
 
 static bool obs_source_hotkey_unmute(void *data, obs_hotkey_pair_id id, obs_hotkey_t *key, bool pressed)

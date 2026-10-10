@@ -13,9 +13,14 @@ namespace Voice {
 // they are never called concurrently. Engaged() may be read from any thread.
 //
 // Release unmutes only when the source is *still* muted and it was unmuted before
-// Engage: if the user changed their own mic's mute during the hold, their choice
-// wins. While engaged the persisted mute state is overridden (see
-// GlobalAudio::SetPersistedMuteOverride) so a save mid-hold cannot store "muted".
+// Engage, and the user did not mute it during the hold: if the user changed their own
+// mic's mute during the hold, their choice wins. An unmute shows in libobs; a mute does
+// not (the guard has already muted the mic, so muting it again changes nothing), so a
+// user mute is recorded where it is asked for (GlobalAudio::NoteUserMute): the bridge's
+// mute seam, and, for every other path (libobs's per-source mute hotkey included), the
+// mic's "mute" signal, which the guard listens to while it holds the mic. While engaged
+// the persisted mute state is overridden (see GlobalAudio::SetPersistedMuteOverride) so
+// a save mid-hold stores what the user wants, never the guard's own mute.
 // The source is held weakly, so a mic removed mid-hold simply ends the guard.
 //
 // libobs reports the guard's own mute to every audio capture callback, VoiceCapture's
@@ -35,9 +40,13 @@ public:
 	bool Engaged() const { return engaged_.load(std::memory_order_acquire); }
 
 private:
+	// The mic's "mute" signal while the guard holds it: any thread.
+	static void OnMute(void *data, calldata_t *params);
+
 	OBSWeakSource weak_;
 	std::atomic<bool> engaged_{false};
 	bool wasMuted_ = false;
+	bool listening_ = false; // connected to the held mic's "mute" signal
 };
 
 } // namespace Voice

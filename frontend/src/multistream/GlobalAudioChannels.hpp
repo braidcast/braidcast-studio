@@ -99,6 +99,29 @@ uint32_t PrimaryMicChannel();
 // a time: registering another replaces the first.
 void SetPersistedMuteOverride(obs_source_t *source, bool mutedBeforeOverride);
 void ClearPersistedMuteOverride();
+
+// A mute or unmute the USER asked for. While an override holds `source`, the user's choice
+// becomes the state the hold returns to, and the state a save mid-hold stores. libobs
+// alone cannot carry it: muting a source the hold has already muted changes nothing
+// there, so on release the hold would unmute against the user's explicit mute. Every
+// entry point for a user mute calls this BEFORE it mutes, which keeps a hold that ends in
+// between from undoing it (EndTemporaryMute below): the bridge seam
+// (Bridge::SetSourceMuted, behind audio.setMuted, the mixer, MCP and voice's own "mute
+// mic"), and MicMuteGuard's "mute" signal handler (NoteHeldUserMute) for every other
+// path, libobs's per-source mute hotkeys included. No effect when no override holds
+// `source`. Any thread.
+void NoteUserMute(obs_source_t *source, bool muted);
+// The same for the source the override holds, without the lock: for MicMuteGuard's
+// "mute" handler only, which is connected to that source alone and disconnected before
+// the hold ends. It runs inside the signal's emission, and EndTemporaryMute emits that
+// signal under the lock, so taking the lock here would order the two locks both ways.
+void NoteHeldUserMute(bool muted);
+// Ends the hold on `source` (nullptr when it went away mid-hold) and clears the override,
+// under the override's own lock so a NoteUserMute cannot land between the decision and
+// the unmute: the source is unmuted unless the user asked for it muted while the hold
+// lasted. True when it was left muted at the user's request. The caller disconnects its
+// "mute" handler first (the unmute emits that signal under the lock).
+bool EndTemporaryMute(obs_source_t *source);
 // The value to persist for `source`: the override when one is registered for that
 // source, otherwise `actualMuted` unchanged.
 bool PersistedMuteOverride(obs_source_t *source, bool actualMuted);

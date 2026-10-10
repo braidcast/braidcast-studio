@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -19,11 +20,13 @@ namespace {
 // The push-to-talk mute override (see the header). One microphone at a time, so one
 // weak reference and one flag are enough. Guarded because Persist() runs on the UI
 // thread while voice engages from the libobs hotkey thread. The epoch counts every
-// register and clear, so a save can tell whether one overlapped its snapshot.
+// register, clear and change of the user's wish, so a save can tell whether one
+// overlapped its snapshot. The flag and the epoch are atomics for NoteHeldUserMute
+// alone, which writes them without the lock; everything else holds it.
 std::mutex g_muteOverrideMutex;
 OBSWeakSource g_muteOverrideSource;
-bool g_muteOverrideValue = false;
-uint64_t g_muteOverrideEpoch = 0;
+std::atomic<bool> g_muteOverrideValue{false};
+std::atomic<uint64_t> g_muteOverrideEpoch{0};
 
 // Whether an override is registered for `source`, and if so its value in `value`.
 // Caller holds g_muteOverrideMutex.
@@ -77,6 +80,38 @@ void GlobalAudio::ClearPersistedMuteOverride()
 	g_muteOverrideSource = nullptr;
 	g_muteOverrideValue = false;
 	++g_muteOverrideEpoch;
+}
+
+void GlobalAudio::NoteUserMute(obs_source_t *source, bool muted)
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	bool held = false;
+	if (OverrideForLocked(source, held)) {
+		g_muteOverrideValue = muted;
+		++g_muteOverrideEpoch; // a snapshot around this change reads the live state again
+	}
+}
+
+void GlobalAudio::NoteHeldUserMute(bool muted)
+{
+	g_muteOverrideValue = muted;
+	++g_muteOverrideEpoch;
+}
+
+bool GlobalAudio::EndTemporaryMute(obs_source_t *source)
+{
+	std::lock_guard<std::mutex> lock(g_muteOverrideMutex);
+	bool userMuted = false;
+	OverrideForLocked(source, userMuted);
+	if (source && !userMuted && obs_source_muted(source)) {
+		obs_source_set_muted(source, false);
+	}
+	// Cleared after the unmute and under the same lock, so a save in between still stores
+	// the state the user wants.
+	g_muteOverrideSource = nullptr;
+	g_muteOverrideValue = false;
+	++g_muteOverrideEpoch;
+	return userMuted;
 }
 
 bool GlobalAudio::PersistedMuteOverride(obs_source_t *source, bool actualMuted)

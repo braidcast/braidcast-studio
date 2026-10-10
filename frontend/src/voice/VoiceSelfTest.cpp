@@ -515,6 +515,43 @@ void TestMicMuteGuard(Tally &t)
 	guard.Release();
 	t.Check("mic", "a save straddling the release stores unmuted",
 		!GlobalAudio::PersistedMuteForSnapshot(src, epoch, snapshot));
+
+	// N-I1: a mute the USER makes during the hold survives the release. Under the guard's
+	// own mute it changes nothing in libobs, so it is caught where it enters. The bridge
+	// seam (audio.setMuted, the mixer): mute during the hold, release, still muted, and a
+	// save during the hold already stored muted.
+	std::string error;
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	const bool seam = Bridge::SetSourceMuted(src, true, error);
+	t.Check("mic", "a mute through the bridge during the hold is saved as muted",
+		seam && GlobalAudio::PersistedMuteOverride(src, false));
+	guard.Release();
+	t.Check("mic", "a mute through the bridge during the hold survives the release", obs_source_muted(src));
+	// Every other path reaches the mic's "mute" signal: libobs's own mute hotkey (which now
+	// sets, and signals, even when the source is already muted), plugins, scripts.
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	obs_source_set_muted(src, true);
+	guard.Release();
+	t.Check("mic", "a mute by any other path during the hold survives the release", obs_source_muted(src));
+	// The last choice wins, either way.
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	Bridge::SetSourceMuted(src, false, error);
+	Bridge::SetSourceMuted(src, true, error);
+	guard.Release();
+	t.Check("mic", "unmuted then muted again during the hold: muted", obs_source_muted(src));
+	obs_source_set_muted(src, false);
+	guard.Engage(src);
+	Bridge::SetSourceMuted(src, true, error);
+	Bridge::SetSourceMuted(src, false, error);
+	guard.Release();
+	t.Check("mic", "muted then unmuted again during the hold: unmuted", !obs_source_muted(src));
+	// And the guard's own mute is never taken for the user's.
+	guard.Engage(src);
+	guard.Release();
+	t.Check("mic", "a hold the user left alone still gives the mic back", !obs_source_muted(src));
 }
 
 void TestVoiceCapture(Tally &t)
