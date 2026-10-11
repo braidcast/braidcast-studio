@@ -574,6 +574,12 @@ void RunWasapiDedupFollowSelfTest();
 // dialog omits its preview pane rather than showing a black box. Leaves no state
 // behind. Gated by the caller to the smoke path.
 void RunFilterPreviewSelfTest();
+// Headless proof that the bundled Composite Blur plugin shipped whole: its module loaded,
+// its shader data sits in the module's data directory, and its blur filter creates by
+// upstream's id with a non-empty property set and attaches to and detaches from a private
+// color source. Nothing is added to a scene or rendered, and everything is released.
+// Gated by the caller to the smoke path.
+void RunCompositeBlurSelfTest();
 // Headless proof for hotkeys: drive hotkeys.list (expect > 0, including the
 // frontend Start/Stop Streaming), then a hotkeys.set -> hotkeys.list round-trip on
 // one hotkey (bind Ctrl+Shift+F12 via a {code:"F12",ctrl,shift} call, confirm it

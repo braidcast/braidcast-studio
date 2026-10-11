@@ -9520,6 +9520,63 @@ void ObsBootstrap::RunFilterPreviewSelfTest()
 		(audioOpened ? "OPENED (BUG: should be refused)" : "refused: " + audioError));
 }
 
+namespace {
+
+// Upstream's names, not ours: saved scene collections reference the filter by its id, and the
+// module name is the DLL and data directory a hand-installed upstream copy would also use.
+constexpr const char *kCompositeBlurModule = "obs-composite-blur";
+constexpr const char *kCompositeBlurFilterId = "obs_composite_blur";
+
+} // namespace
+
+void ObsBootstrap::RunCompositeBlurSelfTest()
+{
+	auto check = [](const std::string &label, bool pass, const std::string &detail) {
+		HostLog("[selftest] composite-blur " + label + " -> " + (pass ? "OK" : "FAIL") +
+			(detail.empty() ? std::string() : " (" + detail + ")"));
+		return pass;
+	};
+
+	obs_module_t *module = obs_get_module(kCompositeBlurModule);
+	if (!check("module", module != nullptr, module ? obs_get_module_binary_path(module) : "not loaded")) {
+		return;
+	}
+
+	// Without its data directory the DLL still loads and registers the filter, and only the
+	// filter's effect loads fail, so the shaders are checked on their own.
+	char *shader = obs_find_module_file(module, "shaders/composite.effect");
+	check("data", shader != nullptr,
+	      shader ? shader : std::string("no shaders/composite.effect under ") + obs_get_module_data_path(module));
+	bfree(shader);
+
+	OBSSourceAutoRelease filter =
+		obs_source_create_private(kCompositeBlurFilterId, "selftest-composite-blur", nullptr);
+	if (!check("create", filter && obs_source_get_type(filter) == OBS_SOURCE_TYPE_FILTER, kCompositeBlurFilterId)) {
+		return;
+	}
+
+	OBSProperties props = obs_source_properties(filter);
+	size_t propCount = 0;
+	for (obs_property_t *p = props ? obs_properties_first(props) : nullptr; p; obs_property_next(&p)) {
+		++propCount;
+	}
+	check("properties", propCount > 0, std::to_string(propCount) + " props");
+
+	// Never added to a scene, so nothing renders it.
+	OBSSourceAutoRelease target =
+		obs_source_create_private("color_source", "selftest-composite-blur-target", nullptr);
+	if (!target) {
+		check("attach", false, "color_source unavailable");
+		return;
+	}
+	obs_source_filter_add(target, filter);
+	const bool attached = obs_filter_get_parent(filter) == target;
+	obs_source_filter_remove(target, filter);
+	const bool detached = obs_filter_get_parent(filter) == nullptr;
+	check("attach", attached && detached,
+	      "attached=" + std::to_string(attached) + " detached=" + std::to_string(detached));
+}
+
 void ObsBootstrap::RunAudioMixerSelfTest()
 {
 	using Bridge::json;
