@@ -7,3 +7,6 @@
 [submodule "plugins/obs-websocket"]
 	path = plugins/obs-websocket
 	url = https://github.com/obsproject/obs-websocket.git
+[submodule "plugins/obs-composite-blur"]
+	path = plugins/obs-composite-blur
+	url = https://github.com/braidcast/braidcast-composite-blur.git

@@ -124,8 +124,8 @@ var formatSkipDirs = []string{buildDir, "deps", depsDir, "frontend/deps"}
 // (issues.md #22). CI's format job compares against master in this repo and has the same
 // blind spot.
 //
-// deps/libdshowcapture/src and plugins/obs-websocket stay out: they are upstream code we
-// only carry, which is what formatSkipDirs exists for.
+// deps/libdshowcapture/src, plugins/obs-websocket and plugins/obs-composite-blur stay out:
+// they are upstream code we only carry, which is what formatSkipDirs exists for.
 var formatSubmodules = []string{"plugins/obs-browser"}
 
 // Format runs clang-format in place over the C/C++ files changed vs HEAD

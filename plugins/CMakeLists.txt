@@ -9,25 +9,36 @@ endif()
 
 set_property(GLOBAL APPEND PROPERTY OBS_FEATURES_ENABLED "Plugin Support")
 
+macro(require_submodule name)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${name}/CMakeLists.txt")
+    message(FATAL_ERROR "Required submodule '${name}' not available.")
+  endif()
+endmacro()
+
 macro(check_obs_browser)
   if((OS_WINDOWS AND CMAKE_VS_PLATFORM_NAME MATCHES "(ARM64|x64)") OR OS_MACOS OR OS_LINUX)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/obs-browser/CMakeLists.txt")
-      message(FATAL_ERROR "Required submodule 'obs-browser' not available.")
-    else()
-      add_subdirectory(obs-browser)
-    endif()
+    require_submodule(obs-browser)
+    add_subdirectory(obs-browser)
   else()
     add_custom_target(obs-browser)
     target_disable(obs-browser)
   endif()
 endmacro()
 
-macro(check_obs_websocket)
-  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/obs-websocket/CMakeLists.txt")
-    message(FATAL_ERROR "Required submodule 'obs-websocket' not available.")
-  else()
-    add_subdirectory(obs-websocket)
+# Composite Blur (FiniteSingularity/obs-composite-blur) builds through upstream's own CMakeLists, whose in-tree branch
+# calls set_target_properties_obs, so the DLL and data/ install like any other plugin. A function, not a macro, so the
+# warnings-as-errors override stays scoped to it: its warnings are upstream's to fix. Windows only, as the app is.
+function(check_obs_composite_blur)
+  if(OS_WINDOWS)
+    require_submodule(obs-composite-blur)
+    set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+    add_subdirectory(obs-composite-blur)
   endif()
+endfunction()
+
+macro(check_obs_websocket)
+  require_submodule(obs-websocket)
+  add_subdirectory(obs-websocket)
 endmacro()
 
 # Add plugins in alphabetical order to retain order in IDE projects
@@ -73,6 +84,7 @@ add_obs_plugin(mac-virtualcam PLATFORMS MACOS)
 add_obs_plugin(nv-filters PLATFORMS WINDOWS)
 
 check_obs_browser()
+check_obs_composite_blur()
 
 add_obs_plugin(obs-ffmpeg)
 add_obs_plugin(obs-filters)
