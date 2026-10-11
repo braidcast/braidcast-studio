@@ -140,7 +140,10 @@ $CrashPatterns = @(
     # suite's own verdict line, not the word FAIL appearing in its step output. Listed
     # because the overlay suite is the only checker of the per-type natural-size table,
     # and a type shipped without a row is otherwise a log line nothing reads.
-    '\[selftest\] overlay -> FAILED'
+    '\[selftest\] overlay -> FAILED',
+    # The bundled Composite Blur's own suite: its module/data cases are the only check
+    # that the packaged zip carries the plugin's DLL and shader data.
+    '\[selftest\] composite-blur \S+ -> FAIL'
 )
 
 # Positive proof the renderer actually loaded the Svelte bundle (OnLoadEnd on the
