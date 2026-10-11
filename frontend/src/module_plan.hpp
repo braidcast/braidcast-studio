@@ -13,7 +13,8 @@
 // A user plugin whose name is exactly a bundled module's replaces it: only the user's copy
 // is opened, never both. libobs keeps the first registration of a source id and rejects
 // later ones, so with both loaded whichever copy happened to load first would silently own
-// every id the two share.
+// every id the two share. The exception is a protected module, one the fork has modified:
+// a user plugin of that name is refused and the bundled copy always loads.
 namespace ModulePlan {
 
 // One entry directly under the user plugin root, as the scan found it. The scan reports
@@ -65,6 +66,10 @@ enum class Action {
 	// in the bundled module's place would register the module under a different name. The
 	// bundled module loads instead.
 	SkipCaseMismatch,
+	// A user plugin whose name matches a protected module, case-insensitively. It is never
+	// opened and the bundled module, if present, loads, because the bundled copy carries
+	// changes the app depends on that a stock build would silently drop.
+	SkipProtected,
 	// A user root entry not in the <name>/bin/64bit/<name>.dll shape.
 	IgnoreMalformed,
 	// An entry whose name differs from an earlier one of the same origin only by case.
@@ -87,13 +92,16 @@ struct Entry {
 };
 
 // The ordered plan. Bundled modules keep their scan order, and a user plugin that overrides
-// one takes its slot, right after the bundled entry marked SkipOverridden. Every other user
-// entry follows all the bundled ones, in scan order, so a bundled module registers first
-// and wins any id it shares with a user plugin that does not replace it. Every input
-// appears exactly once, at most one entry per lowercased module name has Action::Load, and
-// whatever loads under a bundled module's name has exactly that name. `denylist` and
-// `nonModuleDlls` hold lowercased names and apply to both origins.
+// one (never a protected one) takes its slot, right after the bundled entry marked
+// SkipOverridden. Every other user entry follows all the bundled ones, in scan order, so a
+// bundled module registers first and wins any id it shares with a user plugin that does not
+// replace it. Every input appears exactly once, at most one entry per lowercased module name
+// has Action::Load, and whatever loads under a bundled module's name has exactly that name.
+// `denylist` and `nonModuleDlls` hold lowercased names and apply to both origins;
+// `protectedModules` holds lowercased names and applies to user plugins only, whether or
+// not a bundled copy is present.
 std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
-			const std::set<std::string> &nonModuleDlls, UserPlugins userPlugins);
+			const std::set<std::string> &nonModuleDlls, const std::set<std::string> &protectedModules,
+			UserPlugins userPlugins);
 
 } // namespace ModulePlan

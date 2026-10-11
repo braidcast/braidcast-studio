@@ -584,9 +584,11 @@ void RunCompositeBlurSelfTest();
 // inputs and no filesystem: a user-only plugin loads from its own bin/64bit, after every
 // bundled module; a user plugin replaces a bundled module of exactly its name, which is then
 // never opened; one matching only case-insensitively does not load and the bundled module
-// does; the denylist and helper list apply to user plugins; safe mode and unattended runs
-// skip every user plugin and load the bundled twin; a malformed or duplicate entry, bundled
-// duplicates included, is ignored. Opens nothing. Gated by the caller to the smoke path.
+// does; one named after a module the fork modified never loads, in any spelling, whether or
+// not a bundled copy exists; the denylist and helper list apply to user plugins; safe mode
+// and unattended runs skip every user plugin and load the bundled twin; a malformed or
+// duplicate entry, bundled duplicates included, is ignored. Opens nothing. Gated by the
+// caller to the smoke path.
 void RunUserPluginsSelfTest();
 // Headless proof for hotkeys: drive hotkeys.list (expect > 0, including the
 // frontend Start/Stop Streaming), then a hotkeys.set -> hotkeys.list round-trip on

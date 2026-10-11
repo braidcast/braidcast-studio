@@ -50,7 +50,8 @@ const char *SkipReason(UserPlugins userPlugins)
 }
 
 std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
-			const std::set<std::string> &nonModuleDlls, UserPlugins userPlugins)
+			const std::set<std::string> &nonModuleDlls, const std::set<std::string> &protectedModules,
+			UserPlugins userPlugins)
 {
 	// Settle every user entry first, so the bundled pass can ask which names a user
 	// plugin claims. `claims` maps a lowercased name to the user plugin that would load
@@ -84,7 +85,12 @@ std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
 			e.action = Action::IgnoreDuplicate;
 			e.reason = kSameNameReason;
 		} else if (PassesNameFilters(e, lname, denylist, nonModuleDlls)) {
-			if (userPlugins != UserPlugins::Load) {
+			if (protectedModules.count(lname)) {
+				e.action = Action::SkipProtected;
+				e.reason = "Braidcast ships a modified " + lname +
+					   " that a user plugin cannot replace; remove " + dir +
+					   " to silence this warning";
+			} else if (userPlugins != UserPlugins::Load) {
 				e.action = Action::SkipUserPlugins;
 				e.reason = SkipReason(userPlugins);
 			} else {

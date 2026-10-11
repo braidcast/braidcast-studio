@@ -143,7 +143,9 @@ $CrashPatterns = @(
     '\[selftest\] overlay -> FAILED',
     # The bundled Composite Blur's own suite: its module/data cases are the only check
     # that the packaged zip carries the plugin's DLL and shader data.
-    '\[selftest\] composite-blur \S+ -> FAIL'
+    '\[selftest\] composite-blur \S+ -> FAIL',
+    # The user-plugin loader's plan rules (override, protected modules, safe mode).
+    '\[selftest\] user-plugins \S+ -> FAIL'
 )
 
 # Positive proof the renderer actually loaded the Svelte bundle (OnLoadEnd on the

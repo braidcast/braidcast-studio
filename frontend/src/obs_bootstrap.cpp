@@ -140,6 +140,13 @@ const std::set<std::string> kNonModuleDlls = {
 	"chrome_elf", "libcef", "libegl", "libglesv2", "obs-browser-page",
 };
 
+// Bundled modules the fork has modified. A user plugin of one of these names is refused so
+// a stock copy cannot silently drop what the app depends on; keep this in step with the
+// modules under plugins/ that differ from upstream.
+const std::set<std::string> kProtectedModules = {
+	"obs-browser", "obs-ffmpeg", "obs-outputs", "obs-vst", "rtmp-services", "win-capture", "win-wasapi",
+};
+
 // The user plugin root, under the config dir: %APPDATA%/braidcast/plugins installed, the
 // portable config dir's plugins otherwise.
 constexpr char kUserPluginDir[] = "plugins";
@@ -323,11 +330,11 @@ const char *ModuleOpenFailure(int code)
 
 // Curated full-set load: every *.dll in obs-plugins/64bit/ plus every user plugin under
 // <config dir>/plugins/<name>/bin/64bit/, minus the denylist and non-module helper DLLs,
-// with a user plugin replacing a bundled module of exactly the same name (ModulePlan
-// decides all of that). obs_open_module + obs_init_module each planned module with its data
-// path, then log a per-module result and a final disposition summary. Runs once at startup,
-// before obs_post_load_modules and the scene collection, so a user plugin's source ids exist
-// when a saved collection references them.
+// with a user plugin replacing a bundled module of exactly the same name unless the fork
+// modified that module (ModulePlan decides all of that). obs_open_module + obs_init_module
+// each planned module with its data path, then log a per-module result and a final
+// disposition summary. Runs once at startup, before obs_post_load_modules and the scene
+// collection, so a user plugin's source ids exist when a saved collection references them.
 void LoadCuratedModules()
 {
 	// One separator in every path this logs or hands to libobs; the roots come from Win32
@@ -368,7 +375,8 @@ void LoadCuratedModules()
 		HostLog("[obs] user plugins: " + std::to_string(in.userEntries.size()) + " entries in " + in.userRoot);
 	}
 
-	const std::vector<ModulePlan::Entry> plan = ModulePlan::Plan(in, kDenylist, kNonModuleDlls, userPlugins);
+	const std::vector<ModulePlan::Entry> plan =
+		ModulePlan::Plan(in, kDenylist, kNonModuleDlls, kProtectedModules, userPlugins);
 
 	std::vector<std::string> loadedBundled, loadedUser, overridden, initFailed, openFailed, skippedDeny,
 		skippedHelper, skippedUser, ignored;
@@ -402,6 +410,10 @@ void LoadCuratedModules()
 			skippedUser.push_back(e.name);
 			blog(LOG_WARNING, "[obs] user plugin %s not loaded, the bundled %s loads instead: %s",
 			     e.binPath.c_str(), e.counterpartPath.c_str(), e.reason.c_str());
+			continue;
+		case ModulePlan::Action::SkipProtected:
+			skippedUser.push_back(e.name);
+			blog(LOG_WARNING, "[obs] user plugin %s not loaded: %s", e.binPath.c_str(), e.reason.c_str());
 			continue;
 		case ModulePlan::Action::IgnoreMalformed:
 		case ModulePlan::Action::IgnoreDuplicate:
@@ -9785,7 +9797,7 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 		return u;
 	};
 	auto plan = [](const ModulePlan::Inputs &in, UserPlugins userPlugins) {
-		return ModulePlan::Plan(in, kDenylist, kNonModuleDlls, userPlugins);
+		return ModulePlan::Plan(in, kDenylist, kNonModuleDlls, kProtectedModules, userPlugins);
 	};
 	auto find = [](const std::vector<Entry> &p, const std::string &name, Origin origin) -> const Entry * {
 		for (const Entry &e : p) {
@@ -9850,6 +9862,8 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 				return "skipped";
 			case Action::SkipCaseMismatch:
 				return "case-mismatch";
+			case Action::SkipProtected:
+				return "protected";
 			case Action::IgnoreMalformed:
 				return "malformed";
 			case Action::IgnoreDuplicate:
@@ -9934,6 +9948,40 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 		      wellFormed(in, p) && denied && denied->action == Action::SkipDenylist && helper &&
 			      helper->action == Action::SkipHelper && loads(p, "obs-websocket") == 0 &&
 			      loads(p, "libcef") == 0 && loads(p, "OBS-WebSocket2") == 1,
+		      describe(p));
+	}
+
+	{
+		// A module the fork modified cannot be overridden: the user plugin is refused whatever
+		// its spelling, and even when no bundled copy exists, and any bundled copy loads.
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll", "win-capture.dll"}, {plugin("win-capture")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "win-capture", Origin::User);
+		const Entry *bundled = find(p, "win-capture", Origin::Bundled);
+		check("protected",
+		      wellFormed(in, p) && user && user->action == Action::SkipProtected && bundled &&
+			      bundled->action == Action::Load && loads(p, "win-capture") == 1 && &p.back() == user,
+		      describe(p));
+	}
+
+	{
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll", "win-capture.dll"}, {plugin("Win-Capture")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "Win-Capture", Origin::User);
+		const Entry *bundled = find(p, "win-capture", Origin::Bundled);
+		check("protected-case",
+		      wellFormed(in, p) && user && user->action == Action::SkipProtected && bundled &&
+			      bundled->action == Action::Load && loads(p, "win-capture") == 1,
+		      describe(p));
+	}
+
+	{
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll"}, {plugin("obs-browser")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "obs-browser", Origin::User);
+		check("protected-absent",
+		      wellFormed(in, p) && user && user->action == Action::SkipProtected &&
+			      loads(p, "obs-browser") == 0,
 		      describe(p));
 	}
 
