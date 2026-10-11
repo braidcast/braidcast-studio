@@ -12,6 +12,7 @@
 #include <graphics/vec3.h>
 
 #include <windows.h>
+#include <shellapi.h>
 #include <util/windows/WinHandle.hpp>
 
 #include <algorithm>
@@ -47,6 +48,7 @@
 #include "frontend_callbacks.hpp"
 #include "gpu_safe_mode.hpp"
 #include "log.hpp"
+#include "module_plan.hpp"
 #include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "fx/fx_rates.hpp"
@@ -137,11 +139,13 @@ const std::set<std::string> kNonModuleDlls = {
 	"chrome_elf", "libcef", "libegl", "libglesv2", "obs-browser-page",
 };
 
-std::string BaseNameNoExt(const std::string &filename)
-{
-	const size_t dot = filename.find_last_of('.');
-	return dot == std::string::npos ? filename : filename.substr(0, dot);
-}
+// The user plugin root, under the config dir: %APPDATA%/braidcast/plugins installed, the
+// portable config dir's plugins otherwise.
+constexpr char kUserPluginDir[] = "plugins";
+
+// Stock OBS's flag, same name and spirit: start without any user plugin, so one that
+// crashes at load cannot lock the user out of the app.
+constexpr wchar_t kSafeModeFlag[] = L"--safe-mode";
 
 // Whether the gpudiag sampler was requested via BRAIDCAST_DEBUG_COMPONENTS;
 // resolved once in Start() and read back by ObsBootstrap::GpuDiagRequested().
@@ -209,66 +213,181 @@ FrontendCallbacks *g_frontend = nullptr;
 // visible canvas to render.
 obs_scene_t *g_scene = nullptr;
 
-// Curated full-set load: enumerate every *.dll in obs-plugins/64bit/ and
-// obs_open_module + obs_init_module each one that isn't on the denylist or a
-// non-module helper DLL, with the per-module data path. Logs a per-module result
-// plus a final disposition summary. Ported from spike 4.0b's proven loader.
+// Whether the process was launched with `flag` as one of its own arguments: an exact,
+// whole-argument match, the way stock OBS reads its flags. Read from GetCommandLineW()
+// rather than CEF's parsed command line, which App::OnBeforeCommandLineProcessing rebuilds.
+bool LaunchedWithFlag(const wchar_t *flag)
+{
+	int argc = 0;
+	LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	if (!argv) {
+		return false;
+	}
+	bool found = false;
+	for (int i = 1; i < argc && !found; ++i) {
+		found = wcscmp(argv[i], flag) == 0;
+	}
+	LocalFree(argv);
+	return found;
+}
+
+// Every *.dll directly in `dir`, by file name, in directory order. std::filesystem
+// enumerates with the wide API, so a non-ASCII install path still lists.
+std::vector<std::string> ListDlls(const std::string &dir)
+{
+	namespace fs = std::filesystem;
+	std::vector<std::string> files;
+	std::error_code ec;
+	for (fs::directory_iterator it(fs::u8path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+		std::error_code typeEc;
+		if (it->is_regular_file(typeEc) && StringUtil::EqualsCI(it->path().extension().u8string(), ".dll")) {
+			files.push_back(it->path().filename().u8string());
+		}
+	}
+	return files;
+}
+
+// What sits directly under the user plugin root. Reports facts only; ModulePlan decides
+// which entries have the accepted shape. Wide enumeration, so a non-ASCII profile path
+// still lists.
+std::vector<ModulePlan::UserEntry> ScanUserPlugins(const std::string &root)
+{
+	namespace fs = std::filesystem;
+	std::vector<ModulePlan::UserEntry> entries;
+	std::error_code ec;
+	for (fs::directory_iterator it(fs::u8path(root), ec), end; !ec && it != end; it.increment(ec)) {
+		ModulePlan::UserEntry u;
+		u.name = it->path().filename().u8string();
+		std::error_code typeEc;
+		u.isDirectory = it->is_directory(typeEc);
+		if (u.isDirectory) {
+			const fs::path dll = it->path() / "bin" / "64bit" / fs::u8path(u.name + ".dll");
+			u.hasModuleDll = fs::is_regular_file(dll, typeEc);
+		}
+		entries.push_back(std::move(u));
+	}
+	return entries;
+}
+
+// Whether this launch opens user plugins. Unattended runs never do: a test result must not
+// depend on what a developer happens to have installed.
+ModulePlan::UserPlugins ResolveUserPlugins(bool safeMode)
+{
+	if (Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
+		return ModulePlan::UserPlugins::SkipSmokeRun;
+	}
+	if (Env::IsSelfTestRun()) {
+		return ModulePlan::UserPlugins::SkipSelfTestRun;
+	}
+	return safeMode ? ModulePlan::UserPlugins::SkipSafeMode : ModulePlan::UserPlugins::Load;
+}
+
+// Curated full-set load: every *.dll in obs-plugins/64bit/ plus every user plugin under
+// <config dir>/plugins/<name>/bin/64bit/, minus the denylist and non-module helper DLLs,
+// with a user plugin replacing a bundled module of the same name (ModulePlan decides all
+// of that). obs_open_module + obs_init_module each planned module with its data path, then
+// log a per-module result and a final disposition summary. Runs once at startup, before
+// obs_post_load_modules and the scene collection, so a user plugin's source ids exist
+// when a saved collection references them.
 void LoadCuratedModules()
 {
 	const std::string root = RundirRoot();
-	const std::string moduleDir = root + "/obs-plugins/64bit/";
-	const std::string dataRoot = root + "/data/obs-plugins/";
-
-	std::vector<std::string> loaded, initFailed, openFailed, skippedDeny, skippedHelper;
-
-	const std::string pattern = moduleDir + "*.dll";
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
-	if (h == INVALID_HANDLE_VALUE) {
-		HostLog("[obs] no plugin DLLs found in " + moduleDir);
-		return;
+	ModulePlan::Inputs in;
+	in.bundledBinDir = root + "/obs-plugins/64bit";
+	in.bundledDataRoot = root + "/data/obs-plugins";
+	in.bundledDlls = ListDlls(in.bundledBinDir);
+	if (in.bundledDlls.empty()) {
+		HostLog("[obs] no plugin DLLs found in " + in.bundledBinDir + "/");
 	}
-	do {
-		const std::string file = fd.cFileName;
-		const std::string name = BaseNameNoExt(file);
-		const std::string lname = StringUtil::ToLower(name);
 
-		if (kDenylist.count(lname)) {
-			skippedDeny.push_back(name);
-			// obs-websocket specifically would hard-crash a non-Qt process; the
-			// rest are pure Qt UI helpers. Either way: intentionally skipped.
-			HostLog("[obs] module " + name + " skipped (denylist, Qt-coupled / no headless value)");
+	const bool safeMode = LaunchedWithFlag(kSafeModeFlag);
+	if (safeMode) {
+		blog(LOG_WARNING, "[obs] safe mode (--safe-mode): no user plugin is loaded this session");
+	}
+	const ModulePlan::UserPlugins userPlugins = ResolveUserPlugins(safeMode);
+
+	// A missing root is the normal install: logged, never created.
+	in.userRoot = BraidcastConfigPath(kUserPluginDir);
+	std::error_code ec;
+	if (in.userRoot.empty()) {
+		HostLog("[obs] user plugins: none (config dir unresolved)");
+	} else if (!std::filesystem::is_directory(std::filesystem::u8path(in.userRoot), ec)) {
+		HostLog("[obs] user plugins: none (" + in.userRoot + " does not exist)");
+	} else {
+		in.userEntries = ScanUserPlugins(in.userRoot);
+		HostLog("[obs] user plugins: " + std::to_string(in.userEntries.size()) + " entries in " + in.userRoot);
+	}
+	if (userPlugins == ModulePlan::UserPlugins::SkipSmokeRun) {
+		HostLog("[obs] user plugins skipped (smoke run)");
+	} else if (userPlugins == ModulePlan::UserPlugins::SkipSelfTestRun) {
+		HostLog("[obs] user plugins skipped (self-test run)");
+	}
+
+	const std::vector<ModulePlan::Entry> plan = ModulePlan::Plan(in, kDenylist, kNonModuleDlls, userPlugins);
+
+	std::vector<std::string> loadedBundled, loadedUser, overridden, initFailed, openFailed, skippedDeny,
+		skippedHelper, skippedUser, ignoredUser;
+	for (const ModulePlan::Entry &e : plan) {
+		const bool isUser = e.origin == ModulePlan::Origin::User;
+		// A user plugin is tagged in every summary list, so a failure names which copy failed.
+		const std::string label = isUser ? e.name + "(user)" : e.name;
+		switch (e.action) {
+		case ModulePlan::Action::Load:
+			break;
+		case ModulePlan::Action::SkipDenylist:
+			skippedDeny.push_back(label);
+			HostLog("[obs] module " + label + " skipped (" + e.reason + ")");
+			continue;
+		case ModulePlan::Action::SkipHelper:
+			skippedHelper.push_back(label);
+			if (isUser) {
+				HostLog("[obs] user plugin " + e.name + " skipped (" + e.reason + ")");
+			}
+			continue;
+		case ModulePlan::Action::SkipOverridden:
+			overridden.push_back(e.name);
+			blog(LOG_WARNING, "[obs] module %s: user plugin %s overrides the bundled one (%s)",
+			     e.name.c_str(), e.counterpartPath.c_str(), e.binPath.c_str());
+			continue;
+		case ModulePlan::Action::SkipUserPlugins:
+			skippedUser.push_back(e.name);
+			HostLog("[obs] user plugin " + e.name + " skipped (" + e.reason + ")");
+			continue;
+		case ModulePlan::Action::IgnoreMalformed:
+		case ModulePlan::Action::IgnoreDuplicate:
+			ignoredUser.push_back(e.name);
+			HostLog("[obs] user plugin entry '" + e.name + "' ignored (" + e.reason + ")");
 			continue;
 		}
-		if (kNonModuleDlls.count(lname)) {
-			skippedHelper.push_back(name);
-			continue;
-		}
 
-		const std::string fullPath = moduleDir + file;
-		const std::string dataPath = dataRoot + name + "/";
+		// An overriding user plugin that fails leaves its module absent: the bundled copy
+		// is never opened as a fallback, so the warning says how to get it back.
+		const std::string origin = isUser ? " (user plugin " + e.binPath + ")" : std::string();
+		const std::string recovery = e.counterpartPath.empty()
+						     ? std::string()
+						     : "; the bundled copy is not loaded either -- remove the user "
+						       "plugin or start with --safe-mode";
 
 		obs_module_t *mod = nullptr;
-		const int r = obs_open_module(&mod, fullPath.c_str(), dataPath.c_str());
+		const int r = obs_open_module(&mod, e.binPath.c_str(), e.dataPath.c_str());
 		if (r != MODULE_SUCCESS || !mod) {
-			openFailed.push_back(name);
+			openFailed.push_back(label);
 			// WARNING, not HostLog's INFO: a curated module that silently fails to
 			// open ships the app with a missing encoder/source/output and nothing
 			// to point at (finding G6).
-			blog(LOG_WARNING, "[obs] module '%s' open-failed (code=%d, likely non-module)", name.c_str(),
-			     r);
+			blog(LOG_WARNING, "[obs] module '%s' open-failed (code=%d, likely non-module)%s%s",
+			     e.name.c_str(), r, origin.c_str(), recovery.c_str());
 			continue;
 		}
 		if (obs_init_module(mod)) {
-			loaded.push_back(name);
-			HostLog("[obs] module " + name + " loaded");
+			(isUser ? loadedUser : loadedBundled).push_back(e.name);
+			HostLog("[obs] module " + e.name + " loaded" + origin);
 		} else {
-			initFailed.push_back(name);
-			blog(LOG_WARNING, "[obs] module '%s' init-failed (obs_init_module returned false)",
-			     name.c_str());
+			initFailed.push_back(label);
+			blog(LOG_WARNING, "[obs] module '%s' init-failed (obs_init_module returned false)%s%s",
+			     e.name.c_str(), origin.c_str(), recovery.c_str());
 		}
-	} while (FindNextFileA(h, &fd));
-	FindClose(h);
+	}
 
 	// warnIfAny promotes a non-empty failure category from HostLog's always-on
 	// INFO to WARNING, so a scan for warnings alone surfaces the disposition
@@ -284,11 +403,15 @@ void LoadCuratedModules()
 			HostLog(line);
 		}
 	};
-	joinList("loaded", loaded, false);
+	joinList("loaded bundled", loadedBundled, false);
+	joinList("loaded user", loadedUser, false);
+	joinList("bundled overridden by user plugin", overridden, false);
 	joinList("init-failed (environmental)", initFailed, true);
 	joinList("open-failed/non-module", openFailed, true);
 	joinList("skipped denylist", skippedDeny, false);
 	joinList("skipped helper-dll", skippedHelper, false);
+	joinList("user plugins not loaded this session", skippedUser, false);
+	joinList("user plugin entries ignored", ignoredUser, false);
 }
 
 // Functional probes: create-then-release one of each core object kind to confirm

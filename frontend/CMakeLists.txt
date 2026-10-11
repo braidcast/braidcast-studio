@@ -113,6 +113,9 @@ target_sources(
     src/util/properties_serializer.hpp
     src/obs_bootstrap.cpp
     src/obs_bootstrap.hpp
+    # Which plugin DLL loads per module name: bundled vs. the user plugin folder.
+    src/module_plan.cpp
+    src/module_plan.hpp
     src/obs_importer.cpp
     src/obs_importer.hpp
     src/settings/GeneralSettings.cpp
