@@ -580,6 +580,13 @@ void RunFilterPreviewSelfTest();
 // color source. Nothing is added to a scene or rendered, and everything is released.
 // Gated by the caller to the smoke path.
 void RunCompositeBlurSelfTest();
+// Headless proof for the user plugin rules (ModulePlan::Plan), driven with synthetic
+// inputs and no filesystem: a user-only plugin loads from its own bin/64bit; a user plugin
+// replaces a same-name bundled module (case-insensitively), which is then never opened;
+// the denylist and helper list apply to user plugins; safe mode skips every user plugin
+// and loads the bundled twin; a malformed or duplicate entry is ignored. Opens nothing.
+// Gated by the caller to the smoke path.
+void RunUserPluginsSelfTest();
 // Headless proof for hotkeys: drive hotkeys.list (expect > 0, including the
 // frontend Start/Stop Streaming), then a hotkeys.set -> hotkeys.list round-trip on
 // one hotkey (bind Ctrl+Shift+F12 via a {code:"F12",ctrl,shift} call, confirm it

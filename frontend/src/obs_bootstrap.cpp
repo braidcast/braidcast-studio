@@ -9700,6 +9700,186 @@ void ObsBootstrap::RunCompositeBlurSelfTest()
 	      "attached=" + std::to_string(attached) + " detached=" + std::to_string(detached));
 }
 
+void ObsBootstrap::RunUserPluginsSelfTest()
+{
+	using ModulePlan::Action;
+	using ModulePlan::Entry;
+	using ModulePlan::Origin;
+	using ModulePlan::UserEntry;
+	using ModulePlan::UserPlugins;
+
+	auto check = [](const std::string &label, bool pass, const std::string &detail) {
+		HostLog("[selftest] user-plugins " + label + " -> " + (pass ? "OK" : "FAIL") +
+			(detail.empty() ? std::string() : " (" + detail + ")"));
+	};
+
+	// Synthetic roots: nothing here touches the disk, the paths only have to come back out.
+	auto inputs = [](std::vector<std::string> bundled, std::vector<UserEntry> user) {
+		ModulePlan::Inputs in;
+		in.bundledBinDir = "C:/rundir/obs-plugins/64bit";
+		in.bundledDataRoot = "C:/rundir/data/obs-plugins";
+		in.bundledDlls = std::move(bundled);
+		in.userRoot = "C:/config/plugins";
+		in.userEntries = std::move(user);
+		return in;
+	};
+	auto plugin = [](const std::string &name) {
+		UserEntry u;
+		u.name = name;
+		u.isDirectory = true;
+		u.hasModuleDll = true;
+		return u;
+	};
+	auto plan = [](const ModulePlan::Inputs &in, UserPlugins userPlugins) {
+		return ModulePlan::Plan(in, kDenylist, kNonModuleDlls, userPlugins);
+	};
+	auto find = [](const std::vector<Entry> &p, const std::string &name, Origin origin) -> const Entry * {
+		for (const Entry &e : p) {
+			if (e.name == name && e.origin == origin) {
+				return &e;
+			}
+		}
+		return nullptr;
+	};
+	auto loads = [](const std::vector<Entry> &p, const std::string &name) {
+		return std::count_if(p.begin(), p.end(), [&name](const Entry &e) {
+			return e.action == Action::Load && StringUtil::EqualsCI(e.name, name);
+		});
+	};
+	// The invariants every plan holds: each input appears exactly once, and no module name
+	// is opened twice.
+	auto wellFormed = [](const ModulePlan::Inputs &in, const std::vector<Entry> &p) {
+		if (p.size() != in.bundledDlls.size() + in.userEntries.size()) {
+			return false;
+		}
+		std::set<std::string> opened;
+		for (const Entry &e : p) {
+			if (e.action == Action::Load && !opened.insert(StringUtil::ToLower(e.name)).second) {
+				return false;
+			}
+		}
+		return true;
+	};
+	auto describe = [](const std::vector<Entry> &p) {
+		auto actionName = [](Action a) {
+			switch (a) {
+			case Action::Load:
+				return "load";
+			case Action::SkipDenylist:
+				return "denylist";
+			case Action::SkipHelper:
+				return "helper";
+			case Action::SkipOverridden:
+				return "overridden";
+			case Action::SkipUserPlugins:
+				return "skipped";
+			case Action::IgnoreMalformed:
+				return "malformed";
+			case Action::IgnoreDuplicate:
+				return "duplicate";
+			}
+			return "?";
+		};
+		std::string out;
+		for (const Entry &e : p) {
+			out += (out.empty() ? "" : ", ") + e.name +
+			       (e.origin == Origin::User ? "/user=" : "/bundled=") + actionName(e.action);
+		}
+		return out;
+	};
+
+	{
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll"}, {plugin("my-filter")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "my-filter", Origin::User);
+		const Entry *bundled = find(p, "obs-x264", Origin::Bundled);
+		check("user-only",
+		      wellFormed(in, p) && user && user->action == Action::Load &&
+			      user->binPath == "C:/config/plugins/my-filter/bin/64bit/my-filter.dll" &&
+			      user->dataPath == "C:/config/plugins/my-filter/data/" && user->counterpartPath.empty() &&
+			      bundled && bundled->action == Action::Load,
+		      describe(p));
+	}
+
+	{
+		// Mixed case on the user side: the override compares names case-insensitively.
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll", "obs-composite-blur.dll", "win-capture.dll"},
+						     {plugin("OBS-Composite-Blur")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "OBS-Composite-Blur", Origin::User);
+		const Entry *bundled = find(p, "obs-composite-blur", Origin::Bundled);
+		const bool paired =
+			user && bundled && user->action == Action::Load && bundled->action == Action::SkipOverridden &&
+			user->counterpartPath == bundled->binPath && bundled->counterpartPath == user->binPath;
+		// The replacement takes the bundled module's slot in the load order.
+		const bool inSlot = p.size() == 4 && &p[1] == bundled && &p[2] == user;
+		check("override", wellFormed(in, p) && paired && inSlot && loads(p, "obs-composite-blur") == 1,
+		      describe(p));
+	}
+
+	{
+		const ModulePlan::Inputs in = inputs({"obs-websocket.dll"}, {plugin("obs-websocket"), plugin("libcef"),
+									     plugin("OBS-WebSocket2")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *denied = find(p, "obs-websocket", Origin::User);
+		const Entry *helper = find(p, "libcef", Origin::User);
+		check("denylist",
+		      wellFormed(in, p) && denied && denied->action == Action::SkipDenylist && helper &&
+			      helper->action == Action::SkipHelper && loads(p, "obs-websocket") == 0 &&
+			      loads(p, "libcef") == 0 && loads(p, "OBS-WebSocket2") == 1,
+		      describe(p));
+	}
+
+	// Safe mode and unattended runs open no user plugin, and the bundled twin of one that
+	// would have overridden it loads as if the user plugin were absent.
+	const std::pair<const char *, UserPlugins> skips[] = {
+		{"safe-mode", UserPlugins::SkipSafeMode},
+		{"smoke-run", UserPlugins::SkipSmokeRun},
+		{"selftest-run", UserPlugins::SkipSelfTestRun},
+	};
+	for (const auto &[label, userPlugins] : skips) {
+		const ModulePlan::Inputs in =
+			inputs({"obs-composite-blur.dll"}, {plugin("obs-composite-blur"), plugin("my-filter")});
+		const std::vector<Entry> p = plan(in, userPlugins);
+		const bool noUserLoads = std::none_of(p.begin(), p.end(), [](const Entry &e) {
+			return e.origin == Origin::User && e.action != Action::SkipUserPlugins;
+		});
+		const Entry *bundled = find(p, "obs-composite-blur", Origin::Bundled);
+		check(label,
+		      wellFormed(in, p) && noUserLoads && bundled && bundled->action == Action::Load &&
+			      bundled->counterpartPath.empty(),
+		      describe(p));
+	}
+
+	{
+		UserEntry stray;
+		stray.name = "readme.txt";
+		UserEntry empty;
+		empty.name = "half-unzipped";
+		empty.isDirectory = true;
+		const ModulePlan::Inputs in = inputs({}, {stray, empty, plugin("my-filter")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *a = find(p, "readme.txt", Origin::User);
+		const Entry *b = find(p, "half-unzipped", Origin::User);
+		check("malformed",
+		      wellFormed(in, p) && a && a->action == Action::IgnoreMalformed && a->binPath.empty() && b &&
+			      b->action == Action::IgnoreMalformed && b->binPath.empty() && loads(p, "my-filter") == 1,
+		      describe(p));
+	}
+
+	{
+		// Only reachable on a case-sensitive directory, but the plan must still never open
+		// one module name twice.
+		const ModulePlan::Inputs in = inputs({}, {plugin("my-filter"), plugin("MY-FILTER")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *second = find(p, "MY-FILTER", Origin::User);
+		check("duplicate",
+		      wellFormed(in, p) && loads(p, "my-filter") == 1 && second &&
+			      second->action == Action::IgnoreDuplicate,
+		      describe(p));
+	}
+}
+
 void ObsBootstrap::RunAudioMixerSelfTest()
 {
 	using Bridge::json;
