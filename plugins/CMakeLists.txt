@@ -27,7 +27,8 @@ endmacro()
 
 # Composite Blur (FiniteSingularity/obs-composite-blur) builds through upstream's own CMakeLists, whose in-tree branch
 # calls set_target_properties_obs, so the DLL and data/ install like any other plugin. A function, not a macro, so the
-# warnings-as-errors override stays scoped to it: its warnings are upstream's to fix. Windows only, as the app is.
+# compile warnings-as-errors override stays scoped to it: its compiler warnings are upstream's to fix. Linker /WX from
+# cmake/windows/compilerconfig.cmake still applies. Windows only, as the app is.
 function(check_obs_composite_blur)
   if(OS_WINDOWS)
     require_submodule(obs-composite-blur)
