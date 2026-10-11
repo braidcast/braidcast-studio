@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
@@ -231,37 +232,60 @@ bool LaunchedWithFlag(const wchar_t *flag)
 	return found;
 }
 
-// Every *.dll directly in `dir`, by file name, in directory order. std::filesystem
-// enumerates with the wide API, so a non-ASCII install path still lists.
+// A directory entry's file name in UTF-8, and whether it survived the conversion. Never
+// throws: MSVC's path::u8string() throws on a name holding an unpaired UTF-16 surrogate,
+// which any file dropped into the user plugin folder could have, and would then end the
+// process on every launch. WideToUtf8 substitutes U+FFFD instead, so a name that changed
+// on the round trip is reported as not convertible.
+std::string Utf8FileName(const std::filesystem::path &p, bool &valid)
+{
+	const std::wstring wide = p.filename().wstring();
+	std::string utf8 = Encoding::WideToUtf8(wide.c_str());
+	valid = !utf8.empty() && Encoding::Utf8ToWide(utf8) == wide;
+	return utf8;
+}
+
+// Every *.dll directly in `dir`, by file name, in directory order. Wide enumeration, so a
+// non-ASCII install path still lists, and no conversion that can throw.
 std::vector<std::string> ListDlls(const std::string &dir)
 {
 	namespace fs = std::filesystem;
 	std::vector<std::string> files;
 	std::error_code ec;
-	for (fs::directory_iterator it(fs::u8path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+	for (fs::directory_iterator it(fs::path(Encoding::Utf8ToWide(dir)), ec), end; !ec && it != end;
+	     it.increment(ec)) {
 		std::error_code typeEc;
-		if (it->is_regular_file(typeEc) && StringUtil::EqualsCI(it->path().extension().u8string(), ".dll")) {
-			files.push_back(it->path().filename().u8string());
+		if (!it->is_regular_file(typeEc) || _wcsicmp(it->path().extension().c_str(), L".dll") != 0) {
+			continue;
+		}
+		bool valid = false;
+		std::string name = Utf8FileName(it->path(), valid);
+		if (valid) {
+			files.push_back(std::move(name));
+		} else {
+			HostLog("[obs] bundled file '" + name + "' skipped (name is not valid Unicode)");
 		}
 	}
 	return files;
 }
 
 // What sits directly under the user plugin root. Reports facts only; ModulePlan decides
-// which entries have the accepted shape. Wide enumeration, so a non-ASCII profile path
-// still lists.
+// which entries have the accepted shape. Wide paths throughout, so a non-ASCII profile
+// path still lists and no entry name can throw.
 std::vector<ModulePlan::UserEntry> ScanUserPlugins(const std::string &root)
 {
 	namespace fs = std::filesystem;
 	std::vector<ModulePlan::UserEntry> entries;
 	std::error_code ec;
-	for (fs::directory_iterator it(fs::u8path(root), ec), end; !ec && it != end; it.increment(ec)) {
+	for (fs::directory_iterator it(fs::path(Encoding::Utf8ToWide(root)), ec), end; !ec && it != end;
+	     it.increment(ec)) {
 		ModulePlan::UserEntry u;
-		u.name = it->path().filename().u8string();
+		u.name = Utf8FileName(it->path(), u.validName);
 		std::error_code typeEc;
 		u.isDirectory = it->is_directory(typeEc);
 		if (u.isDirectory) {
-			const fs::path dll = it->path() / "bin" / "64bit" / fs::u8path(u.name + ".dll");
+			const fs::path dll =
+				it->path() / L"bin" / L"64bit" / (it->path().filename().wstring() + L".dll");
 			u.hasModuleDll = fs::is_regular_file(dll, typeEc);
 		}
 		entries.push_back(std::move(u));
@@ -273,25 +297,47 @@ std::vector<ModulePlan::UserEntry> ScanUserPlugins(const std::string &root)
 // depend on what a developer happens to have installed.
 ModulePlan::UserPlugins ResolveUserPlugins(bool safeMode)
 {
-	if (Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
-		return ModulePlan::UserPlugins::SkipSmokeRun;
-	}
 	if (Env::IsSelfTestRun()) {
 		return ModulePlan::UserPlugins::SkipSelfTestRun;
 	}
 	return safeMode ? ModulePlan::UserPlugins::SkipSafeMode : ModulePlan::UserPlugins::Load;
 }
 
+// What an obs_open_module failure code means, worded for the log.
+const char *ModuleOpenFailure(int code)
+{
+	switch (code) {
+	case MODULE_FAILED_TO_OPEN:
+		return "the DLL or a DLL it imports could not be loaded; a plugin built for OBS's Qt "
+		       "frontend needs Qt6 DLLs this app does not ship";
+	case MODULE_MISSING_EXPORTS:
+		return "not an OBS module: missing exports";
+	case MODULE_INCOMPATIBLE_VER:
+		return "built against a newer libobs than this app's";
+	case MODULE_HARDCODED_SKIP:
+		return "skipped by libobs";
+	default:
+		return "unknown error";
+	}
+}
+
 // Curated full-set load: every *.dll in obs-plugins/64bit/ plus every user plugin under
 // <config dir>/plugins/<name>/bin/64bit/, minus the denylist and non-module helper DLLs,
-// with a user plugin replacing a bundled module of the same name (ModulePlan decides all
-// of that). obs_open_module + obs_init_module each planned module with its data path, then
-// log a per-module result and a final disposition summary. Runs once at startup, before
-// obs_post_load_modules and the scene collection, so a user plugin's source ids exist
+// with a user plugin replacing a bundled module of exactly the same name (ModulePlan
+// decides all of that). obs_open_module + obs_init_module each planned module with its data
+// path, then log a per-module result and a final disposition summary. Runs once at startup,
+// before obs_post_load_modules and the scene collection, so a user plugin's source ids exist
 // when a saved collection references them.
 void LoadCuratedModules()
 {
-	const std::string root = RundirRoot();
+	// One separator in every path this logs or hands to libobs; the roots come from Win32
+	// with backslashes and get forward-slash suffixes appended.
+	auto forwardSlashes = [](std::string path) {
+		std::replace(path.begin(), path.end(), '\\', '/');
+		return path;
+	};
+
+	const std::string root = forwardSlashes(RundirRoot());
 	ModulePlan::Inputs in;
 	in.bundledBinDir = root + "/obs-plugins/64bit";
 	in.bundledDataRoot = root + "/data/obs-plugins";
@@ -306,27 +352,26 @@ void LoadCuratedModules()
 	}
 	const ModulePlan::UserPlugins userPlugins = ResolveUserPlugins(safeMode);
 
-	// A missing root is the normal install: logged, never created.
-	in.userRoot = BraidcastConfigPath(kUserPluginDir);
+	// A launch that opens no user plugin does not read the folder either, so nothing in it
+	// can affect safe mode. A missing root is the normal install: logged, never created.
+	in.userRoot = forwardSlashes(BraidcastConfigPath(kUserPluginDir));
 	std::error_code ec;
-	if (in.userRoot.empty()) {
+	if (userPlugins != ModulePlan::UserPlugins::Load) {
+		HostLog(std::string("[obs] user plugins skipped (") + ModulePlan::SkipReason(userPlugins) +
+			"); not reading " + in.userRoot);
+	} else if (in.userRoot.empty()) {
 		HostLog("[obs] user plugins: none (config dir unresolved)");
-	} else if (!std::filesystem::is_directory(std::filesystem::u8path(in.userRoot), ec)) {
+	} else if (!std::filesystem::is_directory(std::filesystem::path(Encoding::Utf8ToWide(in.userRoot)), ec)) {
 		HostLog("[obs] user plugins: none (" + in.userRoot + " does not exist)");
 	} else {
 		in.userEntries = ScanUserPlugins(in.userRoot);
 		HostLog("[obs] user plugins: " + std::to_string(in.userEntries.size()) + " entries in " + in.userRoot);
 	}
-	if (userPlugins == ModulePlan::UserPlugins::SkipSmokeRun) {
-		HostLog("[obs] user plugins skipped (smoke run)");
-	} else if (userPlugins == ModulePlan::UserPlugins::SkipSelfTestRun) {
-		HostLog("[obs] user plugins skipped (self-test run)");
-	}
 
 	const std::vector<ModulePlan::Entry> plan = ModulePlan::Plan(in, kDenylist, kNonModuleDlls, userPlugins);
 
 	std::vector<std::string> loadedBundled, loadedUser, overridden, initFailed, openFailed, skippedDeny,
-		skippedHelper, skippedUser, ignoredUser;
+		skippedHelper, skippedUser, ignored;
 	for (const ModulePlan::Entry &e : plan) {
 		const bool isUser = e.origin == ModulePlan::Origin::User;
 		// A user plugin is tagged in every summary list, so a failure names which copy failed.
@@ -353,20 +398,29 @@ void LoadCuratedModules()
 			skippedUser.push_back(e.name);
 			HostLog("[obs] user plugin " + e.name + " skipped (" + e.reason + ")");
 			continue;
+		case ModulePlan::Action::SkipCaseMismatch:
+			skippedUser.push_back(e.name);
+			blog(LOG_WARNING, "[obs] user plugin %s not loaded, the bundled %s loads instead: %s",
+			     e.binPath.c_str(), e.counterpartPath.c_str(), e.reason.c_str());
+			continue;
 		case ModulePlan::Action::IgnoreMalformed:
 		case ModulePlan::Action::IgnoreDuplicate:
-			ignoredUser.push_back(e.name);
-			HostLog("[obs] user plugin entry '" + e.name + "' ignored (" + e.reason + ")");
+			ignored.push_back(label);
+			HostLog(std::string(isUser ? "[obs] user plugin entry '" : "[obs] bundled module '") + e.name +
+				"' ignored (" + e.reason + ")");
 			continue;
 		}
 
-		// An overriding user plugin that fails leaves its module absent: the bundled copy
-		// is never opened as a fallback, so the warning says how to get it back.
+		// An overriding user plugin that fails leaves its module missing, because the
+		// bundled copy is never opened as a fallback, so the warning says how to get it back.
 		const std::string origin = isUser ? " (user plugin " + e.binPath + ")" : std::string();
 		const std::string recovery = e.counterpartPath.empty()
 						     ? std::string()
-						     : "; the bundled copy is not loaded either -- remove the user "
-						       "plugin or start with --safe-mode";
+						     : "; " + e.name +
+							       " is missing this session because the bundled "
+							       "copy is not loaded in its place -- remove " +
+							       in.userRoot + "/" + e.name +
+							       " or start with --safe-mode to use the bundled one";
 
 		obs_module_t *mod = nullptr;
 		const int r = obs_open_module(&mod, e.binPath.c_str(), e.dataPath.c_str());
@@ -375,8 +429,8 @@ void LoadCuratedModules()
 			// WARNING, not HostLog's INFO: a curated module that silently fails to
 			// open ships the app with a missing encoder/source/output and nothing
 			// to point at (finding G6).
-			blog(LOG_WARNING, "[obs] module '%s' open-failed (code=%d, likely non-module)%s%s",
-			     e.name.c_str(), r, origin.c_str(), recovery.c_str());
+			blog(LOG_WARNING, "[obs] module '%s' open-failed (code=%d: %s)%s%s", e.name.c_str(), r,
+			     ModuleOpenFailure(r), origin.c_str(), recovery.c_str());
 			continue;
 		}
 		if (obs_init_module(mod)) {
@@ -407,11 +461,11 @@ void LoadCuratedModules()
 	joinList("loaded user", loadedUser, false);
 	joinList("bundled overridden by user plugin", overridden, false);
 	joinList("init-failed (environmental)", initFailed, true);
-	joinList("open-failed/non-module", openFailed, true);
+	joinList("open-failed", openFailed, true);
 	joinList("skipped denylist", skippedDeny, false);
 	joinList("skipped helper-dll", skippedHelper, false);
-	joinList("user plugins not loaded this session", skippedUser, false);
-	joinList("user plugin entries ignored", ignoredUser, false);
+	joinList("user plugins not loaded", skippedUser, false);
+	joinList("ignored", ignored, false);
 }
 
 // Functional probes: create-then-release one of each core object kind to confirm
@@ -9746,15 +9800,36 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 			return e.action == Action::Load && StringUtil::EqualsCI(e.name, name);
 		});
 	};
-	// The invariants every plan holds: each input appears exactly once, and no module name
-	// is opened twice.
+	// The invariants every plan holds: each input appears exactly once; no module name is
+	// opened twice; a bundled name that loads, loads under exactly its bundled spelling; and
+	// every user entry except an override's replacement comes after every bundled entry, which
+	// is what lets a bundled module register first and win an id clash.
 	auto wellFormed = [](const ModulePlan::Inputs &in, const std::vector<Entry> &p) {
 		if (p.size() != in.bundledDlls.size() + in.userEntries.size()) {
 			return false;
 		}
 		std::set<std::string> opened;
-		for (const Entry &e : p) {
+		std::map<std::string, std::string> bundledSpelling;
+		size_t lastBundled = 0;
+		for (size_t i = 0; i < p.size(); ++i) {
+			const Entry &e = p[i];
+			if (e.origin == Origin::Bundled) {
+				lastBundled = i;
+				bundledSpelling.emplace(StringUtil::ToLower(e.name), e.name);
+			}
 			if (e.action == Action::Load && !opened.insert(StringUtil::ToLower(e.name)).second) {
+				return false;
+			}
+		}
+		for (size_t i = 0; i < p.size(); ++i) {
+			const Entry &e = p[i];
+			const bool replacement = e.origin == Origin::User && e.action == Action::Load &&
+						 !e.counterpartPath.empty();
+			if (e.origin == Origin::User && !replacement && i < lastBundled) {
+				return false;
+			}
+			const auto twin = bundledSpelling.find(StringUtil::ToLower(e.name));
+			if (e.action == Action::Load && twin != bundledSpelling.end() && twin->second != e.name) {
 				return false;
 			}
 		}
@@ -9773,6 +9848,8 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 				return "overridden";
 			case Action::SkipUserPlugins:
 				return "skipped";
+			case Action::SkipCaseMismatch:
+				return "case-mismatch";
 			case Action::IgnoreMalformed:
 				return "malformed";
 			case Action::IgnoreDuplicate:
@@ -9789,7 +9866,7 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 	};
 
 	{
-		const ModulePlan::Inputs in = inputs({"obs-x264.dll"}, {plugin("my-filter")});
+		const ModulePlan::Inputs in = inputs({"obs-x264.dll", "win-capture.dll"}, {plugin("my-filter")});
 		const std::vector<Entry> p = plan(in, UserPlugins::Load);
 		const Entry *user = find(p, "my-filter", Origin::User);
 		const Entry *bundled = find(p, "obs-x264", Origin::Bundled);
@@ -9797,16 +9874,17 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 		      wellFormed(in, p) && user && user->action == Action::Load &&
 			      user->binPath == "C:/config/plugins/my-filter/bin/64bit/my-filter.dll" &&
 			      user->dataPath == "C:/config/plugins/my-filter/data/" && user->counterpartPath.empty() &&
-			      bundled && bundled->action == Action::Load,
+			      bundled && bundled->action == Action::Load &&
+			      bundled->binPath == "C:/rundir/obs-plugins/64bit/obs-x264.dll" &&
+			      bundled->dataPath == "C:/rundir/data/obs-plugins/obs-x264/" && &p.back() == user,
 		      describe(p));
 	}
 
 	{
-		// Mixed case on the user side: the override compares names case-insensitively.
 		const ModulePlan::Inputs in = inputs({"obs-x264.dll", "obs-composite-blur.dll", "win-capture.dll"},
-						     {plugin("OBS-Composite-Blur")});
+						     {plugin("obs-composite-blur")});
 		const std::vector<Entry> p = plan(in, UserPlugins::Load);
-		const Entry *user = find(p, "OBS-Composite-Blur", Origin::User);
+		const Entry *user = find(p, "obs-composite-blur", Origin::User);
 		const Entry *bundled = find(p, "obs-composite-blur", Origin::Bundled);
 		const bool paired =
 			user && bundled && user->action == Action::Load && bundled->action == Action::SkipOverridden &&
@@ -9814,6 +9892,35 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 		// The replacement takes the bundled module's slot in the load order.
 		const bool inSlot = p.size() == 4 && &p[1] == bundled && &p[2] == user;
 		check("override", wellFormed(in, p) && paired && inSlot && loads(p, "obs-composite-blur") == 1,
+		      describe(p));
+	}
+
+	{
+		// A folder that matches a bundled module only case-insensitively would register the
+		// module under its own spelling, which libobs's case-sensitive name lookups miss, so
+		// the bundled module loads and the user plugin does not.
+		const ModulePlan::Inputs in =
+			inputs({"obs-composite-blur.dll", "win-capture.dll"}, {plugin("OBS-Composite-Blur")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *user = find(p, "OBS-Composite-Blur", Origin::User);
+		const Entry *bundled = find(p, "obs-composite-blur", Origin::Bundled);
+		check("case-mismatch",
+		      wellFormed(in, p) && user && user->action == Action::SkipCaseMismatch && bundled &&
+			      bundled->action == Action::Load && user->counterpartPath == bundled->binPath &&
+			      loads(p, "obs-composite-blur") == 1,
+		      describe(p));
+	}
+
+	{
+		// Only reachable on a case-sensitive directory: the later bundled spelling is ignored,
+		// and the user plugin that claims the name is placed once, not once per spelling.
+		const ModulePlan::Inputs in = inputs({"my-filter.dll", "MY-FILTER.dll"}, {plugin("my-filter")});
+		const std::vector<Entry> p = plan(in, UserPlugins::Load);
+		const Entry *second = find(p, "MY-FILTER", Origin::Bundled);
+		const Entry *user = find(p, "my-filter", Origin::User);
+		check("bundled-duplicate",
+		      wellFormed(in, p) && second && second->action == Action::IgnoreDuplicate && user &&
+			      user->action == Action::Load && loads(p, "my-filter") == 1,
 		      describe(p));
 	}
 
@@ -9834,7 +9941,6 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 	// would have overridden it loads as if the user plugin were absent.
 	const std::pair<const char *, UserPlugins> skips[] = {
 		{"safe-mode", UserPlugins::SkipSafeMode},
-		{"smoke-run", UserPlugins::SkipSmokeRun},
 		{"selftest-run", UserPlugins::SkipSelfTestRun},
 	};
 	for (const auto &[label, userPlugins] : skips) {
@@ -9857,14 +9963,14 @@ void ObsBootstrap::RunUserPluginsSelfTest()
 		UserEntry empty;
 		empty.name = "half-unzipped";
 		empty.isDirectory = true;
-		const ModulePlan::Inputs in = inputs({}, {stray, empty, plugin("my-filter")});
+		UserEntry unconvertible = plugin("bad?name");
+		unconvertible.validName = false;
+		const ModulePlan::Inputs in = inputs({}, {stray, empty, unconvertible, plugin("my-filter")});
 		const std::vector<Entry> p = plan(in, UserPlugins::Load);
-		const Entry *a = find(p, "readme.txt", Origin::User);
-		const Entry *b = find(p, "half-unzipped", Origin::User);
-		check("malformed",
-		      wellFormed(in, p) && a && a->action == Action::IgnoreMalformed && a->binPath.empty() && b &&
-			      b->action == Action::IgnoreMalformed && b->binPath.empty() && loads(p, "my-filter") == 1,
-		      describe(p));
+		const bool allIgnored = std::all_of(p.begin(), p.end(), [](const Entry &e) {
+			return e.name == "my-filter" || (e.action == Action::IgnoreMalformed && e.binPath.empty());
+		});
+		check("malformed", wellFormed(in, p) && allIgnored && loads(p, "my-filter") == 1, describe(p));
 	}
 
 	{

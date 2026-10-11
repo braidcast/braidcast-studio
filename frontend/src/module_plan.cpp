@@ -14,21 +14,6 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
-const char *SkipUserPluginsReason(UserPlugins userPlugins)
-{
-	switch (userPlugins) {
-	case UserPlugins::SkipSafeMode:
-		return "safe mode";
-	case UserPlugins::SkipSmokeRun:
-		return "smoke run";
-	case UserPlugins::SkipSelfTestRun:
-		return "self-test run";
-	case UserPlugins::Load:
-		break;
-	}
-	return "";
-}
-
 // Applies the name-based skips shared by both origins. Returns false when the entry is
 // skipped, with its action and reason set.
 bool PassesNameFilters(Entry &e, const std::string &lname, const std::set<std::string> &denylist,
@@ -47,21 +32,42 @@ bool PassesNameFilters(Entry &e, const std::string &lname, const std::set<std::s
 	return true;
 }
 
+const char *kSameNameReason = "an earlier entry has the same name";
+
 } // namespace
+
+const char *SkipReason(UserPlugins userPlugins)
+{
+	switch (userPlugins) {
+	case UserPlugins::SkipSafeMode:
+		return "safe mode";
+	case UserPlugins::SkipSelfTestRun:
+		return "smoke or self-test run";
+	case UserPlugins::Load:
+		break;
+	}
+	return "";
+}
 
 std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
 			const std::set<std::string> &nonModuleDlls, UserPlugins userPlugins)
 {
 	// Settle every user entry first, so the bundled pass can ask which names a user
-	// plugin claims. `overrides` maps a lowercased name to the user plugin that would
-	// load under it.
+	// plugin claims. `claims` maps a lowercased name to the user plugin that would load
+	// under it.
 	std::vector<Entry> user;
-	std::map<std::string, size_t> overrides;
-	std::set<std::string> seen;
+	std::map<std::string, size_t> claims;
+	std::set<std::string> userSeen;
 	for (const UserEntry &u : in.userEntries) {
 		Entry e;
 		e.name = u.name;
 		e.origin = Origin::User;
+		if (!u.validName) {
+			e.action = Action::IgnoreMalformed;
+			e.reason = "name is not valid Unicode";
+			user.push_back(std::move(e));
+			continue;
+		}
 		if (!u.isDirectory || !u.hasModuleDll) {
 			e.action = Action::IgnoreMalformed;
 			e.reason = u.isDirectory ? "no bin/64bit/" + u.name + ".dll inside"
@@ -74,16 +80,16 @@ std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
 		const std::string dir = in.userRoot + "/" + u.name;
 		e.binPath = dir + "/bin/64bit/" + u.name + ".dll";
 		e.dataPath = dir + "/data/";
-		if (!seen.insert(lname).second) {
+		if (!userSeen.insert(lname).second) {
 			e.action = Action::IgnoreDuplicate;
-			e.reason = "an earlier user plugin has the same name";
+			e.reason = kSameNameReason;
 		} else if (PassesNameFilters(e, lname, denylist, nonModuleDlls)) {
 			if (userPlugins != UserPlugins::Load) {
 				e.action = Action::SkipUserPlugins;
-				e.reason = SkipUserPluginsReason(userPlugins);
+				e.reason = SkipReason(userPlugins);
 			} else {
 				e.action = Action::Load;
-				overrides[lname] = user.size();
+				claims[lname] = user.size();
 			}
 		}
 		user.push_back(std::move(e));
@@ -91,6 +97,7 @@ std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
 
 	std::vector<Entry> plan;
 	std::vector<bool> placed(user.size(), false);
+	std::set<std::string> bundledSeen;
 	for (const std::string &file : in.bundledDlls) {
 		Entry e;
 		e.name = BaseNameNoExt(file);
@@ -99,27 +106,42 @@ std::vector<Entry> Plan(const Inputs &in, const std::set<std::string> &denylist,
 		e.dataPath = in.bundledDataRoot + "/" + e.name + "/";
 
 		const std::string lname = StringUtil::ToLower(e.name);
+		if (!bundledSeen.insert(lname).second) {
+			e.action = Action::IgnoreDuplicate;
+			e.reason = kSameNameReason;
+			plan.push_back(std::move(e));
+			continue;
+		}
 		if (!PassesNameFilters(e, lname, denylist, nonModuleDlls)) {
 			plan.push_back(std::move(e));
 			continue;
 		}
 
-		const auto twin = overrides.find(lname);
-		if (twin == overrides.end()) {
-			e.action = Action::Load;
+		e.action = Action::Load;
+		const auto claim = claims.find(lname);
+		if (claim == claims.end()) {
 			plan.push_back(std::move(e));
 			continue;
 		}
 
-		Entry &replacement = user[twin->second];
+		Entry &replacement = user[claim->second];
+		replacement.counterpartPath = e.binPath;
+		if (replacement.name != e.name) {
+			// Left unplaced, so it follows the bundled entries like any other user entry.
+			replacement.action = Action::SkipCaseMismatch;
+			replacement.reason = "its name differs from the bundled module " + e.name +
+					     " only by case; rename the folder to " + e.name + " to override it";
+			plan.push_back(std::move(e));
+			continue;
+		}
+
 		e.action = Action::SkipOverridden;
 		e.reason = "replaced by a user plugin";
 		e.counterpartPath = replacement.binPath;
-		replacement.counterpartPath = e.binPath;
 		replacement.reason = "overrides the bundled module";
 		plan.push_back(std::move(e));
 		plan.push_back(replacement);
-		placed[twin->second] = true;
+		placed[claim->second] = true;
 	}
 
 	for (size_t i = 0; i < user.size(); ++i) {
