@@ -1983,6 +1983,17 @@ static inline bool init_shtex_capture(struct game_capture *gc)
 	return success;
 }
 
+/* The first hook minor versions that fill the frame generation ring: 1.9 copies
+ * before Present, and 1.11 also after it, for third-party overlay capture. */
+#define FGC_HOOK_MINOR 9
+#define FGC_OVERLAY_HOOK_MINOR 11
+
+static bool hook_predates_frame_gen_capture(const struct hook_info *info, bool capture_overlays)
+{
+	const uint32_t minor = capture_overlays ? FGC_OVERLAY_HOOK_MINOR : FGC_HOOK_MINOR;
+	return info->hook_ver_major < 1 || (info->hook_ver_major == 1 && info->hook_ver_minor < minor);
+}
+
 static bool start_capture(struct game_capture *gc)
 {
 	debug("Starting capture");
@@ -2012,11 +2023,18 @@ static bool start_capture(struct game_capture *gc)
 
 	if (gc->ring_count) {
 		info("frame generation capture: %" PRIu32 " slots", gc->ring_count);
+	} else if (gc->config.frame_gen_capture &&
+		   hook_predates_frame_gen_capture(gc->global_hook_info, gc->config.capture_overlays)) {
+		warn("frame generation capture is on, but the game holds hook %" PRIu32 ".%" PRIu32
+		     ", which predates frame generation capture%s; restart the game to load the current hook",
+		     gc->global_hook_info->hook_ver_major, gc->global_hook_info->hook_ver_minor,
+		     gc->config.capture_overlays ? " with third-party overlays" : "");
 	} else if (gc->config.frame_gen_capture) {
 		warn("frame generation capture is on, but the game's hook provides one texture. "
-		     "Possible causes: the game holds an older hook, the game is not Direct3D 12, "
-		     "the hook could not create the ring, or another source on this game turned the "
-		     "setting off");
+		     "Possible causes: the game is not Direct3D 12 (Direct3D 11, Vulkan and OpenGL have one "
+		     "texture), the hook could not create the ring (out of video memory: see the hook's "
+		     "\"Frame generation capture is not available (...)\" line), or another source on this "
+		     "game turned the setting off or changed \"Capture third-party overlays\"");
 	}
 
 	if (!gc->hook_counts_checked && !hook_counts_frames(gc->global_hook_info)) {

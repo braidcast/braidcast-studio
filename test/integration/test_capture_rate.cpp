@@ -994,6 +994,11 @@ static void test_fgc_hook_stats_line(void **)
 	s.lead_resyncs = 3;
 	s.ring_full = 4;
 	s.bucket_skips = 48;
+	s.no_index = 5;
+	s.not_consumed = 6;
+	s.phase_skips = 7;
+	s.overlap_skips = 8;
+	s.burst_skips = 9;
 	fgc_hook_stats_span(&s, 400000);
 	fgc_hook_stats_span(&s, 620000);
 	fgc_hook_stats_span(&s, 100000);
@@ -1012,7 +1017,8 @@ static void test_fgc_hook_stats_line(void **)
 		line,
 		"[10s] hook 10.0 s: presents 119.8/s copies 115.0/s, bursts 1:3 2:0 3:1 4:295 >4:2"
 		", step 8333 us, pace resets 1, lead clamps 2, lead resyncs 3, bucket skips 48, ring full 4"
-		", slot busy 0, copy fails 0, burst span max 620 us, burst gap min 24100 us, copy p50 225 p99 925 us");
+		", slot busy 0, copy fails 0, no index 5, not consumed 6, phase skips 7, overlap skips 8, burst skips 9"
+		", burst span max 620 us, burst gap min 24100 us, copy p50 225 p99 925 us");
 
 	// Slower than the last bin reads as its upper edge; no copies read 0.
 	struct fgc_hook_stats slow;

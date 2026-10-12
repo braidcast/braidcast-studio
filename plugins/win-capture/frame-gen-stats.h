@@ -45,6 +45,18 @@ struct fgc_hook_stats {
 	uint32_t ring_full;
 	uint32_t slot_busy;
 	uint32_t copy_fails;
+	/* Post-Present capture only: no pre-Present record for this swap chain, or
+	 * a Present that failed or did not hand over exactly the recorded buffer. */
+	uint32_t no_index;
+	uint32_t not_consumed;
+	/* Captures run on the other side of Present from the one the ring was
+	 * initialized for (the overlay setting changed under a running capture). */
+	uint32_t phase_skips;
+	/* Presents that found another thread's Present already in the ring. Counted
+	 * by an interlocked counter outside this struct and copied in at format time. */
+	uint32_t overlap_skips;
+	/* Copies that could race the buffer's next writer within the same burst. */
+	uint32_t burst_skips;
 	uint64_t span_max_ns;
 	/* From a burst's last Present to the next one's first; 0 until a burst
 	 * follows another. After a capped burst it is spacing inside the cluster
@@ -149,13 +161,15 @@ static inline int fgc_hook_stats_format(char *buf, size_t size, const struct fgc
 			" hook %" PRIu64 ".%" PRIu64 " s: presents %" PRIu64 ".%" PRIu64 "/s copies %" PRIu64
 			".%" PRIu64 "/s, bursts 1:%u 2:%u 3:%u 4:%u >4:%u"
 			", step %" PRIu64 " us, pace resets %u, lead clamps %u, lead resyncs %u"
-			", bucket skips %u, ring full %u, slot busy %u, copy fails %u, burst span max %" PRIu64
+			", bucket skips %u, ring full %u, slot busy %u, copy fails %u, no index %u, not consumed %u"
+			", phase skips %u, overlap skips %u, burst skips %u, burst span max %" PRIu64
 			" us, burst gap min %" PRIu64 " us, copy p50 %" PRIu64 " p99 %" PRIu64 " us",
 			window_x10 / 10, window_x10 % 10, presents / 10, presents % 10, copies / 10, copies % 10,
 			s->bursts[0], s->bursts[1], s->bursts[2], s->bursts[3], s->bursts_capped, step_ns / 1000,
 			s->pace_resets, s->lead_clamps, s->lead_resyncs, s->bucket_skips, s->ring_full, s->slot_busy,
-			s->copy_fails, s->span_max_ns / 1000, s->gap_min_ns / 1000,
-			fgc_hook_stats_copy_percentile_us(s, 50), fgc_hook_stats_copy_percentile_us(s, 99));
+			s->copy_fails, s->no_index, s->not_consumed, s->phase_skips, s->overlap_skips, s->burst_skips,
+			s->span_max_ns / 1000, s->gap_min_ns / 1000, fgc_hook_stats_copy_percentile_us(s, 50),
+			fgc_hook_stats_copy_percentile_us(s, 99));
 }
 
 static inline int fgc_ring_stats_format(char *buf, size_t size, const struct fgc_ring_stats *s, uint64_t window_ns)

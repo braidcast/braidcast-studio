@@ -11,14 +11,23 @@
 #include <detours.h>
 
 #include "dxgi-helpers.hpp"
+#include "dxgi-present.hpp"
 #include "../frame-gen-pacer.h"
 #include "../frame-gen-stats.h"
 
+#ifdef OBS_LEGACY
+#include "../graphics-hook-ver.h"
+#else
+#include <graphics-hook-ver.h>
+#endif
+
 #define MAX_BACKBUFFERS 8
 
-/* Diagnostics only: Presents up to this many and this close to a burst's first
- * count as one burst, which shows how the game clusters them. 4 is the largest
- * multi frame generation factor. Stamps come from the pacer, not from bursts. */
+/* Presents up to this many and this close to a burst's first count as one burst,
+ * which shows how the game clusters them. 4 is the largest multi frame generation
+ * factor. Stamps come from the pacer, not from bursts. After Present, a burst
+ * position also tells whether the copied buffer becomes current again within the
+ * same burst, where a writer on another queue could reach it while we copy. */
 constexpr uint32_t kBurstMaxPresents = 4;
 constexpr uint64_t kBurstMaxNs = 2000000;
 
@@ -43,14 +52,20 @@ struct d3d12_ring {
 	uint64_t burst_start;
 	uint64_t last_present;
 	uint32_t burst_len;
+	/* The length of the last closed burst; 0 until one closes. */
+	uint32_t prev_burst_len;
 
 	struct fgc_pacer pacer;
 
 	uint64_t stats_start;
 	struct fgc_hook_stats stats;
 
+	/* Copies run after RealPresent (overlay capture), from the buffer the
+	 * pre-Present record names. Fixed by the phase the init ran in. */
+	bool post_present;
+
 	volatile LONG presenting;
-	bool overlap_logged;
+	volatile LONG overlap_skips;
 };
 
 struct d3d12_data {
@@ -64,6 +79,8 @@ struct d3d12_data {
 	ID3D11Device *device11;
 	ID3D11DeviceContext *context11;
 	ID3D11On12Device *device11on12;
+	/* The queue 11on12 submits on, for logging only: no reference is held. */
+	uintptr_t queue11;
 
 	union {
 		struct {
@@ -284,6 +301,7 @@ static bool d3d12_init_11on12(ID3D12Device *device)
 			create_11_on_12(device, 0, nullptr, 0, &queue, 1, 0, &data.device11, &data.context11, nullptr);
 		created = SUCCEEDED(hr);
 		if (created) {
+			data.queue11 = (uintptr_t)queue;
 			break;
 		}
 
@@ -307,6 +325,14 @@ static bool d3d12_init_11on12(ID3D12Device *device)
 	return true;
 }
 
+/* The only line that names the hook version, which tells which hook DLL the game
+ * actually holds: an already-hooked game keeps the one it loaded first. */
+static void d3d12_log_capture_queue(void)
+{
+	hlog("d3d12 frame generation capture: capture queue Q=0x%" PRIX64 ", hook %d.%d.%d", (uint64_t)data.queue11,
+	     HOOK_VER_MAJOR, HOOK_VER_MINOR, HOOK_VER_PATCH);
+}
+
 static bool d3d12_shtex_init(ID3D12Device *device, HWND window, UINT count)
 {
 	if (!d3d12_init_11on12(device)) {
@@ -314,14 +340,23 @@ static bool d3d12_shtex_init(ID3D12Device *device, HWND window, UINT count)
 	}
 
 	if (count > 0 && frame_gen_capture_requested()) {
-		if (global_hook_info->capture_overlay) {
-			log_frame_gen_capture_fallback("third-party overlay capture is on");
-		} else if (!global_hook_info->bc_canvas_interval_ns) {
+		const bool post_present = dxgi_capture_phase == dxgi_phase::post;
+		if (!global_hook_info->bc_canvas_interval_ns) {
 			log_frame_gen_capture_fallback("the canvas frame interval is unknown");
+		} else if (post_present && !data.dxgi_1_4) {
+			log_frame_gen_capture_fallback("the swap chain's back buffer index is unknown");
 		} else {
 			switch (d3d12_ring_init(window, count)) {
 			case ring_init_result::ok:
-				hlog("d3d12 frame generation capture successful: %u slots", data.ring.count);
+				data.ring.post_present = post_present;
+				if (post_present) {
+					hlog("d3d12 frame generation capture successful: %u slots, after Present "
+					     "(presented buffer)",
+					     data.ring.count);
+				} else {
+					hlog("d3d12 frame generation capture successful: %u slots", data.ring.count);
+				}
+				d3d12_log_capture_queue();
 				return true;
 			case ring_init_result::failed:
 				return false;
@@ -443,12 +478,12 @@ static inline void d3d12_advance_backbuffer(void)
 /* The back buffer is wrapped for this one copy and released before returning:
  * a reference held past the Present keeps the game's swap chain alive. A
  * keyed mutex held on dst is released before the flush that submits the copy. */
-static bool d3d12_copy_backbuffer(IDXGISwapChain *swap, ID3D11Texture2D *dst, IDXGIKeyedMutex *dst_mutex)
+static bool d3d12_copy_backbuffer(IDXGISwapChain *swap, UINT index, ID3D11Texture2D *dst, IDXGIKeyedMutex *dst_mutex)
 {
 	bool copied = false;
 
 	ID3D12Resource *backbuffer12;
-	if (SUCCEEDED(swap->GetBuffer(d3d12_backbuffer_index(swap), IID_PPV_ARGS(&backbuffer12)))) {
+	if (SUCCEEDED(swap->GetBuffer(index, IID_PPV_ARGS(&backbuffer12)))) {
 		D3D11_RESOURCE_FLAGS rf11 = {};
 		ID3D11Resource *backbuffer;
 		if (SUCCEEDED(data.device11on12->CreateWrappedResource(
@@ -481,7 +516,7 @@ static inline void d3d12_shtex_capture(IDXGISwapChain *swap)
 		return;
 	}
 
-	d3d12_copy_backbuffer(swap, data.copy_tex, nullptr);
+	d3d12_copy_backbuffer(swap, d3d12_backbuffer_index(swap), data.copy_tex, nullptr);
 }
 
 enum class ring_acquire { ok, full, busy };
@@ -513,7 +548,7 @@ static ring_acquire d3d12_ring_acquire_slot(uint64_t t, uint32_t *slot)
 	return kept ? ring_acquire::full : ring_acquire::busy;
 }
 
-static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t t, uint64_t stamp)
+static bool d3d12_ring_copy(IDXGISwapChain *swap, UINT index, uint64_t t, uint64_t stamp)
 {
 	struct d3d12_ring &ring = data.ring;
 
@@ -533,7 +568,7 @@ static bool d3d12_ring_copy(IDXGISwapChain *swap, uint64_t t, uint64_t stamp)
 	InterlockedIncrement((volatile LONG *)&info->seq[slot]);
 
 	const uint64_t copy_start = os_gettime_ns();
-	if (!d3d12_copy_backbuffer(swap, ring.tex[slot], ring.mutex[slot])) {
+	if (!d3d12_copy_backbuffer(swap, index, ring.tex[slot], ring.mutex[slot])) {
 		ring.mutex[slot]->ReleaseSync(0);
 		InterlockedIncrement((volatile LONG *)&info->seq[slot]);
 		ring.stats.copy_fails++;
@@ -561,7 +596,9 @@ static void d3d12_ring_log_stats(uint64_t now)
 		return;
 	}
 
-	char line[512];
+	ring.stats.overlap_skips = (uint32_t)InterlockedExchange(&ring.overlap_skips, 0);
+
+	char line[768];
 	if (fgc_hook_stats_format(line, sizeof(line), &ring.stats, now - ring.stats_start,
 				  fgc_pacer_step(&ring.pacer)) > 0) {
 		hlog_deferred(line);
@@ -570,7 +607,46 @@ static void d3d12_ring_log_stats(uint64_t now)
 	ring.stats_start = now;
 }
 
-static void d3d12_ring_capture(IDXGISwapChain *swap)
+/* Where one Present's copy comes from: the back buffer, and the time the pacer
+ * stamps. Without copy there is no buffer that is safe to publish as this one. */
+struct ring_source {
+	uint64_t t;
+	UINT index;
+	bool copy;
+};
+
+static ring_source d3d12_ring_source(IDXGISwapChain *swap, bool just_inited)
+{
+	struct d3d12_ring &ring = data.ring;
+	const uint64_t now = os_gettime_ns();
+
+	if (!ring.post_present) {
+		return {now, d3d12_backbuffer_index(swap), true};
+	}
+
+	/* The Present that initialized the ring ran before the ring existed, so it
+	 * has no record by design. */
+	const dxgi_record &rec = dxgi_present_record;
+	if (!rec.valid || rec.swap != swap) {
+		if (!just_inited) {
+			ring.stats.no_index++;
+		}
+		return {now, 0, false};
+	}
+
+	const bool advanced = d3d12_backbuffer_index(swap) == (rec.index + 1) % data.backbuffer_count;
+
+	/* A buffer the Present did not consume is presented again later: copying
+	 * it now would publish one frame under two stamps. */
+	if (FAILED(rec.hr) || !advanced) {
+		ring.stats.not_consumed++;
+		return {rec.t, 0, false};
+	}
+
+	return {rec.t, rec.index, true};
+}
+
+static void d3d12_ring_capture(IDXGISwapChain *swap, bool just_inited)
 {
 	struct d3d12_ring &ring = data.ring;
 
@@ -578,18 +654,31 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 		return;
 	}
 
-	if (InterlockedIncrement(&ring.presenting) > 1 && !ring.overlap_logged) {
-		hlog("Frame generation capture: Presents overlapped on two threads");
-		ring.overlap_logged = true;
+	/* A second thread's Present would share context11 and the pacer with the
+	 * first, so it skips the ring and writes nothing but interlocked counters. */
+	if (InterlockedIncrement(&ring.presenting) > 1) {
+		InterlockedIncrement(&ring.overlap_skips);
+		InterlockedDecrement(&ring.presenting);
+		return;
 	}
 
-	const uint64_t t = os_gettime_ns();
 	ring.stats.presents++;
+
+	if ((dxgi_capture_phase == dxgi_phase::post) != ring.post_present) {
+		ring.stats.phase_skips++;
+		d3d12_ring_log_stats(os_gettime_ns());
+		InterlockedDecrement(&ring.presenting);
+		return;
+	}
+
+	const ring_source source = d3d12_ring_source(swap, just_inited);
+	const uint64_t t = source.t;
 
 	if (ring.burst_len == 0 || ring.burst_len >= kBurstMaxPresents || t - ring.burst_start > kBurstMaxNs) {
 		if (ring.burst_len > 0) {
 			fgc_hook_stats_burst(&ring.stats, ring.burst_len, t - ring.burst_start <= kBurstMaxNs);
 			fgc_hook_stats_gap(&ring.stats, t - ring.last_present);
+			ring.prev_burst_len = ring.burst_len;
 		}
 
 		ring.burst_start = t;
@@ -600,6 +689,12 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 
 	ring.burst_len++;
 	ring.last_present = t;
+
+	/* The buffer at burst position p is current again after position p + c - 1.
+	 * If the last burst was that long, this one likely is too, and the game may
+	 * write the buffer while the copy reads it. Written as p + c <= last length:
+	 * the counts are unsigned, and last length - c would wrap. */
+	const bool exposed = ring.post_present && ring.burst_len - 1 + data.backbuffer_count <= ring.prev_burst_len;
 
 	/* Every Present advances the pace, copied or not, so a skipped one still
 	 * counts toward the next stamp. */
@@ -621,11 +716,15 @@ static void d3d12_ring_capture(IDXGISwapChain *swap)
 	 * display's show times drift in phase against the canvas ticks, and a tick
 	 * then finds no new frame (45 distinct/s at 4x on a 60 fps canvas). */
 	const uint64_t bucket = stamp / (ring.canvas_interval / 2);
-	if (ring.have_bucket && bucket <= ring.last_bucket) {
-		ring.stats.bucket_skips++;
-	} else if (d3d12_ring_copy(swap, t, stamp)) {
-		ring.last_bucket = bucket;
-		ring.have_bucket = true;
+	if (source.copy) {
+		if (exposed) {
+			ring.stats.burst_skips++;
+		} else if (ring.have_bucket && bucket <= ring.last_bucket) {
+			ring.stats.bucket_skips++;
+		} else if (d3d12_ring_copy(swap, source.index, t, stamp)) {
+			ring.last_bucket = bucket;
+			ring.have_bucket = true;
+		}
 	}
 
 	d3d12_ring_log_stats(t);
@@ -638,18 +737,29 @@ bool d3d12_owns_capture(void)
 	return data.ring.count != 0 || data.handle != nullptr;
 }
 
+/* Runs on the Present thread before RealPresent, outside d3d12_capture like
+ * d3d12_owns_capture: it reads only fields a ring init on this thread wrote. */
+void d3d12_pre_present(IDXGISwapChain *swap)
+{
+	if (data.ring.count && data.ring.post_present && data.dxgi_1_4) {
+		dxgi_present_record = {swap, d3d12_backbuffer_index(swap), os_gettime_ns(), S_OK, true};
+	}
+}
+
 void d3d12_capture(void *swap_ptr, void *)
 {
 	IDXGISwapChain *swap = (IDXGISwapChain *)swap_ptr;
+	bool just_inited = false;
 
 	if (capture_should_stop()) {
 		d3d12_free();
 	}
 	if (capture_should_init()) {
 		d3d12_init(swap);
+		just_inited = data.ring.count != 0;
 	}
 	if (data.ring.count) {
-		d3d12_ring_capture(swap);
+		d3d12_ring_capture(swap, just_inited);
 	} else if (data.handle != nullptr && capture_ready()) {
 		d3d12_shtex_capture(swap);
 	}

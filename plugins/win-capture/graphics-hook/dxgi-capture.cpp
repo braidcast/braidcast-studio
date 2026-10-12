@@ -5,6 +5,7 @@
 #include <inttypes.h>
 
 #include "graphics-hook.h"
+#include "dxgi-present.hpp"
 
 #include <detours.h>
 
@@ -24,10 +25,14 @@ thread_local int dxgi_presenting = 0;
 struct ID3D12CommandQueue *dxgi_possible_swap_queues[8]{};
 size_t dxgi_possible_swap_queue_count;
 bool dxgi_present_attempted = false;
+thread_local dxgi_phase dxgi_capture_phase = dxgi_phase::none;
+thread_local dxgi_record dxgi_present_record = {};
 
 struct dxgi_swap_data {
 	IDXGISwapChain *swap;
 	void (*capture)(void *, void *);
+	/* Overlay mode only: runs before RealPresent, where capture cannot. */
+	void (*pre_present)(IDXGISwapChain *swap);
 	void (*free)(void);
 	/* Whether this API holds the capture. Another API can share the swap chain
 	 * (OpenGL presented through DXGI), and its presents are its own to count. */
@@ -38,28 +43,35 @@ static struct dxgi_swap_data data = {};
 static int swap_chain_mismatch_count = 0;
 constexpr int swap_chain_mismtach_limit = 16;
 
+static void reset_swap_data(void)
+{
+	data.swap = nullptr;
+	data.capture = nullptr;
+	data.pre_present = nullptr;
+	data.owns_capture = nullptr;
+	memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
+	dxgi_possible_swap_queue_count = 0;
+	dxgi_present_attempted = false;
+
+	if (data.free) {
+		data.free();
+	}
+	data.free = nullptr;
+}
+
 static void STDMETHODCALLTYPE SwapChainDestructed(void *pData)
 {
 	if (pData == data.swap) {
-		data.swap = nullptr;
-		data.capture = nullptr;
-		data.owns_capture = nullptr;
-		memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
-		dxgi_possible_swap_queue_count = 0;
-		dxgi_present_attempted = false;
-
-		if (data.free) {
-			data.free();
-		}
-		data.free = nullptr;
+		reset_swap_data();
 	}
 }
 
-static void init_swap_data(IDXGISwapChain *swap, void (*capture)(void *, void *), void (*free)(void),
-			   bool (*owns_capture)(void))
+static void init_swap_data(IDXGISwapChain *swap, void (*capture)(void *, void *), void (*pre_present)(IDXGISwapChain *),
+			   void (*free)(void), bool (*owns_capture)(void))
 {
 	data.swap = swap;
 	data.capture = capture;
+	data.pre_present = pre_present;
 	data.free = free;
 	data.owns_capture = owns_capture;
 
@@ -85,7 +97,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 		if (level >= D3D_FEATURE_LEVEL_11_0) {
 			hlog("Found D3D11 11.0 device on swap chain");
 
-			init_swap_data(swap, d3d11_capture, d3d11_free, d3d11_owns_capture);
+			init_swap_data(swap, d3d11_capture, nullptr, d3d11_free, d3d11_owns_capture);
 			return true;
 		}
 	}
@@ -96,7 +108,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 
 		hlog("Found D3D10 device on swap chain");
 
-		init_swap_data(swap, d3d10_capture, d3d10_free, d3d10_owns_capture);
+		init_swap_data(swap, d3d10_capture, nullptr, d3d10_free, d3d10_owns_capture);
 		return true;
 	}
 
@@ -106,7 +118,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 
 		hlog("Found D3D11 device on swap chain");
 
-		init_swap_data(swap, d3d11_capture, d3d11_free, d3d11_owns_capture);
+		init_swap_data(swap, d3d11_capture, nullptr, d3d11_free, d3d11_owns_capture);
 		return true;
 	}
 
@@ -122,7 +134,7 @@ static bool setup_dxgi(IDXGISwapChain *swap)
 		}
 
 		if (dxgi_possible_swap_queue_count > 0) {
-			init_swap_data(swap, d3d12_capture, d3d12_free, d3d12_owns_capture);
+			init_swap_data(swap, d3d12_capture, d3d12_pre_present, d3d12_free, d3d12_owns_capture);
 			return true;
 		}
 	}
@@ -139,17 +151,7 @@ static HRESULT STDMETHODCALLTYPE hook_resize_buffers(IDXGISwapChain *swap, UINT 
 {
 	hlog_verbose("ResizeBuffers callback");
 
-	data.swap = nullptr;
-	data.capture = nullptr;
-	data.owns_capture = nullptr;
-	memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
-	dxgi_possible_swap_queue_count = 0;
-	dxgi_present_attempted = false;
-
-	if (data.free) {
-		data.free();
-	}
-	data.free = nullptr;
+	reset_swap_data();
 
 	const HRESULT hr = RealResizeBuffers(swap, buffer_count, width, height, format, flags);
 
@@ -190,21 +192,82 @@ static void update_mismatch_count(bool match)
 		++swap_chain_mismatch_count;
 
 		if (swap_chain_mismatch_count == swap_chain_mismtach_limit) {
-			data.swap = nullptr;
-			data.capture = nullptr;
-			data.owns_capture = nullptr;
-			memset(dxgi_possible_swap_queues, 0, sizeof(dxgi_possible_swap_queues));
-			dxgi_possible_swap_queue_count = 0;
-			dxgi_present_attempted = false;
-
-			if (data.free) {
-				data.free();
-			}
-			data.free = nullptr;
-
+			reset_swap_data();
 			swap_chain_mismatch_count = 0;
 		}
 	}
+}
+
+/* What one Present hook call decided before RealPresent. The capture functions
+ * are loaded once, after setup_dxgi: another swap chain's mismatch reset can null
+ * data.capture while this Present is blocked in RealPresent. */
+struct dxgi_present_call {
+	bool capture;
+	bool capture_overlay;
+	void (*capture_fn)(void *, void *);
+	void (*pre_present)(IDXGISwapChain *);
+};
+
+static dxgi_present_call begin_present_call(IDXGISwapChain *swap, bool capture_overlay, bool test_draw)
+{
+	dxgi_present_call call;
+	call.capture_fn = *static_cast<void (*volatile *)(void *, void *)>(&data.capture);
+	call.pre_present = *static_cast<void (*volatile *)(IDXGISwapChain *)>(&data.pre_present);
+	call.capture = !test_draw && swap == data.swap && call.capture_fn;
+	call.capture_overlay = capture_overlay;
+	return call;
+}
+
+static void capture_backbuffer(const dxgi_present_call &call, IDXGISwapChain *swap, dxgi_phase phase)
+{
+	IUnknown *backbuffer = get_dxgi_backbuffer(swap);
+
+	if (backbuffer) {
+		dxgi_capture_phase = phase;
+		call.capture_fn(swap, backbuffer);
+		dxgi_capture_phase = dxgi_phase::none;
+		backbuffer->Release();
+	}
+}
+
+/* Overlay-mode work happens only at the outermost Present on the thread (the
+ * condition count_present uses), so a Present nested in RealPresent can neither
+ * record, capture nor clear the outer call's record. */
+static void pre_present_capture(const dxgi_present_call &call, IDXGISwapChain *swap)
+{
+	if (!call.capture) {
+		return;
+	}
+
+	if (!call.capture_overlay) {
+		capture_backbuffer(call, swap, dxgi_phase::pre);
+	} else if (dxgi_presenting == 0 && call.pre_present) {
+		call.pre_present(swap);
+	}
+}
+
+static void post_present_capture(const dxgi_present_call &call, IDXGISwapChain *swap, HRESULT hr)
+{
+	if (!call.capture || !call.capture_overlay || dxgi_presenting != 0) {
+		return;
+	}
+
+	dxgi_present_record.hr = hr;
+
+	/*
+	 * It seems that the first call to Present after ResizeBuffers
+	 * will cause the backbuffer to be invalidated, so do not
+	 * perform the post-overlay capture if ResizeBuffers has
+	 * recently been called.  (The backbuffer returned by
+	 * get_dxgi_backbuffer *will* be invalid otherwise)
+	 */
+	if (resize_buffers_called) {
+		resize_buffers_called = false;
+	} else {
+		capture_backbuffer(call, swap, dxgi_phase::post);
+	}
+
+	dxgi_present_record = {};
 }
 
 static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap, UINT sync_interval, UINT flags)
@@ -230,41 +293,16 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDXGISwapChain *swap, UINT sync_in
 	hlog_verbose("Present callback: sync_interval=%u, flags=%u, current_swap=0x%" PRIX64
 		     ", expected_swap=0x%" PRIX64,
 		     sync_interval, flags, swap, data.swap);
-	const bool capture = !test_draw && swap == data.swap && data.capture;
-	if (capture && !capture_overlay) {
-		IUnknown *backbuffer = get_dxgi_backbuffer(swap);
-
-		if (backbuffer) {
-			data.capture(swap, backbuffer);
-			backbuffer->Release();
-		}
-	}
+	const dxgi_present_call call = begin_present_call(swap, capture_overlay, test_draw);
+	pre_present_capture(call, swap);
 
 	++dxgi_presenting;
 	const HRESULT hr = RealPresent(swap, sync_interval, flags);
 	--dxgi_presenting;
 	dxgi_present_attempted = true;
 
-	if (capture && capture_overlay) {
-		/*
-		 * It seems that the first call to Present after ResizeBuffers
-		 * will cause the backbuffer to be invalidated, so do not
-		 * perform the post-overlay capture if ResizeBuffers has
-		 * recently been called.  (The backbuffer returned by
-		 * get_dxgi_backbuffer *will* be invalid otherwise)
-		 */
-		if (resize_buffers_called) {
-			resize_buffers_called = false;
-		} else {
-			IUnknown *backbuffer = get_dxgi_backbuffer(swap);
-
-			if (backbuffer) {
-				data.capture(swap, backbuffer);
-				backbuffer->Release();
-			}
-		}
-	}
-	count_present(capture);
+	post_present_capture(call, swap, hr);
+	count_present(call.capture);
 
 	return hr;
 }
@@ -293,34 +331,16 @@ static HRESULT STDMETHODCALLTYPE hook_present1(IDXGISwapChain1 *swap, UINT sync_
 	hlog_verbose("Present1 callback: sync_interval=%u, flags=%u, current_swap=0x%" PRIX64
 		     ", expected_swap=0x%" PRIX64,
 		     sync_interval, flags, swap, data.swap);
-	const bool capture = !test_draw && swap == data.swap && !!data.capture;
-	if (capture && !capture_overlay) {
-		IUnknown *backbuffer = get_dxgi_backbuffer(swap);
-
-		if (backbuffer) {
-			data.capture(swap, backbuffer);
-			backbuffer->Release();
-		}
-	}
+	const dxgi_present_call call = begin_present_call(swap, capture_overlay, test_draw);
+	pre_present_capture(call, swap);
 
 	++dxgi_presenting;
 	const HRESULT hr = RealPresent1(swap, sync_interval, flags, params);
 	--dxgi_presenting;
 	dxgi_present_attempted = true;
 
-	if (capture && capture_overlay) {
-		if (resize_buffers_called) {
-			resize_buffers_called = false;
-		} else {
-			IUnknown *backbuffer = get_dxgi_backbuffer(swap);
-
-			if (backbuffer) {
-				data.capture(swap, backbuffer);
-				backbuffer->Release();
-			}
-		}
-	}
-	count_present(capture);
+	post_present_capture(call, swap, hr);
+	count_present(call.capture);
 
 	return hr;
 }
