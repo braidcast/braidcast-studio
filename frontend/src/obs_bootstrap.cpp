@@ -1398,6 +1398,8 @@ bool ObsBootstrap::Start()
 	// the session log -- so the findings queued along the way are flushed here, ahead
 	// of the state summary they explain.
 	DevToolsPort::FlushPendingWarnings();
+	// Same ordering constraint: main.cpp took the GPU decision before CefInitialize.
+	GpuSafeMode::LogBootDecision();
 
 	if (const uint16_t devToolsPort = DevToolsPort::Active()) {
 		// The port is reported because the gate authorized it, and nothing observed at

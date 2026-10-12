@@ -2711,6 +2711,10 @@ export interface ObsMethods {
   };
   "diagnostics.setDebug": { debug: boolean };
   "diagnostics.openLogFolder": { ok: boolean };
+  // reportRenderer {renderer}: the main page's WebGL renderer string ("" without a
+  // context), sent once after its first frame (utils/gpuRenderer.ts). The host keeps the
+  // first report of a launch for its GPU safe mode and ignores the rest.
+  "diagnostics.reportRenderer": { ok: boolean };
 }
 
 /** Known server->client push events and their payload shapes. */

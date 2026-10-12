@@ -700,6 +700,10 @@ void RunOverlayScopeSelfTest();
 // The exchange-rate store's pure rules (fx/fx_selftest.cpp): the ECB feed parse, the
 // snapshot's EUR row and staleness, and the home-currency fallbacks. Network- and file-free.
 void RunFxSelfTest();
+// GpuSafeMode's pure rules (gpu_safe_mode_selftest.cpp): renderer strings mapped to
+// hardware or software, the boot plan per override/marker/sentinel state, the
+// once-per-CEF-version re-probe, and the override's precedence. File-free.
+void RunGpuSafeModeSelfTest();
 // Headless proof that the host's residual native chrome was darkened at startup:
 // assert NativeTheme::AppliedCount() >= 1 (the host is the only owned window up at
 // smoke time). There is no headless pixel check, so this only confirms ApplyDark

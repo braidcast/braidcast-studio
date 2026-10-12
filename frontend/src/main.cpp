@@ -400,6 +400,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunOverlaySelfTest();
 				ObsBootstrap::RunOverlayScopeSelfTest();
 				ObsBootstrap::RunFxSelfTest();
+				ObsBootstrap::RunGpuSafeModeSelfTest();
 				ObsBootstrap::RunNativeThemeSelfTest();
 				ObsBootstrap::RunScreenshotGateSelfTest();
 			}
@@ -503,6 +504,9 @@ void Teardown()
 	// asks. It is a no-op unless this process armed one, so the single-instance
 	// rejection cannot delete a verdict the running instance left behind.
 	BrowserHwAccel::NoteSurvived();
+	// A deliberate exit says nothing about the renderer: retire that sentinel if no
+	// report came. A no-op unless this launch armed the GPU probes.
+	GpuSafeMode::NoteDeliberateExit();
 
 	// Report what the blocklist hook refused, once, covering the whole session --
 	// most of the table is injected at runtime (Browse dialogs, DShow enumeration,
@@ -755,22 +759,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 0;
 	}
 
-	// Decide GPU vs. software rendering BEFORE CEF spins up its GPU subprocess. On
-	// some machines (e.g. a GPU newer than this libcef) the CEF GPU process
-	// CHECK()-crashes in a loop and the renderer never composites, so the UI paints as
-	// a blank window. A prior boot that created the browser but never confirmed a
-	// paint trips an automatic, persistent fallback to software (SwiftShader)
-	// rendering here; App reads this in OnBeforeCommandLineProcessing.
+	// Decide GPU vs. software rendering BEFORE CEF spins up its GPU subprocess. A
+	// persisted software verdict (see gpu_safe_mode.hpp) selects software (SwiftShader)
+	// rendering here; App reads this in OnBeforeCommandLineProcessing. The probes for
+	// a GPU boot are armed only once the main browser exists (ArmProbes below), and the
+	// decision is logged from ObsBootstrap::Start, the first point a blog() reaches the
+	// session log.
 	const GpuSafeMode::BootDecision gpuDecision = GpuSafeMode::DecideAtBoot();
 	app->set_software_mode(gpuDecision.disableGpu);
-	if (gpuDecision.autoFellBack) {
-		blog(LOG_WARNING,
-		     "[gpu] a previous launch never confirmed a GPU paint -- rendering in software mode "
-		     "(SwiftShader). Delete \"%s\" to re-probe the GPU.",
-		     gpuDecision.safeModeFile.c_str());
-	} else if (gpuDecision.disableGpu) {
-		HostLog("[gpu] software rendering forced (disable-gpu marker or persisted safe mode)");
-	}
 
 	// Resolve the remote-debugging opt-in before CefSettings is populated: CEF reads
 	// the port once, at CefInitialize, so there is no later seam. Off unless the
@@ -956,6 +952,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 1;
 	}
 	DBG(LogCat::Lifecycle, "cef browser created");
+	// Here rather than at DecideAtBoot: the main UI's GPU path starts with this browser,
+	// and arming earlier would read any OBS-startup failure as a GPU verdict. The loop
+	// has not run yet, so no load or report can precede this.
+	GpuSafeMode::ArmProbes(g_browser->GetIdentifier());
 
 	OverlaySurface::LetPaintUnder(g_browser->GetHost()->GetWindowHandle());
 

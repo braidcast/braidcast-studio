@@ -59,6 +59,7 @@ target_sources(
     src/client.hpp
     src/gpu_safe_mode.cpp
     src/gpu_safe_mode.hpp
+    src/gpu_safe_mode_selftest.cpp
     # The environment-only gate for CEF's remote-debugging (CDP) port, resolved before
     # CefSettings is populated.
     src/devtools_port.cpp

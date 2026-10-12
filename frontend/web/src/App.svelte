@@ -41,6 +41,7 @@
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
   import { startUpdateNotice } from "$lib/stores/updateNotice";
+  import { reportGpuRendererAfterFirstPaint } from "$lib/utils/gpuRenderer";
   import {
     obs,
     type SceneItem,
@@ -461,6 +462,9 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   onMount(() => {
+    // First, so a throwing start() below cannot skip it: whether this launch's UI is on
+    // a hardware GPU, which the host's GPU safe mode needs.
+    reportGpuRendererAfterFirstPaint();
     undoStore.start();
     // Here, not only in the chat dock: a stream stop's poll results must reach the popup
     // even when the dock is closed or popped out.

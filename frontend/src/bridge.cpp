@@ -53,6 +53,7 @@
 #include "devtools_port.hpp"
 #include "fonts.hpp"
 #include "fx/fx_rates.hpp"
+#include "gpu_safe_mode.hpp"
 #include "update/update_check.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
@@ -13137,6 +13138,25 @@ bool MethodDiagnosticsOpenLogFolder(const json & /*params*/, json &result, std::
 	return true;
 }
 
+// The main page's WebGL renderer, reported once after its first paint: the only proof
+// this launch's UI is on a hardware GPU rather than Chromium's software fallback.
+// `renderer` is empty when the page got no WebGL context. GpuSafeMode keeps the
+// first report of a launch and ignores the rest.
+bool MethodDiagnosticsReportRenderer(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "diagnostics.reportRenderer", error)) {
+		return false;
+	}
+	auto it = params.find("renderer");
+	if (it == params.end() || !it->is_string()) {
+		error = "diagnostics.reportRenderer: 'renderer' must be a string";
+		return false;
+	}
+	GpuSafeMode::NoteRendererReport(it->get<std::string>());
+	result = json{{"ok", true}};
+	return true;
+}
+
 // ---- OAuth (Phase 8a) ------------------------------------------------------
 //
 // Generic, registry-dispatched account-connection surface. The interactive grant
@@ -15732,6 +15752,7 @@ void Init()
 		{"diagnostics.get", MethodDiagnosticsGet},
 		{"diagnostics.setDebug", MethodDiagnosticsSetDebug},
 		{"diagnostics.openLogFolder", MethodDiagnosticsOpenLogFolder},
+		{"diagnostics.reportRenderer", MethodDiagnosticsReportRenderer},
 		{"oauth.providers", MethodOAuthProviders},
 		{"oauth.connect", MethodOAuthConnect},
 		{"oauth.cancelConnect", MethodOAuthCancelConnect},

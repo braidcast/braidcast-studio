@@ -201,25 +201,27 @@ void Client::OnLoadEnd(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> fr
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (frame->IsMain()) {
-		// A completed main-frame load proves the renderer composited this run, so the
-		// GPU path is healthy: clear the boot sentinel a crash-looping GPU subprocess
-		// would otherwise leave behind for next-boot fallback detection.
+		// A completed main-frame load means the UI came up this run: clear the paint
+		// sentinel. It does not prove hardware -- Chromium paints after falling back to
+		// SwiftShader -- which is the page's renderer report (GpuSafeMode).
 		GpuSafeMode::NotePaintSuccess();
 		HostLog("[cef] page loaded: " + frame->GetURL().ToString() +
 			" (status=" + std::to_string(http_status_code) + ")");
 	}
 }
 
-void Client::OnLoadError(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> frame, ErrorCode error_code,
+void Client::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode error_code,
 			 const CefString &error_text, const CefString &failed_url)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (error_code == ERR_ABORTED) {
 		return;
 	}
+	if (frame->IsMain()) {
+		GpuSafeMode::NoteMainFrameLoadError(browser->GetIdentifier());
+	}
 	HostLog("[cef] load error " + std::to_string(error_code) + " (" + error_text.ToString() + ") for " +
 		StringUtil::WithoutQuery(failed_url.ToString()));
-	(void)frame;
 }
 
 bool Client::OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> /*request*/,
