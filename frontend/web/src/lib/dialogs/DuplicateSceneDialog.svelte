@@ -53,13 +53,16 @@
   let busy = $state(false);
   /** A host failure (the suggestion or the duplicate itself), shown at the Name field. */
   let hostError = $state("");
-  /** The last taken-check answer, for the name and canvas it was asked about. */
-  let checked = $state<{ name: string; key: string; taken: boolean } | null>(null);
+  /** The last taken-check answer, for the name and canvas it was asked about; `taken` is
+   *  the host's reason, empty while the name is free. */
+  let checked = $state<{ name: string; key: string; taken: string } | null>(null);
 
   let nameEl = $state<HTMLInputElement | undefined>();
 
   const trimmed = $derived(newName.trim());
-  const taken = $derived(checked !== null && checked.taken && checked.name === trimmed && checked.key === destKey);
+  const taken = $derived(
+    checked !== null && checked.taken !== "" && checked.name === trimmed && checked.key === destKey,
+  );
 
   const nameError = $derived.by(() => {
     if (hostError) {
@@ -69,7 +72,7 @@
       return edited || !prefilling ? "Enter a name for the new scene." : "";
     }
     if (taken) {
-      return `A scene or source named “${trimmed}” already exists on that canvas.`;
+      return checked?.taken ?? "";
     }
     return "";
   });
@@ -82,10 +85,12 @@
     nameEl?.focus();
   });
 
-  /** The name a scene called `name` would get on the canvas `key` addresses. */
-  async function freeName(name: string, key: string): Promise<string> {
+  /** The name a scene called `name` would get on the canvas `key` addresses, and the
+   *  host's reason `name` itself is taken there (empty when it is free). */
+  async function freeName(name: string, key: string): Promise<{ name: string; taken: string }> {
     const params: SceneFreeNameParams = { name, canvas: key || undefined };
-    return (await obs.call("scenes.freeName", params)).name;
+    const r = await obs.call("scenes.freeName", params);
+    return { name: r.name, taken: r.name === name ? "" : (r.taken ?? "That name is already taken.") };
   }
 
   const prefillGuard = new RequestGuard();
@@ -105,7 +110,7 @@
     const current = prefillGuard.claim();
     prefilling = true;
     try {
-      const suggested = await freeName(sceneName, key);
+      const suggested = (await freeName(sceneName, key)).name;
       if (!current() || edited) {
         return;
       }
@@ -139,9 +144,9 @@
   async function checkTaken(name: string, key: string): Promise<void> {
     const current = takenGuard.claim();
     try {
-      const free = await freeName(name, key);
+      const answer = await freeName(name, key);
       if (current()) {
-        checked = { name, key, taken: free !== name };
+        checked = { name, key, taken: answer.taken };
       }
     } catch {
       // Unanswered: the host refuses a taken name on submit anyway.

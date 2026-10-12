@@ -54,6 +54,85 @@ void EnumScenes(obs_canvas_t *canvas, bool (*proc)(void *param, obs_source_t *sc
 	}
 }
 
+namespace {
+
+// `canvas`'s scenes, each with its own ref. Taken inside the enumeration and used outside
+// it, so no scene lock is taken while the canvas holds its source-list mutex.
+std::vector<OBSSourceAutoRelease> SceneRefsOf(obs_canvas_t *canvas)
+{
+	std::vector<OBSSourceAutoRelease> scenes;
+	EnumScenes(
+		canvas,
+		[](void *param, obs_source_t *sceneSource) -> bool {
+			static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
+				obs_source_get_ref(sceneSource));
+			return true;
+		},
+		&scenes);
+	return scenes;
+}
+
+struct SourceSearch {
+	obs_source_t *source;
+	bool found;
+};
+
+bool ItemHoldsSource(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *search = static_cast<SourceSearch *>(param);
+	if (obs_sceneitem_get_source(item) == search->source) {
+		search->found = true;
+	} else if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, ItemHoldsSource, param);
+	}
+	return !search->found;
+}
+
+} // namespace
+
+bool SceneListsSource(obs_scene_t *scene, obs_source_t *source)
+{
+	SourceSearch search{source, false};
+	if (source) {
+		obs_scene_enum_items(scene, ItemHoldsSource, &search);
+	}
+	return search.found;
+}
+
+std::vector<std::string> SceneNamesUsing(obs_source_t *source)
+{
+	std::vector<std::string> names;
+	if (!source) {
+		return names;
+	}
+	// The main canvas is listed among the named ones too, but is put first explicitly so
+	// its scenes lead whatever order libobs keeps the canvases in.
+	std::vector<OBSCanvasAutoRelease> canvases;
+	canvases.emplace_back(obs_get_main_canvas()); // addref'd
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) -> bool {
+			auto *list = static_cast<std::vector<OBSCanvasAutoRelease> *>(param);
+			if (canvas != list->front().Get()) {
+				list->emplace_back(obs_canvas_get_ref(canvas));
+			}
+			return true;
+		},
+		&canvases);
+	for (const OBSCanvasAutoRelease &canvas : canvases) {
+		if (!canvas) {
+			continue;
+		}
+		for (const OBSSourceAutoRelease &sceneSource : SceneRefsOf(canvas)) {
+			const char *name = obs_source_get_name(sceneSource);
+			if (name && SceneListsSource(obs_scene_from_source(sceneSource), source) &&
+			    std::find(names.begin(), names.end(), name) == names.end()) {
+				names.emplace_back(name);
+			}
+		}
+	}
+	return names;
+}
+
 obs_source_t *GroupSourceOf(obs_sceneitem_t *item)
 {
 	obs_scene_t *ownerScene = item ? obs_sceneitem_get_scene(item) : nullptr;
@@ -116,18 +195,7 @@ obs_sceneitem_t *GroupItemOf(obs_sceneitem_t *item, obs_scene_t *scene)
 	if (!canvas) {
 		return nullptr;
 	}
-	// Refs taken inside the enumeration and searched outside it, so no scene lock is taken
-	// while the canvas holds its source-list mutex.
-	std::vector<OBSSourceAutoRelease> scenes;
-	EnumScenes(
-		canvas,
-		[](void *param, obs_source_t *sceneSource) -> bool {
-			static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
-				obs_source_get_ref(sceneSource));
-			return true;
-		},
-		&scenes);
-	for (const OBSSourceAutoRelease &sceneSource : scenes) {
+	for (const OBSSourceAutoRelease &sceneSource : SceneRefsOf(canvas)) {
 		obs_sceneitem_t *groupItem = FindGroupItem(obs_scene_from_source(sceneSource), groupUuid);
 		if (groupItem && obs_sceneitem_get_source(groupItem) == groupSource) {
 			return groupItem;

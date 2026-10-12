@@ -2114,7 +2114,8 @@ export interface ObsMethods {
   "scenes.duplicate": { name: string; uuid: string };
   // The name a new scene called `name` would get on a canvas (SceneFreeNameParams):
   // `name` itself when no scene or source holds it there, else "<name> 2", "<name> 3"…
-  "scenes.freeName": { name: string };
+  // `taken` is present exactly when `name` is not free: the host's refusal for it.
+  "scenes.freeName": { name: string; taken?: string };
   // Reorder a scene within its canvas's persisted order. Params: {name, canvas?,
   // ...}; canvas omitted/empty means the Default canvas, which is tracked by
   // scene_order while each additional canvas has its own canvas_scene_order entry.

@@ -1637,6 +1637,59 @@ bool MethodScenesList(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// "scene 'A'", "scenes 'A' and 'B'", or "scenes 'A', 'B' and N more" for a non-empty list.
+std::string ScenesPhrase(const std::vector<std::string> &scenes)
+{
+	std::string phrase = (scenes.size() == 1 ? "scene '" : "scenes '") + scenes[0] + "'";
+	if (scenes.size() == 2) {
+		phrase += " and '" + scenes[1] + "'";
+	} else if (scenes.size() > 2) {
+		phrase += ", '" + scenes[1] + "' and " + std::to_string(scenes.size() - 2) + " more";
+	}
+	return phrase;
+}
+
+// What a name is being given to, which decides the reason a clash message gives.
+enum class NamedKind { Scene, Source };
+
+// Why `name` cannot be given to a scene or source in libobs's global source namespace (every
+// public source plus the Default canvas's scenes): `holder` already has it. libobs keys that
+// namespace by name (obs_context_data_insert_name), so the name is taken in every scene on
+// every canvas, and a clash with a source the current scene does not show reads as a bug
+// unless the message says where the holder is. Every variant keeps "already exists", which
+// the web UI matches to recognize a clash (NAME_CLASH in dropSource.ts).
+std::string SourceNameClashError(const std::string &name, obs_source_t *holder, NamedKind naming)
+{
+	const bool holderIsScene = obs_scene_from_source(holder) != nullptr;
+	const char *kSharedWithScenes = " Scenes and sources cannot share a name.";
+	if (holderIsScene) {
+		return "A scene named '" + name + "' already exists." +
+		       (naming == NamedKind::Source ? kSharedWithScenes : "");
+	}
+	const std::string named = std::string(obs_source_is_group(holder) ? "A group" : "A source") + " named '" +
+				  name + "' already exists";
+	const std::vector<std::string> scenes = SceneItems::SceneNamesUsing(holder);
+	const std::string where = scenes.empty() ? " but is not in any scene." : " in " + ScenesPhrase(scenes) + ".";
+	if (naming == NamedKind::Scene) {
+		return named + where + kSharedWithScenes;
+	}
+	return named + where +
+	       (scenes.empty() ? " Every source needs its own name, even one not in a scene."
+			       : " Source names are shared across all scenes.");
+}
+
+// Whether `name` is free in the global source namespace, where `self` (the source being
+// renamed, or null) may already hold it. Sets `error` when it is taken.
+bool RequireFreeSourceName(const std::string &name, obs_source_t *self, NamedKind naming, std::string &error)
+{
+	OBSSourceAutoRelease holder = obs_get_source_by_name(name.c_str()); // addref'd or null
+	if (!holder || holder.Get() == self) {
+		return true;
+	}
+	error = SourceNameClashError(name, holder, naming);
+	return false;
+}
+
 bool MethodScenesCreate(const json &params, json &result, std::string &error)
 {
 	std::string name;
@@ -1663,10 +1716,7 @@ bool MethodScenesCreate(const json &params, json &result, std::string &error)
 	}
 
 	// Reject duplicates (a source of any kind with that name collides).
-	obs_source_t *existing = obs_get_source_by_name(name.c_str());
-	if (existing) {
-		obs_source_release(existing);
-		error = "a source named '" + name + "' already exists";
+	if (!RequireFreeSourceName(name, nullptr, NamedKind::Scene, error)) {
 		return false;
 	}
 
@@ -1966,10 +2016,7 @@ bool MethodScenesRename(const json &params, json &result, std::string &error)
 		return true;
 	}
 
-	obs_source_t *clash = obs_get_source_by_name(to.c_str());
-	if (clash) {
-		obs_source_release(clash);
-		error = "a source named '" + to + "' already exists";
+	if (!RequireFreeSourceName(to, nullptr, NamedKind::Scene, error)) {
 		return false;
 	}
 	obs_source_t *source = obs_get_source_by_name(from.c_str()); // addref'd
@@ -2053,6 +2100,20 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, bool destIsAdditi
 	return UniqueName(baseName, BareName::Try, [&](const std::string &candidate) {
 		return NameTakenOnCanvas(candidate, destIsAdditional, destCanvas);
 	});
+}
+
+// Why a scene on the canvas cannot be called `name`, or empty when it can: the same test
+// as NameTakenOnCanvas. The Default canvas shares the global namespace, so its clash is
+// explained there; an additional canvas only has its own scenes and groups to clash with.
+std::string SceneNameTakenError(const std::string &name, bool isAdditional, obs_canvas_t *canvas)
+{
+	if (isAdditional) {
+		return NameTakenOnCanvas(name, true, canvas)
+			       ? "A scene or source named '" + name + "' already exists on that canvas."
+			       : std::string();
+	}
+	std::string error;
+	return RequireFreeSourceName(name, nullptr, NamedKind::Scene, error) ? std::string() : error;
 }
 
 // A name libobs will insert into `canvas`'s own source list verbatim: `baseName`,
@@ -2285,8 +2346,9 @@ bool DuplicateSceneCore(const SceneDuplicateRequest &req, SceneDuplicateResult &
 	std::string newName = req.newName;
 	if (newName.empty()) {
 		newName = FreeSceneNameOnCanvas(req.sceneName, dest.isAdditional, destCanvas.canvas);
-	} else if (NameTakenOnCanvas(newName, dest.isAdditional, destCanvas.canvas)) {
-		error = "a scene or source named '" + newName + "' already exists on that canvas";
+	} else if (std::string taken = SceneNameTakenError(newName, dest.isAdditional, destCanvas.canvas);
+		   !taken.empty()) {
+		error = taken;
 		return false;
 	}
 
@@ -2434,10 +2496,11 @@ bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
 	return true;
 }
 
-// scenes.freeName {name, canvas?} -> {name}: `name` itself when no scene or source
+// scenes.freeName {name, canvas?} -> {name, taken?}: `name` itself when no scene or source
 // holds it on that canvas (omitted = Default), else "<name> N" from 2 -- the name
 // scenes.duplicate picks when given no newName, and the check a dialog runs on a typed
-// one (it is free exactly when this returns it unchanged).
+// one (it is free exactly when this returns it unchanged). When it is not, `taken` is the
+// refusal scenes.duplicate would give that name, so a dialog shows the host's reason.
 bool MethodScenesFreeName(const json &params, json &result, std::string &error)
 {
 	std::string name;
@@ -2450,7 +2513,11 @@ bool MethodScenesFreeName(const json &params, json &result, std::string &error)
 		error = "unknown canvas";
 		return false;
 	}
-	result = json{{"name", FreeSceneNameOnCanvas(name, target.isAdditional, canvas.canvas)}};
+	const std::string suggested = FreeSceneNameOnCanvas(name, target.isAdditional, canvas.canvas);
+	result = json{{"name", suggested}};
+	if (suggested != name) {
+		result["taken"] = SceneNameTakenError(name, target.isAdditional, canvas.canvas);
+	}
 	return true;
 }
 
@@ -2907,31 +2974,8 @@ void EmitSceneItemsChangedForSource(obs_source_t *src)
 	if (!uuid) {
 		return;
 	}
-	const std::string srcUuid = uuid;
-	auto lists = [&srcUuid](obs_source_t *scene) {
-		obs_scene_t *sceneObj = scene ? obs_scene_from_source(scene) : nullptr;
-		if (!sceneObj) {
-			return false;
-		}
-		if (FindItemBySourceUuid(scene, srcUuid)) {
-			return true;
-		}
-		struct Ctx {
-			const std::string &uuid;
-			bool found;
-		} ctx{srcUuid, false};
-		obs_scene_enum_items(
-			sceneObj,
-			[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-				auto *c = static_cast<Ctx *>(param);
-				if (obs_sceneitem_is_group(item) &&
-				    FindItemBySourceUuid(obs_sceneitem_get_source(item), c->uuid)) {
-					c->found = true;
-				}
-				return !c->found;
-			},
-			&ctx);
-		return ctx.found;
+	auto lists = [src](obs_source_t *scene) {
+		return SceneItems::SceneListsSource(obs_scene_from_source(scene), src);
 	};
 	OBSSourceAutoRelease programScene = ResolveSceneSource(std::string()); // addref'd or null
 	if (lists(programScene)) {
@@ -5197,10 +5241,7 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 	}
 
 	// Reject a duplicate name (a source of any kind collides).
-	obs_source_t *clash = obs_get_source_by_name(name.c_str());
-	if (clash) {
-		obs_source_release(clash);
-		error = "a source named '" + name + "' already exists";
+	if (!RequireFreeSourceName(name, nullptr, NamedKind::Source, error)) {
 		return false;
 	}
 
@@ -5743,15 +5784,9 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 		return true;
 	}
 	// Reject a clash with a DIFFERENT existing source (same source is fine above).
-	obs_source_t *clash = obs_get_source_by_name(name.c_str()); // addref'd or null
-	if (clash) {
-		const bool isSelf = clash == src;
-		obs_source_release(clash);
-		if (!isSelf) {
-			obs_source_release(sceneSource);
-			error = "a source named '" + name + "' already exists";
-			return false;
-		}
+	if (!RequireFreeSourceName(name, src, NamedKind::Source, error)) {
+		obs_source_release(sceneSource);
+		return false;
 	}
 	const std::string oldName = curName ? curName : "";
 	json before = StateBase(params, src, sceneSource);
@@ -5794,9 +5829,7 @@ bool MethodSourcesRenameByName(const json &params, json &result, std::string &er
 	}
 	// Reject a clash with a DIFFERENT existing source (same source is fine above) --
 	// identical rule to sources.rename.
-	OBSSourceAutoRelease clash = obs_get_source_by_name(name.c_str()); // addref'd or null
-	if (clash && clash.Get() != src.Get()) {
-		error = "a source named '" + name + "' already exists";
+	if (!RequireFreeSourceName(name, src, NamedKind::Source, error)) {
 		return false;
 	}
 	obs_source_set_name(src, name.c_str());
@@ -15424,10 +15457,7 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 	if (name.empty()) {
 		name = w->name + " (Overlay)";
 	}
-	obs_source_t *clash = obs_get_source_by_name(name.c_str());
-	if (clash) {
-		obs_source_release(clash);
-		error = "a source named '" + name + "' already exists";
+	if (!RequireFreeSourceName(name, nullptr, NamedKind::Source, error)) {
 		return false;
 	}
 

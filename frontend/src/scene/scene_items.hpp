@@ -48,6 +48,15 @@ namespace SceneItems {
 // calls libobs directly.
 void EnumScenes(obs_canvas_t *canvas, bool (*proc)(void *param, obs_source_t *scene), void *param);
 
+// Whether `source` is one of `scene`'s items or a child of one of its groups: what a dock
+// lists under the scene. Null-safe on both.
+bool SceneListsSource(obs_scene_t *scene, obs_source_t *source);
+
+// The names of the scenes whose items include `source`, directly or inside one of their
+// groups, across the main canvas and every named canvas: main-canvas scenes first, each name
+// once. A nested scene counts only for the scene it sits in directly, not for its parents.
+std::vector<std::string> SceneNamesUsing(obs_source_t *source);
+
 // The ids of `keys`, in order. A child and a top-level item can share an id, so this can
 // repeat one and is not a way back to the keys.
 std::vector<int64_t> IdsOf(const std::vector<SceneItemKey> &keys);

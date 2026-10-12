@@ -4804,6 +4804,26 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 				error);
 			check("taken newName refused", taken && !error.empty());
 		}
+		// Onto the Default canvas a typed newName clashes in the global namespace, here with
+		// a source this canvas's scene holds; the refusal says where, and scenes.freeName
+		// gives the dialog that same reason.
+		{
+			const char *kHolderName = "selftest-duplicate-color";
+			json ignored;
+			std::string error;
+			const bool refused = !Bridge::Dispatch("scenes.duplicate",
+							       json{{"name", kSceneName},
+								    {"canvas", srcCanvasUuid},
+								    {"destCanvas", g_canvases.Default().uuid},
+								    {"newName", kHolderName}},
+							       ignored, error);
+			json freeDefault = run("scenes.freeName", json{{"name", kHolderName}}, ok);
+			const bool explained =
+				refused && error.find("already exists in scene '" + std::string(kSceneName) + "'") !=
+						   std::string::npos;
+			check("Default-canvas newName clash names the holder's scene: " + error,
+			      explained && ok && freeDefault.value("taken", std::string()) == error);
+		}
 
 		// 1) Independent copies onto the destination canvas.
 		json dup = run("scenes.duplicate",
@@ -6405,6 +6425,31 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		ObsBootstrap::Undo().Undo();
 		check("child rename undo", std::string(obs_source_get_name(childBSrc)) == childBName,
 		      obs_source_get_name(childBSrc));
+
+		// A name clash says where the holder is: child A is found through its group, in a
+		// scene of this additional canvas, and a source no scene holds is called out as such.
+		auto renameError = [&](const std::string &to) {
+			json p = childParams(childBId);
+			p["name"] = to;
+			json r;
+			std::string e;
+			return Bridge::Dispatch("sources.rename", p, r, e) ? std::string() : Err::Diagnostic(e);
+		};
+		const std::string inSceneError = renameError(obs_source_get_name(childASrc));
+		check("rename clash names the holder's scene",
+		      inSceneError.find("already exists in scene '" + std::string(kSceneName) + "'") !=
+			      std::string::npos,
+		      inSceneError);
+		check("rejected rename leaves the name", std::string(obs_source_get_name(childBSrc)) == childBName,
+		      obs_source_get_name(childBSrc));
+		obs_source_t *orphanSrc = makeSource("selftest-scene-item-group-orphan");
+		const std::string orphanError = orphanSrc ? renameError(obs_source_get_name(orphanSrc)) : std::string();
+		check("rename clash with a source in no scene",
+		      orphanError.find("already exists but is not in any scene") != std::string::npos, orphanError);
+		if (orphanSrc) {
+			obs_source_remove(orphanSrc);
+			obs_source_release(orphanSrc);
+		}
 
 		// --- 4. child transform, undo, redo: the whole group comes back ----------------
 		const vec2 groupBefore = posOf(groupItem), aBefore = posOf(childA), bBefore = posOf(childB);
