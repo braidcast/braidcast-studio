@@ -609,6 +609,11 @@ void RunStatsSelfTest();
 // one avoids that rather than solving it, so do not extend it into a write test
 // without adding the snapshot first. Gated by the caller to the smoke path.
 void RunCalendarSelfTest();
+// Offline proof for how a refused YouTube thumbnails.set is classified and worded: only the 403
+// "can't be set for the specified video" from the youtube.thumbnail domain is retried, each
+// predicate of each cause is pinned by a case differing in that field alone, and only the
+// retried cause suggests sending again. Makes no request and touches no config.
+void RunYouTubeThumbnailSelfTest();
 // Headless proof for scheduling: a schedule.create / list / delete round trip that
 // leaves the table exactly as it found it. The entry is dated a year out so the
 // runner never arms it -- arming rewrites real output bindings and metadata, which

@@ -10,8 +10,11 @@
 #include <string_view>
 #include <utility>
 
+#include "../bridge.hpp"
+#include "../chat/ws_client.hpp"
 #include "../chat/youtube_chat.hpp"
 #include "account_store.hpp"
+#include "util/async_task.hpp"
 #include "util/env_config.hpp"
 #include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
@@ -49,6 +52,25 @@ const char *kDefaultTitle = "Live Stream";
 
 // thumbnails.set rejects uploads over 2 MB; skip oversized files client-side.
 const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
+
+// The waits before each thumbnails.set attempt after the first, so one upload makes at most three
+// requests (150 units). The budget is per upload, and every go-live or mid-stream Update that
+// sends an image starts a new one. On 2026-10-12 a go-live's upload, about seven seconds after the
+// insert, was refused, and the same image was accepted roughly fifty seconds after the insert.
+// These two waits put the last attempt inside that window.
+constexpr std::chrono::seconds kThumbnailRetryDelays[] = {std::chrono::seconds(10), std::chrono::seconds(30)};
+constexpr int kThumbnailAttempts = 1 + static_cast<int>(std::size(kThumbnailRetryDelays));
+
+// The one fragment of the transient refusal's message ("The thumbnail can't be set for the
+// specified video. ..."), matched without the apostrophe so a typographic one still matches.
+constexpr const char *kThumbnailTransientMessage = "be set for the specified video";
+
+// The fragment of the permanent 403 that shares the transient one's reason: "The authenticated
+// user doesn't have permissions to upload and set custom video thumbnails."
+constexpr const char *kThumbnailPermissionMessage = "permissions to upload and set custom video thumbnails";
+
+// The 400 reasons thumbnails.set gives for an image it will not take.
+constexpr const char *kThumbnailImageReasons[] = {"invalidImage", "mediaBodyRequired"};
 
 // snippet.tags takes arbitrary strings and caps neither how many there are nor how long
 // any one of them is -- the only limit is on the characters they add up to.
@@ -351,14 +373,65 @@ bool ParseViewerCount(const std::string &text, int &out)
 
 } // namespace
 
+namespace {
+
+// error.errors[0] of a YouTube Data API error body, or a null json when there is none.
+json YouTubeFirstError(const std::string &body)
+{
+	return First(Obj(ParseJson(body), "error"), "errors");
+}
+
+} // namespace
+
 std::string YouTubeErrorReason(const std::string &body)
 {
-	const json errJson = ParseJson(body);
-	const json &errors = Obj(Obj(errJson, "error"), "errors");
-	if (errors.is_array() && !errors.empty()) {
-		return Str(errors[0], "reason");
+	return Str(YouTubeFirstError(body), "reason");
+}
+
+ThumbnailFailure ClassifyThumbnailRefusal(long status, const std::string &body)
+{
+	const json first = YouTubeFirstError(body);
+	const std::string reason = Str(first, "reason");
+	const std::string message = Str(first, "message");
+	if (ClassifyYouTubeError(status, reason) == YouTubeErrorClass::QuotaExhausted) {
+		return ThumbnailFailure::Quota;
 	}
-	return std::string();
+	// 413 is the upload endpoint refusing the body's size, which the 2 MB check before the
+	// upload normally catches first.
+	if (status == 413 || (status == 400 && ReasonIn(reason, kThumbnailImageReasons))) {
+		return ThumbnailFailure::Image;
+	}
+	if (status == 403 && reason == "forbidden") {
+		if (Str(first, "domain") == "youtube.thumbnail" && ContainsCI(message, kThumbnailTransientMessage)) {
+			return ThumbnailFailure::Transient;
+		}
+		if (ContainsCI(message, kThumbnailPermissionMessage)) {
+			return ThumbnailFailure::Permission;
+		}
+	}
+	return ThumbnailFailure::Other;
+}
+
+std::string ThumbnailNotAppliedMessage(ThumbnailFailure failure, int attempts)
+{
+	const std::string tries = std::to_string(attempts) + (attempts == 1 ? " try" : " tries");
+	const std::string notApplied = "YouTube thumbnail was not applied";
+	switch (failure) {
+	case ThumbnailFailure::Transient:
+		return notApplied + " after " + tries + ". Send it again from Edit.";
+	case ThumbnailFailure::Permission:
+		return notApplied + ": this channel can't use custom thumbnails yet. Verify the channel in "
+				    "YouTube Studio.";
+	case ThumbnailFailure::Quota:
+		return notApplied + ": today's YouTube API quota is used up.";
+	case ThumbnailFailure::Image:
+		return notApplied + ": YouTube can't use this image.";
+	case ThumbnailFailure::File:
+		return notApplied + ": the image file is missing, unreadable or empty.";
+	case ThumbnailFailure::Other:
+	default:
+		return attempts > 1 ? notApplied + " after " + tries + "." : notApplied + ".";
+	}
 }
 
 YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason)
@@ -620,6 +693,16 @@ void YouTubeProvider::clearActiveBroadcastDestination(const DestinationId &dest)
 {
 	const std::lock_guard<std::mutex> guard(broadcastMutex_);
 	broadcasts_.erase(dest);
+}
+
+void YouTubeProvider::forgetAttempt(const std::string &profileUuid, uint64_t generation)
+{
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	for (auto &[dest, state] : broadcasts_) {
+		if (dest.profileUuid == profileUuid && state.thumbnailGeneration <= generation) {
+			state.thumbnailUpload = 0;
+		}
+	}
 }
 
 void YouTubeProvider::AddLiveChatRef(const DestinationId &dest)
@@ -1083,8 +1166,9 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 
 	// Steps 4 + 5 (video snippet, then thumbnail) apply identically whether the
 	// broadcast was just created for go-live or is already live for a mid-stream edit, so
-	// both paths call this instead of duplicating the blocks. Both are NON-CRITICAL:
-	// failures are logged and skipped, never surfaced as an apply failure.
+	// both paths call this instead of duplicating the blocks. Both are NON-CRITICAL: a
+	// failure never fails the apply. A thumbnail that does not land is still reported to the
+	// owner (UploadThumbnail).
 	auto applyVideoSnippetAndThumbnail = [&](const std::string &videoId, bool skipUnchanged) {
 		// 4. videos.update -- category, tags and language live on the video, not the
 		// broadcast. part=snippet is destructive: a property that already has a value and
@@ -1153,14 +1237,18 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 
 		// 5. thumbnails.set -- raw binary upload (image bytes as the body, sniffed
 		// Content-Type), NOT multipart. data: URLs are Phase 8e.
+		const uint64_t thumbnailUpload = thumbnailPath.empty() ? 0 : BeginThumbnailUpload(dest);
 		if (!thumbnailPath.empty() && thumbnailPath.rfind("data:", 0) != 0) {
 			std::ifstream file(thumbnailPath, std::ios::binary | std::ios::ate);
+			// Non-fatal like every thumbnail failure, but reported: a file that cannot be sent
+			// leaves the video on YouTube's own frame exactly as a refused upload would.
 			if (!file) {
-				HostLog("[oauth] YouTube thumbnail skipped: cannot open " + thumbnailPath);
+				ThumbnailNotApplied(dest, videoId, ThumbnailFailure::File, 0,
+						    "the image file could not be opened");
 			} else if (const std::streamoff size = file.tellg(); size > kMaxThumbnailBytes) {
-				// Non-fatal: thumbnail is non-critical, so skip oversized files rather than fail.
-				HostLog("[oauth] YouTube thumbnail skipped: file exceeds YouTube's 2 MB limit (" +
-					std::to_string(static_cast<long long>(size)) + " bytes) " + thumbnailPath);
+				ThumbnailNotApplied(dest, videoId, ThumbnailFailure::Image, 0,
+						    "the image is " + std::to_string(static_cast<long long>(size)) +
+							    " bytes, over YouTube's 2 MB limit");
 			} else {
 				file.seekg(0, std::ios::beg);
 				const std::string bytes((std::istreambuf_iterator<char>(file)),
@@ -1170,29 +1258,14 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				// place under an unchanged path is. Only the digest is kept.
 				const std::string digest = ContentDigest(bytes);
 				if (bytes.empty()) {
-					HostLog("[oauth] YouTube thumbnail skipped: empty file " + thumbnailPath);
+					ThumbnailNotApplied(dest, videoId, ThumbnailFailure::File, 0,
+							    "the image file is empty");
 				} else if (alreadyApplied(videoId, AppliedKind::Thumbnail, digest, skipUnchanged)) {
 					DBG(LogCat::OAuth,
 					    "youtube: dest=%s thumbnails.set skipped (identical image, 50 units saved)",
 					    DestinationKey(dest).c_str());
 				} else {
-					Http::HttpReq req;
-					req.method = "POST";
-					req.url =
-						std::string(kThumbnailsSetUrl) + "?videoId=" + Http::UrlEncode(videoId);
-					req.contentType = SniffImageMime(bytes);
-					req.body = bytes;
-					Http::HttpResponse resp;
-					std::string thumbErr;
-					if (!SendAuthed(acct, req, resp, thumbErr)) {
-						HostLog("[oauth] YouTube thumbnails.set failed (continuing): " +
-							Err::Diagnostic(thumbErr));
-					} else if (resp.status < 200 || resp.status >= 300) {
-						HostLog("[oauth] YouTube thumbnails.set failed (continuing): HTTP " +
-							std::to_string(resp.status) + ": " + resp.body);
-					} else {
-						RecordApplied(dest, videoId, AppliedKind::Thumbnail, digest);
-					}
+					UploadThumbnail(acct, dest, videoId, bytes, digest, thumbnailUpload);
 				}
 			}
 		} else if (!thumbnailPath.empty()) {
@@ -1858,7 +1931,12 @@ void YouTubeProvider::RecordApplied(const DestinationId &dest, const std::string
 	if (it == broadcasts_.end()) {
 		return; // the destination went off air while this apply was in flight
 	}
-	BroadcastState &bs = it->second;
+	RecordAppliedTo(it->second, videoId, kind, digest);
+}
+
+void YouTubeProvider::RecordAppliedTo(BroadcastState &bs, const std::string &videoId, AppliedKind kind,
+				      const std::string &digest)
+{
 	if (bs.appliedVideoId != videoId) {
 		// A different broadcast owns the slot: drop its record wholesale rather than leave
 		// one resource's digest standing next to another's.
@@ -1868,6 +1946,182 @@ void YouTubeProvider::RecordApplied(const DestinationId &dest, const std::string
 		bs.appliedThumbnail.clear();
 	}
 	bs.Digest(kind) = digest;
+}
+
+uint64_t YouTubeProvider::BeginThumbnailUpload(const DestinationId &dest)
+{
+	const uint64_t generation = Bridge::GoLiveGeneration();
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (it == broadcasts_.end()) {
+		return 0;
+	}
+	it->second.thumbnailUpload = nextThumbnailUpload_++;
+	it->second.thumbnailGeneration = generation;
+	return it->second.thumbnailUpload;
+}
+
+void YouTubeProvider::UploadThumbnail(OAuthAccount &acct, const DestinationId &dest, const std::string &videoId,
+				      const std::string &bytes, const std::string &digest, uint64_t upload)
+{
+	ThumbnailAttempt first = SendThumbnail(acct, dest, videoId, bytes, 1);
+	if (first.applied) {
+		ThumbnailApplied(dest, videoId, digest, upload, 1);
+		return;
+	}
+	if (first.failure != ThumbnailFailure::Transient) {
+		ThumbnailNotApplied(dest, videoId, first.failure, 1, first.reason);
+		return;
+	}
+	if (upload == 0) {
+		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnails.set not retried for video " +
+			videoId + ": the destination is no longer live");
+		return;
+	}
+	// Capturing `this` is safe on the registered-async seam, the one FacebookProvider ends live
+	// videos on. Bridge teardown waits for RunAsync workers, but only up to its bounded drain
+	// (5s), shorter than one upload's HTTP timeout. A worker still inside a request then finishes
+	// after the drain; the provider lives in the registry until static destruction, the worker
+	// checks the shutdown flag before each further send, and a late notice is dropped by
+	// PostToUi's teardown guard.
+	try {
+		AsyncTask::RunAsync([this, acct, dest, videoId, bytes, digest, upload, first]() mutable {
+			RetryThumbnail(std::move(acct), std::move(dest), std::move(videoId), std::move(bytes),
+				       std::move(digest), upload, std::move(first));
+		});
+	} catch (const std::exception &e) {
+		HostLog(std::string("[oauth] YouTube thumbnails.set retry could not be scheduled: ") + e.what());
+		ThumbnailNotApplied(dest, videoId, first.failure, 1, first.reason);
+	}
+}
+
+YouTubeProvider::ThumbnailAttempt YouTubeProvider::SendThumbnail(OAuthAccount &acct, const DestinationId &dest,
+								 const std::string &videoId, const std::string &bytes,
+								 int attempt)
+{
+	ThumbnailAttempt out;
+	Http::HttpReq req;
+	req.method = "POST";
+	req.url = std::string(kThumbnailsSetUrl) + "?videoId=" + Http::UrlEncode(videoId);
+	req.contentType = SniffImageMime(bytes);
+	req.body = bytes;
+	Http::HttpResponse resp;
+	std::string err;
+	const std::string tag = "[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnails.set attempt " +
+				std::to_string(attempt) + "/" + std::to_string(kThumbnailAttempts);
+	// A send that did not complete -- transport failure, a refused token refresh, or the quota
+	// gate refusing without spending anything -- is never the refusal a retry is for. Only the
+	// gate is a cause the owner can be told; the rest is Other.
+	if (!SendAuthed(acct, req, resp, err)) {
+		out.failure = QuotaExhausted() ? ThumbnailFailure::Quota : ThumbnailFailure::Other;
+		out.reason = Err::Diagnostic(err);
+		HostLog(tag + " failed: " + out.reason);
+		return out;
+	}
+	if (resp.status >= 200 && resp.status < 300) {
+		out.applied = true;
+		return out;
+	}
+	out.failure = ClassifyThumbnailRefusal(resp.status, resp.body);
+	const json error = YouTubeFirstError(resp.body);
+	const std::string reason = Str(error, "reason");
+	const std::string message = Str(error, "message");
+	out.reason = "HTTP " + std::to_string(resp.status) + (reason.empty() ? "" : " " + reason) +
+		     (message.empty() ? "" : ": " + message);
+	HostLog(tag + " refused (" +
+		(out.failure == ThumbnailFailure::Transient ? "transient, retried" : "not retried") + "): HTTP " +
+		std::to_string(resp.status) + ": " + resp.body);
+	return out;
+}
+
+void YouTubeProvider::RetryThumbnail(OAuthAccount acct, DestinationId dest, std::string videoId, std::string bytes,
+				     std::string digest, uint64_t upload, ThumbnailAttempt last)
+{
+	std::string broadcastId;
+	const auto superseded = [&] {
+		return Bridge::IsShuttingDown() || !ThumbnailUploadCurrent(dest, upload, broadcastId);
+	};
+	const auto dropped = [&](const char *why) {
+		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnails.set retry for video " + videoId +
+			" dropped: " + why);
+	};
+	const auto droppedSuperseded = [&] {
+		dropped(Bridge::IsShuttingDown() ? "shutting down"
+						 : "the stream stopped, the attempt was abandoned, or a newer upload "
+						   "replaced it");
+	};
+
+	int attempt = 1;
+	for (const std::chrono::seconds delay : kThumbnailRetryDelays) {
+		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnails.set retrying video " + videoId +
+			" in " + std::to_string(delay.count()) + "s");
+		if (Chat::CancelableSleep(delay, superseded)) {
+			droppedSuperseded();
+			return;
+		}
+		// The go-live that started this upload may have failed after it, leaving the entry with no
+		// committed broadcast; only the video actually live on this destination is worth a send.
+		if (broadcastId != videoId) {
+			dropped("it is not the broadcast live on this destination");
+			return;
+		}
+		last = SendThumbnail(acct, dest, videoId, bytes, ++attempt);
+		if (last.applied) {
+			ThumbnailApplied(dest, videoId, digest, upload, attempt);
+			return;
+		}
+		if (last.failure != ThumbnailFailure::Transient) {
+			break;
+		}
+	}
+	if (superseded()) {
+		droppedSuperseded();
+		return;
+	}
+	ThumbnailNotApplied(dest, videoId, last.failure, attempt, last.reason);
+}
+
+bool YouTubeProvider::ThumbnailUploadCurrent(const DestinationId &dest, uint64_t upload, std::string &broadcastId) const
+{
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (upload == 0 || it == broadcasts_.end() || it->second.thumbnailUpload != upload) {
+		broadcastId.clear();
+		return false;
+	}
+	broadcastId = it->second.broadcastId;
+	return true;
+}
+
+void YouTubeProvider::ThumbnailApplied(const DestinationId &dest, const std::string &videoId, const std::string &digest,
+				       uint64_t upload, int attempt)
+{
+	bool current = false;
+	{
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		auto it = broadcasts_.find(dest);
+		if (upload != 0 && it != broadcasts_.end() && it->second.thumbnailUpload == upload) {
+			RecordAppliedTo(it->second, videoId, AppliedKind::Thumbnail, digest);
+			current = true;
+		}
+	}
+	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnail applied to video " + videoId + " (image " +
+		digest + ", attempt " + std::to_string(attempt) + "/" + std::to_string(kThumbnailAttempts) +
+		(current ? ")" : "; not recorded, a newer upload or a stop replaced it)"));
+	if (current) {
+		// Withdraws a notice an earlier upload to this destination raised. Only for the current
+		// upload: a late success must not take down the notice of a newer one that failed.
+		Bridge::EmitMetadataWarning(dest.profileUuid, std::string(), std::string());
+	}
+}
+
+void YouTubeProvider::ThumbnailNotApplied(const DestinationId &dest, const std::string &videoId,
+					  ThumbnailFailure failure, int attempts, const std::string &reason)
+{
+	const std::string message = ThumbnailNotAppliedMessage(failure, attempts);
+	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " thumbnail NOT applied to video " + videoId + ": " +
+		message + " (" + reason + ")");
+	Bridge::EmitMetadataWarning(dest.profileUuid, message, reason);
 }
 
 std::string YouTubeProvider::ViewerContinuation(const DestinationId &dest) const

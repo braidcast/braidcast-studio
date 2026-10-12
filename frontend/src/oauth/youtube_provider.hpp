@@ -51,6 +51,29 @@ std::string YouTubeErrorReason(const std::string &body);
 enum class YouTubeErrorClass { Other, RateLimited, QuotaExhausted };
 YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason);
 
+// Why a thumbnail did not land. It decides both whether the upload is tried again and what the
+// owner is told, so the two can never disagree about the cause.
+//
+// Transient is exactly ONE answer, and the only one retried: the 403 "can't be set for the
+// specified video" that a seconds-old broadcast's video has been seen to give and then accept
+// about fifty seconds later. Permission is the 403 sharing its reason "forbidden" whose message
+// says the user may not set custom thumbnails, which no retry fixes. Quota is the daily quota
+// being spent, Image an image YouTube (or the size check before the upload) will not take, File
+// an image file on this computer that could not be read or is empty, which YouTube never saw,
+// and Other everything else, unrecognized answers included -- 429 uploadRateLimitExceeded among them,
+// which a prompt retry only deepens. ClassifyYouTubeError is deliberately not the retry test: it
+// reads every 429 as a passing rate limit.
+enum class ThumbnailFailure { Transient, Permission, Quota, Image, File, Other };
+
+// The cause behind a completed thumbnails.set answer that was not 2xx.
+ThumbnailFailure ClassifyThumbnailRefusal(long status, const std::string &body);
+
+// The owner-facing sentence for a thumbnail that did not land, after `attempts` requests (0 when
+// none was sent). Only Transient suggests sending it again; every other cause names what would
+// actually help, or nothing. The attempt count is part of the sentence, not of the platform's
+// reason, so a UI that shortens the reason cannot cut it off.
+std::string ThumbnailNotAppliedMessage(ThumbnailFailure failure, int attempts);
+
 // The ONE privacyStatus a logged-out viewer may not watch, and therefore the only one the
 // free (anonymous) chat reader cannot see. Public and UNLISTED both read free -- measured
 // 2026-08-15: an unlisted broadcast's InnerTube payload carries the live chat renderer and the
@@ -158,6 +181,10 @@ public:
 	// targets. Called per connected account from streaming.stop.
 	void clearActiveBroadcast(const std::string &accountId) override;
 	void clearActiveBroadcastDestination(const DestinationId &dest) override;
+
+	// Cancels a pending thumbnail retry for every destination of `profileUuid` whose upload began
+	// in go-live generation `generation` or earlier, through the upload number the retry checks.
+	void forgetAttempt(const std::string &profileUuid, uint64_t generation) override;
 
 	// Balanced hold on "this DESTINATION's live chat is being read", one per running chat
 	// poll loop. While a destination's chat is being forwarded, that forward is the
@@ -324,6 +351,25 @@ private:
 		std::string appliedSnippet;
 		std::string appliedThumbnail;
 
+		// The number of the newest thumbnail upload started for this destination, 0 for none.
+		// Numbers come from nextThumbnailUpload_ and are never reused, so a match proves the
+		// entry is the one the upload started on and nothing newer has replaced it: a go-live
+		// resets the entry to 0, and forgetAttempt sets it back to 0.
+		//
+		// A refused upload's retries run on a RunAsync worker that owns its own copies of
+		// everything it sends (account, video id, bytes, digest) and holds only this number to
+		// ask whether it is still wanted. It gives up without sending when the entry is gone
+		// (stream stopped), the number no longer matches (a newer upload, a go-live, an aborted
+		// attempt), the committed broadcast is another video, or the bridge is shutting down.
+		// An answer is recorded only while the number still matches, checked under the same
+		// lock as the write. broadcastMutex_ is never held across a request or a sleep, so the
+		// worker adds no lock order of its own.
+		uint64_t thumbnailUpload = 0;
+		// Bridge::GoLiveGeneration() when that upload began. forgetAttempt matches on it, so an
+		// abandoned attempt cancels only uploads from its own generation or before, never one a
+		// later go-live started.
+		uint64_t thumbnailGeneration = 0;
+
 		std::string &Digest(AppliedKind kind)
 		{
 			switch (kind) {
@@ -380,6 +426,53 @@ private:
 	std::string AppliedDigest(const DestinationId &dest, const std::string &videoId, AppliedKind kind) const;
 	void RecordApplied(const DestinationId &dest, const std::string &videoId, AppliedKind kind,
 			   const std::string &digest);
+	// RecordApplied's write, for a caller already holding broadcastMutex_ on `bs`.
+	static void RecordAppliedTo(BroadcastState &bs, const std::string &videoId, AppliedKind kind,
+				    const std::string &digest);
+
+	// Source of BroadcastState::thumbnailUpload. Guarded by broadcastMutex_; starts at 1 so 0
+	// can mean "no upload".
+	uint64_t nextThumbnailUpload_ = 1;
+
+	// The ONE thumbnails.set path, shared by go-live and the mid-stream edit. The first attempt
+	// runs inline. A Transient refusal hands the remaining attempts to a background retry, so
+	// the go-live prelude never waits on one. A thumbnail that finally does not land is reported
+	// to the owner (ThumbnailNotApplied) rather than only logged. `upload` is BeginThumbnailUpload's.
+	void UploadThumbnail(OAuthAccount &acct, const DestinationId &dest, const std::string &videoId,
+			     const std::string &bytes, const std::string &digest, uint64_t upload);
+
+	// Starts a thumbnail push for `dest`: the next upload number becomes the entry's, which
+	// supersedes every older upload's retry. Every push that names a thumbnail takes one before
+	// anything can fail or be skipped, so an older upload can never land over a newer choice or
+	// withdraw its notice. Returns 0 when the entry is gone.
+	uint64_t BeginThumbnailUpload(const DestinationId &dest);
+
+	// One thumbnails.set request. `reason` is the platform's short cause when it did not apply.
+	struct ThumbnailAttempt {
+		bool applied = false;
+		ThumbnailFailure failure = ThumbnailFailure::Other;
+		std::string reason;
+	};
+	ThumbnailAttempt SendThumbnail(OAuthAccount &acct, const DestinationId &dest, const std::string &videoId,
+				       const std::string &bytes, int attempt);
+
+	// The background half of UploadThumbnail: the waits and the attempts after the first.
+	// Everything it sends is its own copy, taken by value. See BroadcastState::thumbnailUpload.
+	void RetryThumbnail(OAuthAccount acct, DestinationId dest, std::string videoId, std::string bytes,
+			    std::string digest, uint64_t upload, ThumbnailAttempt last);
+
+	// False once `upload` is no longer the newest upload for `dest`, or the entry is gone. Fills
+	// `broadcastId` with the destination's committed broadcast, which is "" while the go-live
+	// apply that started the upload has not committed it yet.
+	bool ThumbnailUploadCurrent(const DestinationId &dest, uint64_t upload, std::string &broadcastId) const;
+
+	// Records an applied thumbnail only while `upload` is still the destination's newest, and
+	// only then withdraws an earlier notice about it.
+	void ThumbnailApplied(const DestinationId &dest, const std::string &videoId, const std::string &digest,
+			      uint64_t upload, int attempt);
+	// Logs a thumbnail that did not land and tells the owner, with the sentence for its cause.
+	void ThumbnailNotApplied(const DestinationId &dest, const std::string &videoId, ThumbnailFailure failure,
+				 int attempts, const std::string &reason);
 
 	// The account's currently-live destinations. The one read of broadcasts_ behind both
 	// IsAccountBroadcasting and ShouldPollSuperChats, so the two cannot disagree about what

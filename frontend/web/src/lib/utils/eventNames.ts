@@ -62,6 +62,7 @@ export const EV = {
   scheduleChanged: "schedule.changed",
   streamingStartFailed: "streaming.startFailed",
   streamingMetadataMismatch: "streaming.metadataMismatch",
+  streamingMetadataWarning: "streaming.metadataWarning",
 } as const;
 
 export type BridgeEvent = (typeof EV)[keyof typeof EV];

@@ -123,7 +123,10 @@ bool HasSentMetadata(const std::string &profileUuid);
 // Nothing would consume these, and left in place they make the prelude skip those
 // destinations on every later go-live, which is the exact push a scheduled start
 // depends on.
-void ForgetSentMetadata(const std::vector<std::string> &profileUuids);
+// `generation` is the go-live generation the attempt belongs to: the prelude's or arm's
+// captured value, or the current one for the modal's own abort. Providers drop only the
+// background work begun in it or earlier (StreamProvider::forgetAttempt).
+void ForgetSentMetadata(const std::vector<std::string> &profileUuids, uint64_t generation);
 // The stop edge's sweep: a session that opened consumed its own entries, so anything
 // still here belongs to a destination that never came up.
 void ClearSentMetadata();
@@ -168,6 +171,17 @@ void SelfHealStreamCredentials();
 // token as dead) reaches the account chips without waiting for the next poll. Safe
 // to call from any thread; marshals to TID_UI and no-ops after teardown.
 void EmitOAuthStatus();
+
+// Push "streaming.metadataWarning": one part of a destination's metadata did not land while the
+// rest did, reported apart from streaming.metadataMismatch so it never replaces that event's row
+// for the same profile. `message` is the owner-facing sentence, `reason` the platform's cause.
+// The label is left for the UI to resolve from `profileUuid`, as on the Stream Information
+// path. Safe to call from any thread; marshals to TID_UI and no-ops after teardown.
+void EmitMetadataWarning(const std::string &profileUuid, const std::string &message, const std::string &reason);
+
+// The current go-live generation, bumped on the UI thread by every go-live and every stop.
+// Safe to read from any thread; a provider tags the background work a push starts with it.
+uint64_t GoLiveGeneration();
 
 // Apply a Default-canvas definition's resolution/color to the global/main video
 // pipeline (obs_reset_video, preserving the non-color fields and re-letterboxing

@@ -41,6 +41,7 @@ import { EV } from "$lib/utils/eventNames";
     showMetadataMismatchToast,
     hideMetadataMismatchToast,
     type MismatchRow,
+    type WarningRow,
   } from "$lib/utils/metadataMismatchToast";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
@@ -71,6 +72,9 @@ import { EV } from "$lib/utils/eventNames";
   // Rows accumulate across the per-destination events of a single attempt; each arrival re-pushes
   // the toast with the whole set.
   let metadataMismatches = $state<MismatchRow[]>([]);
+  // The parts of a push that did not land (streaming.metadataWarning), one per profile, shown in
+  // the same notice and cleared by the same edges as the rows above.
+  let metadataWarnings = $state<WarningRow[]>([]);
   // The toast unmounts taking the focused button with it, so focus goes to the GO LIVE button
   // rather than to nothing. Kept apart from forgetMismatches below: this one fires on every
   // teardown that leaves no toast up and was holding focus, including ones the user did not ask
@@ -93,6 +97,16 @@ import { EV } from "$lib/utils/eventNames";
   // destination's notice from an empty base and silently drop the ones already reported.
   function forgetMismatches(): void {
     metadataMismatches = [];
+    metadataWarnings = [];
+  }
+  // The one push of the notice, with everything currently held. `anyRunning` is authoritative:
+  // streaming.changed's start edge lands before these arrive, so a push answered before anything
+  // went live still reads as pre-live.
+  function showMetadataNotice(): void {
+    showMetadataMismatchToast(metadataMismatches, metadataWarnings, anyRunning, {
+      onUserDismiss: forgetMismatches,
+      onFocusReturn: focusGoLive,
+    });
   }
   // Shared host-pushed 1 Hz stats (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
@@ -360,7 +374,7 @@ import { EV } from "$lib/utils/eventNames";
       // the notice stops describing anything. Cleared on the STOP edge only -- the start edge
       // belongs to the same attempt whose mismatches arrive just after it.
       if (!p.active) {
-        metadataMismatches = [];
+        forgetMismatches();
         hideMetadataMismatchToast();
       }
     });
@@ -380,7 +394,7 @@ import { EV } from "$lib/utils/eventNames";
     const offStartFailed = obs.on(EV.streamingStartFailed, (p) => {
       // Nothing is going live, so anything reported about this attempt describes a stream that
       // will not happen.
-      metadataMismatches = [];
+      forgetMismatches();
       hideMetadataMismatchToast();
       // Announced assertively: nothing started, the streamer is sitting at the button waiting
       // for it to, and a polite queue would hold that until they had moved on.
@@ -423,21 +437,35 @@ import { EV } from "$lib/utils/eventNames";
         ),
         ...incoming,
       ];
+      metadataWarnings = metadataWarnings.filter((w) => !p.cleared.includes(w.profileUuid));
       // A pure retraction (streamMeta.forgetSent sends `cleared` with no destinations) only
       // removes information. Withdraw the notice if nothing is left, but do not raise a fresh
       // 9-second one for the rows that happen to survive -- nothing new was reported about them.
       if (incoming.length === 0) {
-        if (metadataMismatches.length === 0) {
+        if (metadataMismatches.length === 0 && metadataWarnings.length === 0) {
           hideMetadataMismatchToast();
         }
         return;
       }
-      // `anyRunning` is authoritative here: streaming.changed's start edge lands before these
-      // arrive, so a push answered before anything went live still reads as pre-live.
-      showMetadataMismatchToast(metadataMismatches, anyRunning, {
-        onUserDismiss: forgetMismatches,
-        onFocusReturn: focusGoLive,
-      });
+      showMetadataNotice();
+    });
+    // A part of a destination's push that did not land (a refused YouTube thumbnail). Subscribed
+    // here for the same reason as the two above: it can arrive well after the modal has closed,
+    // once a background retry gives up, and on paths that never open the modal. One per profile:
+    // a newer outcome replaces an older one, and an empty message only withdraws it, under the
+    // same no-fresh-toast rule as the mismatch retraction above.
+    const offWarning = obs.on(EV.streamingMetadataWarning, (w) => {
+      metadataWarnings = [
+        ...metadataWarnings.filter((r) => r.profileUuid !== w.profileUuid),
+        ...(w.message ? [w] : []),
+      ];
+      if (!w.message) {
+        if (metadataMismatches.length === 0 && metadataWarnings.length === 0) {
+          hideMetadataMismatchToast();
+        }
+        return;
+      }
+      showMetadataNotice();
     });
     return () => {
       offStatus();
@@ -448,6 +476,7 @@ import { EV } from "$lib/utils/eventNames";
       offStartFailed();
       offArmFailed();
       offMismatch();
+      offWarning();
     };
   });
 

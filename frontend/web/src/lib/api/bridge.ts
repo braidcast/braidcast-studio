@@ -2841,6 +2841,14 @@ export interface ObsEvents {
     // both retract and report.
     cleared: string[];
   };
+  // One part of a destination's metadata did not land while the rest did -- a YouTube thumbnail
+  // refused at go-live or on a mid-stream update, after any retries. Its own event rather than a
+  // metadataMismatch row, which is keyed by profile and would replace that destination's field
+  // report; the UI shows both in one notice. `message` is the sentence to show (it names the cause
+  // and the attempt count), `reason` the platform's own words. An EMPTY `message` withdraws that
+  // profile's earlier warning: the part has since landed. `destination` is empty: resolve the
+  // label from `profileUuid`.
+  "streaming.metadataWarning": { destination: string; profileUuid: string; message: string; reason: string };
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };

@@ -1,6 +1,13 @@
 // What a go-live actually carried, when it did not carry what was asked. Routed through the
 // one shared toast surface, which the sibling refusal (streaming.startFailed) also uses.
 //
+// It also carries the parts of a push that did not land while the rest did
+// (streaming.metadataWarning, such as a refused YouTube thumbnail). Those arrive on their own event,
+// and often well after the mismatch rows, once a background retry gives up. They render here,
+// beside the rows, rather than as a toast of their own: the surface holds one toast at a time, so
+// two notices raised apart would each take the other down. Every push renders the whole current
+// set, which also makes the order in which the two events land irrelevant.
+//
 // It names destinations and fields and prints no requested/actual values. Only cosmetic
 // differences can reach here -- a safety disagreement (privacy/visibility) refuses the go-live
 // via streaming.startFailed and never arrives -- so those values would only be a diff of text
@@ -20,6 +27,9 @@ import { joinNames } from "$lib/utils/format";
  *  contract rather than restated, so a field added on the C++ side cannot silently go missing
  *  from the type this file reasons about. */
 export type MismatchRow = ObsEvents["streaming.metadataMismatch"]["destinations"][number];
+
+/** One destination's streaming.metadataWarning: a part of its push that did not land. */
+export type WarningRow = ObsEvents["streaming.metadataWarning"];
 
 const KIND = "metadataMismatch";
 
@@ -53,9 +63,10 @@ function short(s: string): string {
   return s.length > REASON_MAX ? s.slice(0, REASON_MAX - 1).trimEnd() + "…" : s;
 }
 
-// The Stream Information path emits an empty label -- it runs off the UI thread and cannot
-// read the profile store that owns the name. Resolved here instead of guessed there.
-function nameFor(row: MismatchRow): string {
+// The Stream Information path and the warning event emit an empty label -- both run off the UI
+// thread and cannot read the profile store that owns the name. Resolved here instead of guessed
+// there.
+function nameFor(row: { destination: string; profileUuid: string }): string {
   if (row.destination) {
     return row.destination;
   }
@@ -91,8 +102,13 @@ function groupRows(
   return [...groups.values()].map((g) => ({ detail: g.detail, names: uniq(g.names) }));
 }
 
-function clausesFor(rows: MismatchRow[], streaming: boolean): string[] {
-  const clauses: string[] = [];
+function clausesFor(rows: MismatchRow[], warnings: WarningRow[], streaming: boolean): string[] {
+  // First: these are the ones with something to do about them. The sentence comes from the host,
+  // which owns the cause and keeps the attempt count in it, so only the platform's reason is
+  // shortened.
+  const clauses = warnings.map(
+    (w) => `${nameFor(w)}: ${w.message}${w.reason ? ` (${short(w.reason)})` : ""}`,
+  );
   for (const g of groupRows(
     rows.filter((r) => r.fields.length > 0),
     (r) => r.fields.map((f) => f.label.toLowerCase()),
@@ -124,8 +140,14 @@ function clausesFor(rows: MismatchRow[], streaming: boolean): string[] {
   return [...clauses.slice(0, MAX_CLAUSES), `${hidden} more difference${hidden === 1 ? "" : "s"} not shown`];
 }
 
-function push(rows: MismatchRow[], streaming: boolean, onUserDismiss: () => void, onFocusReturn: () => void): void {
-  const clauses = clausesFor(rows, streaming);
+function push(
+  rows: MismatchRow[],
+  warnings: WarningRow[],
+  streaming: boolean,
+  onUserDismiss: () => void,
+  onFocusReturn: () => void,
+): void {
+  const clauses = clausesFor(rows, warnings, streaming);
   // Rows carrying no fields, no reason and no unconfirmed describe nothing. Retract rather than
   // return: leaving the previous push standing would keep a notice up for state that is gone.
   if (clauses.length === 0) {
@@ -149,13 +171,14 @@ function push(rows: MismatchRow[], streaming: boolean, onUserDismiss: () => void
   });
 }
 
-/** Surface the accumulated rows for one go-live attempt, replacing any earlier push. */
+/** Surface the accumulated rows and warnings for one go-live attempt, replacing any earlier push. */
 export function showMetadataMismatchToast(
   rows: MismatchRow[],
+  warnings: WarningRow[],
   streaming: boolean,
   hooks: { onUserDismiss: () => void; onFocusReturn: () => void },
 ): void {
-  if (rows.length === 0) {
+  if (rows.length === 0 && warnings.length === 0) {
     hideMetadataMismatchToast();
     return;
   }
@@ -165,12 +188,12 @@ export function showMetadataMismatchToast(
   streamProfileStore.start();
   const token = ++pending;
   if (streamProfileStore.loaded) {
-    push(rows, streaming, hooks.onUserDismiss, hooks.onFocusReturn);
+    push(rows, warnings, streaming, hooks.onUserDismiss, hooks.onFocusReturn);
     return;
   }
   void streamProfileStore.whenReady().then(() => {
     if (token === pending) {
-      push(rows, streaming, hooks.onUserDismiss, hooks.onFocusReturn);
+      push(rows, warnings, streaming, hooks.onUserDismiss, hooks.onFocusReturn);
     }
   });
 }

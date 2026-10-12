@@ -11407,13 +11407,27 @@ struct BroadcastPreludeJob {
 
 // Only one go-live prelude may be in flight: it is network work, and a double-tap on the
 // hotkey would otherwise run two and create two broadcasts for one destination. Touched
-// only from PostToUi bodies, so the UI thread owns both of these and neither needs an atomic.
+// only from PostToUi bodies, so the UI thread owns it and it needs no atomic.
 bool g_goLivePreludeInFlight = false;
 
-// Bumped by every go-live and every stop. The prelude captures it and starts the encoders
-// only if it still matches, so a stop pressed while the prelude is in flight cannot be
-// overtaken seconds later by the go-live it was meant to cancel.
-uint64_t g_goLiveGeneration = 0;
+// Bumped by every go-live and every stop, only on the UI thread. The prelude captures it and
+// starts the encoders only if it still matches, so a stop pressed while the prelude is in
+// flight cannot be overtaken seconds later by the go-live it was meant to cancel. Atomic
+// because providers also read it from workers, through GoLiveGeneration.
+std::atomic<uint64_t> g_goLiveGeneration{0};
+
+// Ends the background work an attempt's pushes left running for `profileUuids` (see
+// StreamProvider::forgetAttempt). Apart from ForgetSentMetadata because a refused prelude
+// owes it to every profile it pushed to, recorded or not, and a provider can start such work
+// (a YouTube thumbnail retry) before a later step of the same push fails.
+void ForgetAttemptWork(const std::vector<std::string> &profileUuids, uint64_t generation)
+{
+	for (OAuth::StreamProvider *provider : OAuth::Registry().All()) {
+		for (const std::string &uuid : profileUuids) {
+			provider->forgetAttempt(uuid, generation);
+		}
+	}
+}
 
 // The dedup key one prelude destination claims: what actually RECEIVES the call. A persistent
 // channel is ONE place however many profiles point at it, so a second job would PATCH the same
@@ -11691,11 +11705,14 @@ void StartStreamingAllOnUi()
 		// why the collection skipped those destinations -- and grows with what this
 		// prelude pushes below.
 		std::vector<std::string> recorded = alreadyRecorded;
+		// Every profile this prelude pushed to, recorded or not: what a refusal cancels.
+		std::vector<std::string> pushed;
 		for (const BroadcastPreludeJob &job : jobs) {
 			RunPreludeJob(job, failures, mismatches, recorded);
+			pushed.push_back(job.profileUuid);
 		}
 		AsyncTask::PostToUi([failures = std::move(failures), mismatches = std::move(mismatches),
-				     recorded = std::move(recorded), generation] {
+				     recorded = std::move(recorded), pushed = std::move(pushed), generation] {
 			g_goLivePreludeInFlight = false;
 			if (generation != g_goLiveGeneration) {
 				// Stopped while this was in flight. Drop any broadcast the prelude
@@ -11709,7 +11726,7 @@ void StartStreamingAllOnUi()
 				}
 				// The stop already swept the map, but this attempt kept pushing after
 				// that and recorded whatever landed.
-				ForgetSentMetadata(recorded);
+				ForgetSentMetadata(recorded, generation);
 				HostLog("[stream] go-live prelude cancelled by a stop; not starting");
 				ObsBootstrap::Scheduler().NoteStartFailed();
 				return;
@@ -11718,7 +11735,10 @@ void StartStreamingAllOnUi()
 				// No session is coming, so the channels this attempt pushed to have
 				// nothing left to consume their records -- and keeping them would skip
 				// those same channels on the next go-live.
-				ForgetSentMetadata(recorded);
+				ForgetSentMetadata(recorded, generation);
+				// A create-per-go-live destination records nothing, yet its push may have
+				// started a thumbnail retry that would report on a stream that never began.
+				ForgetAttemptWork(pushed, generation);
 				// Nothing starts, including destinations that were prepared fine.
 				// Same policy the modal has always applied to a failed metadata
 				// push: going live half-configured streams at a channel whose
@@ -11911,7 +11931,7 @@ ArmOutcome ArmBindingLive(const std::string &bindingUuid, std::string &error)
 				// What this recorded has to come back out or the channel is skipped on
 				// every later go-live: a stop sweeps the sent-metadata map, and this
 				// attempt kept pushing after that.
-				ForgetSentMetadata(recorded);
+				ForgetSentMetadata(recorded, generation);
 				// prepareDestination may also have cached a broadcast as this
 				// destination's active one after that same sweep. Nothing else takes it
 				// out: the next go-live would bind to a broadcast nothing is streaming
@@ -11937,7 +11957,8 @@ ArmOutcome ArmBindingLive(const std::string &bindingUuid, std::string &error)
 				return;
 			}
 			if (!failures.empty()) {
-				ForgetSentMetadata(recorded);
+				ForgetSentMetadata(recorded, generation);
+				ForgetAttemptWork({dest.profileUuid}, generation);
 				// Only this destination is refused. Go-live refuses the whole attempt
 				// for one unpreparable destination because nothing has started yet;
 				// here the broadcast is running, and taking it down to punish a
@@ -13119,6 +13140,16 @@ void EmitOAuthStatus()
 	AsyncTask::PostToUi([] { EmitEvent(EventNames::kOauthStatus, BuildOAuthStatusArray()); });
 }
 
+void EmitMetadataWarning(const std::string &profileUuid, const std::string &message, const std::string &reason)
+{
+	AsyncTask::PostToUi([profileUuid, message, reason] {
+		EmitEvent(EventNames::kStreamingMetadataWarning, json{{"destination", std::string()},
+								      {"profileUuid", profileUuid},
+								      {"message", message},
+								      {"reason", reason}});
+	});
+}
+
 void EmitOAuthConnectError(const std::string &profileUuid, const std::string &providerId, const std::string &message)
 {
 	AsyncTask::PostToUi([profileUuid, providerId, message] {
@@ -13956,7 +13987,7 @@ bool MethodStreamMetaForgetSent(const json &params, json &result, std::string &e
 		}
 		uuids.push_back(v.get<std::string>());
 	}
-	ForgetSentMetadata(uuids);
+	ForgetSentMetadata(uuids, g_goLiveGeneration);
 	// The pushes those uuids stand for are abandoned, so anything already reported about them
 	// describes a stream that is not happening. Told rather than left to expire: nothing else
 	// ever contradicts it, since no streaming edge follows an abort.
@@ -15959,6 +15990,11 @@ void WithGroupResizeHeldForTest(obs_sceneitem_t *groupItem, const std::function<
 	during();
 }
 
+uint64_t GoLiveGeneration()
+{
+	return g_goLiveGeneration;
+}
+
 void RecordSentMetadata(const std::string &profileUuid, const json &fields)
 {
 	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
@@ -15971,12 +16007,18 @@ bool HasSentMetadata(const std::string &profileUuid)
 	return g_sentMetadata.find(profileUuid) != g_sentMetadata.end();
 }
 
-void ForgetSentMetadata(const std::vector<std::string> &profileUuids)
+void ForgetSentMetadata(const std::vector<std::string> &profileUuids, uint64_t generation)
 {
-	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
-	for (const std::string &uuid : profileUuids) {
-		g_sentMetadata.erase(uuid);
+	{
+		std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+		for (const std::string &uuid : profileUuids) {
+			g_sentMetadata.erase(uuid);
+		}
 	}
+	// Every path that forgets an attempt's records is one where that attempt gets no session,
+	// so whatever its pushes left running in the background ends here too. Outside the lock:
+	// a provider takes its own.
+	ForgetAttemptWork(profileUuids, generation);
 }
 
 void ClearSentMetadata()

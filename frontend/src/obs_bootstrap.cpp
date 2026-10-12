@@ -108,6 +108,7 @@
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
 #include "util/speaker_layout.hpp"
+#include "oauth/youtube_provider.hpp"
 #include "oauth/youtube_snippet.hpp"
 #include "scene/main_channel.hpp"
 #include "scene/scene_items.hpp"
@@ -10719,6 +10720,124 @@ void ObsBootstrap::RunScreenshotGateSelfTest()
 			    "idle path was not exercised; synthesized elision ") +
 		(synthBlanked ? "blanked the capture" : "did NOT blank the capture (BUG: elision is inert)") +
 		" and ungating " + (synthRestored ? "restored it (OK)" : "did NOT restore it (BUG)"));
+}
+
+void ObsBootstrap::RunYouTubeThumbnailSelfTest()
+{
+	using Bridge::json;
+	using OAuth::ThumbnailFailure;
+
+	// A YouTube error body with one errors[] entry, shaped as the Data API sends it.
+	const auto body = [](const char *reason, const char *domain, const char *message) {
+		const json entry = json{{"reason", reason}, {"domain", domain}, {"message", message}};
+		return json{{"error", json{{"code", 0}, {"message", message}, {"errors", json::array({entry})}}}}.dump();
+	};
+	const char *transient =
+		"The thumbnail can't be set for the specified video. The request might not be properly authorized.";
+	const char *transientCurly =
+		"The thumbnail can\xE2\x80\x99t be set for the specified video. The request might not be properly authorized.";
+	const char *noPermission =
+		"The authenticated user doesn't have permissions to upload and set custom video thumbnails.";
+
+	// Each predicate of a cause is pinned by a case differing from that cause's first row in
+	// exactly that one field.
+	struct Case {
+		const char *name;
+		long status;
+		std::string body;
+		ThumbnailFailure want;
+	};
+	const Case cases[] = {
+		{"transient", 403, body("forbidden", "youtube.thumbnail", transient), ThumbnailFailure::Transient},
+		{"transient, typographic apostrophe", 403, body("forbidden", "youtube.thumbnail", transientCurly),
+		 ThumbnailFailure::Transient},
+		{"transient body, status 429", 429, body("forbidden", "youtube.thumbnail", transient),
+		 ThumbnailFailure::Other},
+		{"transient body, status 400", 400, body("forbidden", "youtube.thumbnail", transient),
+		 ThumbnailFailure::Other},
+		{"transient body, reason not forbidden", 403,
+		 body("insufficientPermissions", "youtube.thumbnail", transient), ThumbnailFailure::Other},
+		{"transient body, another domain", 403, body("forbidden", "global", transient),
+		 ThumbnailFailure::Other},
+		{"forbidden, unrecognized message", 403, body("forbidden", "youtube.thumbnail", "Something new."),
+		 ThumbnailFailure::Other},
+		{"permission", 403, body("forbidden", "youtube.thumbnail", noPermission), ThumbnailFailure::Permission},
+		{"permission, another domain", 403, body("forbidden", "global", noPermission),
+		 ThumbnailFailure::Permission},
+		{"permission body, status 400", 400, body("forbidden", "youtube.thumbnail", noPermission),
+		 ThumbnailFailure::Other},
+		{"permission body, reason not forbidden", 403,
+		 body("insufficientPermissions", "youtube.thumbnail", noPermission), ThumbnailFailure::Other},
+		{"quotaExceeded", 403, body("quotaExceeded", "youtube.quota", "quota"), ThumbnailFailure::Quota},
+		{"dailyLimitExceeded", 403, body("dailyLimitExceeded", "usageLimits", "limit"),
+		 ThumbnailFailure::Quota},
+		{"invalidImage", 400, body("invalidImage", "youtube.thumbnail", "invalid"), ThumbnailFailure::Image},
+		{"mediaBodyRequired", 400, body("mediaBodyRequired", "youtube.thumbnail", "no body"),
+		 ThumbnailFailure::Image},
+		{"invalidImage, status 403", 403, body("invalidImage", "youtube.thumbnail", "invalid"),
+		 ThumbnailFailure::Other},
+		{"413 body too large", 413, "", ThumbnailFailure::Image},
+		{"429 uploadRateLimitExceeded", 429, body("uploadRateLimitExceeded", "youtube.thumbnail", "too many"),
+		 ThumbnailFailure::Other},
+		{"404 videoNotFound", 404, body("videoNotFound", "youtube.video", "not found"),
+		 ThumbnailFailure::Other},
+		{"500 backendError", 500, body("backendError", "global", transient), ThumbnailFailure::Other},
+		{"403 unparseable body", 403, "<html>forbidden</html>", ThumbnailFailure::Other},
+	};
+
+	std::string failed;
+	const auto fail = [&failed](const std::string &name) {
+		failed += failed.empty() ? name : "; " + name;
+	};
+	for (const Case &c : cases) {
+		if (OAuth::ClassifyThumbnailRefusal(c.status, c.body) != c.want) {
+			fail(c.name);
+		}
+	}
+
+	// The owner-facing sentences: only Transient suggests sending again, none names a control by a
+	// label it may not have, each cause reads differently, and the attempt count is in the sentence.
+	const auto has = [](const std::string &text, const char *part) {
+		return text.find(part) != std::string::npos;
+	};
+	const std::string transientMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Transient, 3);
+	const std::string permissionMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Permission, 1);
+	const std::string quotaMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Quota, 1);
+	const std::string imageMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Image, 0);
+	const std::string fileMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::File, 0);
+	const std::string otherMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Other, 1);
+	const std::string otherRetriedMsg = OAuth::ThumbnailNotAppliedMessage(ThumbnailFailure::Other, 2);
+	const std::string all[] = {transientMsg, permissionMsg, quotaMsg, imageMsg, fileMsg, otherMsg, otherRetriedMsg};
+	if (!has(transientMsg, "3 tries") || !has(transientMsg, "again from Edit")) {
+		fail("transient message");
+	}
+	if (!has(permissionMsg, "Verify the channel in YouTube Studio")) {
+		fail("permission message");
+	}
+	if (!has(quotaMsg, "quota is used up")) {
+		fail("quota message");
+	}
+	if (!has(imageMsg, "image")) {
+		fail("image message");
+	}
+	// YouTube never received a file that could not be read, so its sentence must not blame YouTube.
+	if (!has(fileMsg, "image file") || has(fileMsg, "YouTube can't")) {
+		fail("file message");
+	}
+	if (otherMsg != "YouTube thumbnail was not applied." || !has(otherRetriedMsg, "2 tries")) {
+		fail("other message");
+	}
+	for (const std::string &m : all) {
+		if (has(m, "Update info") || (&m != &all[0] && has(m, "again"))) {
+			fail("message '" + m + "' names a control or suggests a re-send");
+		}
+	}
+	if (std::set<std::string>(std::begin(all), std::end(all)).size() != std::size(all)) {
+		fail("two causes share a message");
+	}
+
+	HostLog(std::string("[selftest] youtube-thumbnail causes + messages -> ") +
+		(failed.empty() ? "OK (" + std::to_string(std::size(cases)) + " cases)" : "MISMATCH: " + failed));
 }
 
 void ObsBootstrap::RunCalendarSelfTest()

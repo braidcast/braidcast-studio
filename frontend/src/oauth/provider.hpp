@@ -750,6 +750,21 @@ public:
 	// stream that has ended for as long as the session lasts.
 	virtual void clearActiveBroadcastDestination(const DestinationId &dest) { (void)dest; }
 
+	// A go-live attempt that pushed metadata for `profileUuid` ended without a session (the
+	// modal aborted, or the prelude refused or abandoned it). Drop the background work that
+	// push left running, so it neither acts on nor reports about a stream that is not
+	// happening. The broadcast cache is deliberately left alone. Default no-op; YouTube
+	// overrides to cancel a pending thumbnail retry.
+	//
+	// `generation` is the go-live generation the attempt belongs to (Bridge::GoLiveGeneration).
+	// Only work begun in it or earlier is dropped: a forget that lands late, after a stop and a
+	// new go-live, must not cancel what that newer go-live started for the same profile.
+	virtual void forgetAttempt(const std::string &profileUuid, uint64_t generation)
+	{
+		(void)profileUuid;
+		(void)generation;
+	}
+
 protected:
 	// One rung of prepareDestination's ladder: ask the platform what it holds for this
 	// destination now and compare it against what the destination asked for.
