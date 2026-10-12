@@ -69,6 +69,31 @@ const OverlaySurface::HostLayers *LayersFor(HWND host)
 	return nullptr;
 }
 
+// Hosts whose gate is closed (OverlaySurface::SetHostReady). UI thread.
+std::vector<HWND> &UnreadyHosts()
+{
+	static std::vector<HWND> hosts;
+	return hosts;
+}
+
+bool HostReady(HWND host)
+{
+	const auto &hosts = UnreadyHosts();
+	return std::find(hosts.begin(), hosts.end(), host) == hosts.end();
+}
+
+// Drop `host` from the closed gates; whether it was there.
+bool EraseUnreadyHost(HWND host)
+{
+	auto &hosts = UnreadyHosts();
+	const auto it = std::find(hosts.begin(), hosts.end(), host);
+	if (it == hosts.end()) {
+		return false;
+	}
+	hosts.erase(it);
+	return true;
+}
+
 // The bit a button's press or release is tracked under, or 0 for any other message.
 unsigned ButtonBit(UINT msg, WPARAM wparam)
 {
@@ -186,6 +211,10 @@ bool OverlaySurface::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 		// generation and is still warming.
 		const uint32_t gen = displayGen_.load();
 		if (warmupTimer ? wparam == WarmupTimerId(gen) : wparam == gen) {
+			if (warming_) {
+				DBG(LogCat::Preview, "%s warm-up ended via %s, host %p", tag_.c_str(),
+				    warmupTimer ? "timeout" : "present", static_cast<void *>(host_));
+			}
 			EndWarmup();
 		}
 		return true;
@@ -313,6 +342,59 @@ void OverlaySurface::ClearHost(HWND host)
 {
 	if (host && LayersFor(host)) {
 		SetHostLayers(host, {});
+	}
+}
+
+void OverlaySurface::SetHostReady(HWND host, bool ready)
+{
+	if (!host) {
+		return;
+	}
+	if (!ready) {
+		if (HostReady(host)) {
+			UnreadyHosts().push_back(host);
+		}
+		return;
+	}
+	if (!EraseUnreadyHost(host)) {
+		return;
+	}
+	// A copy: applying a rect can create an HWND, and nothing here may run out of a list
+	// a surface's construction or destruction could change.
+	const std::vector<OverlaySurface *> live = LiveSurfaces();
+	for (OverlaySurface *surface : live) {
+		if (surface->host_ == host && surface->holding_) {
+			surface->holding_ = false;
+			DBG(LogCat::Preview, "%s surface released by its host's gate: %d,%d %dx%d",
+			    surface->tag_.c_str(), surface->heldX_, surface->heldY_, surface->heldCx_,
+			    surface->heldCy_);
+			surface->SetRect(surface->heldX_, surface->heldY_, surface->heldCx_, surface->heldCy_);
+		}
+	}
+}
+
+void OverlaySurface::ForgetHostGate(HWND host)
+{
+	EraseUnreadyHost(host);
+}
+
+void OverlaySurface::LogHostChildren(HWND host, const char *when)
+{
+	if (!host || !Log::DebugEnabled(LogCat::Preview)) {
+		return;
+	}
+	int index = 0;
+	for (HWND child = GetWindow(host, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+		wchar_t cls[64] = {};
+		GetClassNameW(child, cls, int(sizeof(cls) / sizeof(cls[0])));
+		char name[64] = {};
+		WideCharToMultiByte(CP_UTF8, 0, cls, -1, name, int(sizeof(name)), nullptr, nullptr);
+		RECT rc = {};
+		GetWindowRect(child, &rc);
+		MapWindowPoints(HWND_DESKTOP, host, reinterpret_cast<POINT *>(&rc), 2);
+		DBG(LogCat::Preview, "host %p children (%s) #%d %s visible=%d at %ld,%ld %ldx%ld",
+		    static_cast<void *>(host), when, index++, name, int(IsWindowVisible(child)), rc.left, rc.top,
+		    rc.right - rc.left, rc.bottom - rc.top);
 	}
 }
 
@@ -526,12 +608,27 @@ void OverlaySurface::EndWarmup()
 	// No SWP_SHOWWINDOW: a mid-resize burst may have hidden the HWND meanwhile, and
 	// its settle is what shows it again.
 	SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+	LogHostChildren(host_, "warm-up end");
 }
 
 void OverlaySurface::SetRect(int x, int y, int cx, int cy)
 {
 	if (cx <= 0 || cy <= 0) {
 		Hide();
+		return;
+	}
+
+	// The host's page has not shown that it paints: keep only the latest rect until
+	// SetHostReady applies it (see the header).
+	if (!HostReady(host_)) {
+		if (!holding_) {
+			DBG(LogCat::Preview, "%s surface held: its host's page is not ready", tag_.c_str());
+		}
+		holding_ = true;
+		heldX_ = x;
+		heldY_ = y;
+		heldCx_ = cx;
+		heldCy_ = cy;
 		return;
 	}
 
@@ -592,6 +689,7 @@ void OverlaySurface::Hide()
 		resizeDeferred_ = false;
 		KillTimer(hwnd_, kResizeSettleTimerId);
 	}
+	holding_ = false;
 	lastCx_ = 0;
 	lastCy_ = 0;
 	if (hwnd_) {
@@ -637,6 +735,7 @@ void OverlaySurface::Destroy()
 		swallowed_ = 0;
 		dismissed_ = 0;
 	}
+	holding_ = false;
 	lastCx_ = 0;
 	lastCy_ = 0;
 }

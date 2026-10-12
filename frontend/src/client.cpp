@@ -13,6 +13,7 @@
 #include "util/string_util.hpp"
 #include "windowing/overlay_surface.hpp"
 #include "windowing/window_chrome.hpp"
+#include "windowing/window_manager.hpp"
 
 Client::Client() = default;
 
@@ -241,6 +242,11 @@ void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, Terminatio
 		message_router_->OnRenderProcessTerminated(browser);
 	}
 	ReleasePageLayers(browser);
+	// A detached window's preview surfaces would otherwise stay live over its blank page,
+	// through the reload or, past the retry bound, for good.
+	if (WindowManager *wm = WindowManager::Instance()) {
+		wm->OnRendererTerminated(browser);
+	}
 
 	// Without a reload the window keeps its last painted frame but is inert: no JS,
 	// no timers, no bridge subscriptions, and nothing on screen says so. A detached

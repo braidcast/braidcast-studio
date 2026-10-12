@@ -2550,6 +2550,10 @@ export interface ObsMethods {
   // enumerates the live detached windows.
   "window.detach": { windowId: number };
   "window.redock": { redocked: number };
+  // A detached page reports that its animation frames have run since its dock mounted
+  // ({windowId}): the host lets its preview surfaces, held until then, rise over the
+  // page. `ready` is false for a window already gone; that is not an error.
+  "window.ready": { ready: boolean };
   "window.list": { windows: { windowId: number; dock: string }[] };
   // Toggles the host window's borderless fullscreen; returns the new state.
   "window.toggleFullscreen": { fullscreen: boolean };

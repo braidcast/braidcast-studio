@@ -8,12 +8,21 @@
 #include "client.hpp"
 #include "log.hpp"
 #include "native_theme.hpp"
+#include "overlay_surface.hpp"
 #include "preview_window.hpp"
 #include "window_chrome.hpp"
 
 namespace {
 constexpr wchar_t kDetachedClassName[] = L"BraidcastDetached";
 WindowManager *g_wm = nullptr;
+
+// The paint watchdog on a detached host (see the lifetime rule in the header).
+constexpr UINT_PTR kPaintWatchdogTimerId = 1;
+// How long a detached page may take to report window.ready before the watchdog logs that
+// it has not painted. Past a slow first paint: a warm detach logs its page's first preview
+// rect ~0.2 s after the browser is created, and the main window's cold start (renderer
+// spawn plus bundle parse) loads in ~1.05 s.
+constexpr UINT kPaintWatchdogMs = 1500;
 
 ATOM RegisterDetachedClass(HINSTANCE instance)
 {
@@ -24,17 +33,38 @@ ATOM RegisterDetachedClass(HINSTANCE instance)
 	WNDCLASSEXW wc = {0};
 	wc.cbSize = sizeof(wc);
 	// Detached windows host child render surfaces just like the main host window, so the
-	// same anti-flash class setup applies: no background brush to erase white, no
-	// full-window CS_HREDRAW/VREDRAW invalidation (see CreateHostWindow in main.cpp).
+	// same anti-flash setup applies: no full-window CS_HREDRAW/VREDRAW invalidation (see
+	// CreateHostWindow in main.cpp). The brush is the page's own base color, so any client
+	// area the page has not painted reads as the app background rather than as whatever
+	// the redirection surface last held. The class owns the brush for the process lifetime.
 	wc.style = 0;
 	wc.lpfnWndProc = WindowManager::WndProc;
 	wc.hInstance = instance;
 	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-	wc.hbrBackground = nullptr;
+	wc.hbrBackground = CreateSolidBrush(RGB(CefColorGetR(kAppBackgroundColor), CefColorGetG(kAppBackgroundColor),
+						CefColorGetB(kAppBackgroundColor)));
 	wc.lpszClassName = kDetachedClassName;
 	ApplyAppIcon(wc, instance);
 	atom = RegisterClassExW(&wc);
 	return atom;
+}
+
+// Whether this process owns the foreground window, i.e. the user is still working in the
+// app. A detached window shown after the user has moved to another app does not take
+// activation from it.
+bool ForegroundIsOurs()
+{
+	DWORD pid = 0;
+	GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+	return pid == GetCurrentProcessId();
+}
+
+std::string RectText(HWND hwnd)
+{
+	RECT rc = {};
+	GetWindowRect(hwnd, &rc);
+	return std::to_string(rc.left) + "," + std::to_string(rc.top) + " " + std::to_string(rc.right - rc.left) + "x" +
+	       std::to_string(rc.bottom - rc.top);
 }
 } // namespace
 
@@ -69,6 +99,85 @@ WindowManager::Window *WindowManager::FindByHwnd(HWND hwnd)
 	return nullptr;
 }
 
+WindowManager::Window *WindowManager::FindById(int windowId)
+{
+	for (Window &w : windows_) {
+		if (w.windowId == windowId) {
+			return &w;
+		}
+	}
+	return nullptr;
+}
+
+void WindowManager::ReleaseWindow(const Window &w)
+{
+	if (w.hwnd) {
+		KillTimer(w.hwnd, kPaintWatchdogTimerId);
+	}
+	// Surfaces must die before the browser/window (UAF discipline); drop the host-HWND
+	// registration once they are gone.
+	if (PreviewManager *pm = Preview::Instance()) {
+		pm->DestroyWindow(w.windowId);
+		pm->UnregisterWindow(w.windowId);
+	}
+	// Forget the gate with the host: an HWND value can be reused by a later window.
+	if (w.hwnd) {
+		OverlaySurface::ForgetHostGate(w.hwnd);
+	}
+	if (w.browser) {
+		w.browser->GetHost()->CloseBrowser(true);
+	}
+}
+
+void WindowManager::OpenGate(Window &w)
+{
+	if (w.hwnd) {
+		KillTimer(w.hwnd, kPaintWatchdogTimerId);
+	}
+	if (w.ready) {
+		return;
+	}
+	w.ready = true;
+	DBG(LogCat::Lifecycle, "[window] gate open id=%d host=%s", w.windowId, RectText(w.hwnd).c_str());
+	OverlaySurface::SetHostReady(w.hwnd, true);
+	OverlaySurface::LogHostChildren(w.hwnd, "gate open");
+}
+
+bool WindowManager::MarkReady(int windowId)
+{
+	Window *w = closingAll_ ? nullptr : FindById(windowId);
+	if (!w) {
+		DBG(LogCat::Lifecycle, "[window] ready id=%d ignored (no live detached window)", windowId);
+		return false;
+	}
+	OpenGate(*w);
+	return true;
+}
+
+bool WindowManager::IsReadyForTest(int windowId) const
+{
+	const Window *w = FindById(windowId);
+	return w && w->ready;
+}
+
+void WindowManager::OnRendererTerminated(CefRefPtr<CefBrowser> browser)
+{
+	for (Window &w : windows_) {
+		if (!w.browser || !w.browser->IsSame(browser)) {
+			continue;
+		}
+		if (PreviewManager *pm = Preview::Instance()) {
+			pm->DestroyWindow(w.windowId);
+		}
+		w.ready = false;
+		OverlaySurface::SetHostReady(w.hwnd, false);
+		SetTimer(w.hwnd, kPaintWatchdogTimerId, kPaintWatchdogMs, nullptr);
+		HostLog("[window] renderer terminated id=" + std::to_string(w.windowId) +
+			": surfaces dropped, gate closed until the page reports ready");
+		return;
+	}
+}
+
 int WindowManager::Detach(const std::string &dockId)
 {
 	// The child browser MUST reuse the shared Client so it joins the same
@@ -96,8 +205,15 @@ int WindowManager::Detach(const std::string &dockId)
 	WindowChrome::Init(hwnd, WindowChrome::kDetachedWindow);
 	// Force the residual native border/system menu dark, matching the host shell.
 	NativeTheme::ApplyDark(hwnd);
-	ShowWindow(hwnd, SW_SHOW);
+	// Shown at once: the gate, not the window's visibility, keeps the preview off a page
+	// that has not painted, and a page in a hidden host may not run the animation frames
+	// window.ready waits on. Until it paints, the class brush fills the client area. A detach the user did not
+	// start from the foreground app does not take activation from the app they moved to.
+	const bool activate = ForegroundIsOurs();
+	ShowWindow(hwnd, activate ? SW_SHOW : SW_SHOWNA);
 	UpdateWindow(hwnd);
+	DBG(LogCat::Lifecycle, "[window] id=%d host shown at %s dpi=%u activated=%d", windowId, RectText(hwnd).c_str(),
+	    GetDpiForWindow(hwnd), int(activate));
 
 	const std::string url = bundleBaseUrl_ + "?window=" + std::to_string(windowId) + "&dock=" + dockId;
 
@@ -115,7 +231,19 @@ int WindowManager::Detach(const std::string &dockId)
 		::DestroyWindow(hwnd);
 		return 0;
 	}
-	OverlaySurface::LetPaintUnder(browser->GetHost()->GetWindowHandle());
+	const HWND browserHwnd = browser->GetHost()->GetWindowHandle();
+	OverlaySurface::LetPaintUnder(browserHwnd);
+	// Keyboard input goes to the page, as it would after a click into it.
+	if (activate) {
+		browser->GetHost()->SetFocus(true);
+	}
+	DBG(LogCat::Lifecycle, "[window] id=%d browser hwnd=%p at %s visible=%d", windowId,
+	    static_cast<void *>(browserHwnd), RectText(browserHwnd).c_str(),
+	    browserHwnd ? int(IsWindowVisible(browserHwnd)) : -1);
+
+	// Hold this window's preview surfaces until the page is ready, before the page can
+	// send its first rect.
+	OverlaySurface::SetHostReady(hwnd, false);
 
 	// Register this window's host HWND so its preview surfaces parent to THIS
 	// top-level window (its overlay HWND becomes a child of hwnd, z-ordered above
@@ -125,6 +253,7 @@ int WindowManager::Detach(const std::string &dockId)
 	}
 
 	windows_.push_back(Window{windowId, dockId, hwnd, browser});
+	SetTimer(hwnd, kPaintWatchdogTimerId, kPaintWatchdogMs, nullptr);
 	HostLog("[window] detached id=" + std::to_string(windowId) + " dock=" + dockId + " url=" + url);
 	return windowId;
 }
@@ -138,17 +267,10 @@ bool WindowManager::Redock(int windowId)
 		HostLog("[window] redock id=" + std::to_string(windowId));
 		// Synchronous teardown in the same order as the WM_CLOSE path (surfaces ->
 		// browser -> window), so window.list reflects the removal the instant Redock
-		// returns rather than after a posted WM_CLOSE drains. Tear surfaces down
-		// FIRST (while libobs is up, before the browser dies) so the obs_display
-		// is gone before its canvas mix could be freed; drop the host-HWND
-		// registration once the surfaces are gone.
-		if (PreviewManager *pm = Preview::Instance()) {
-			pm->DestroyWindow(windowId);
-			pm->UnregisterWindow(windowId);
-		}
-		if (it->browser) {
-			it->browser->GetHost()->CloseBrowser(true);
-		}
+		// returns rather than after a posted WM_CLOSE drains. Surfaces go FIRST (while
+		// libobs is up, before the browser dies) so the obs_display is gone before its
+		// canvas mix could be freed.
+		ReleaseWindow(*it);
 		const HWND hwnd = it->hwnd;
 		HostLog("[window] closing id=" + std::to_string(windowId));
 		// Erase the tracking entry before destroying the HWND: the WM_CLOSE that
@@ -174,12 +296,8 @@ std::vector<WindowManager::WindowInfo> WindowManager::List() const
 
 HWND WindowManager::HwndFor(int windowId) const
 {
-	for (const Window &w : windows_) {
-		if (w.windowId == windowId) {
-			return w.hwnd;
-		}
-	}
-	return nullptr;
+	const Window *w = FindById(windowId);
+	return w ? w->hwnd : nullptr;
 }
 
 void WindowManager::CloseAll()
@@ -202,13 +320,7 @@ void WindowManager::CloseAll()
 void WindowManager::DestroyAll()
 {
 	for (Window &w : windows_) {
-		if (PreviewManager *pm = Preview::Instance()) {
-			pm->DestroyWindow(w.windowId);
-			pm->UnregisterWindow(w.windowId);
-		}
-		if (w.browser) {
-			w.browser->GetHost()->CloseBrowser(true);
-		}
+		ReleaseWindow(w);
 		if (w.hwnd) {
 			::DestroyWindow(w.hwnd);
 		}
@@ -219,6 +331,14 @@ void WindowManager::DestroyAll()
 LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	WindowManager *wm = g_wm;
+
+	// WindowChrome consumes WM_DPICHANGED below, so it is logged before the dispatch.
+	if (msg == WM_DPICHANGED) {
+		const RECT *suggested = reinterpret_cast<const RECT *>(lparam);
+		DBG(LogCat::Lifecycle, "[window] host %p dpi -> %u, suggested %ld,%ld %ldx%ld",
+		    static_cast<void *>(hwnd), UINT(LOWORD(wparam)), suggested->left, suggested->top,
+		    suggested->right - suggested->left, suggested->bottom - suggested->top);
+	}
 
 	// Frameless chrome (custom caption, resize borders, drag regions, min size).
 	LRESULT chromeResult = 0;
@@ -233,6 +353,8 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 				if (w->browser) {
 					RECT rc;
 					GetClientRect(hwnd, &rc);
+					DBG(LogCat::Lifecycle, "[window] id=%d WM_SIZE type=%u client %ldx%ld",
+					    w->windowId, UINT(wparam), rc.right - rc.left, rc.bottom - rc.top);
 					if (HWND bh = w->browser->GetHost()->GetWindowHandle()) {
 						SetWindowPos(bh, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
 							     SWP_NOZORDER | SWP_NOACTIVATE);
@@ -247,6 +369,22 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 			}
 		}
 		return 0;
+	case WM_TIMER:
+		if (wparam == kPaintWatchdogTimerId) {
+			KillTimer(hwnd, kPaintWatchdogTimerId);
+			const Window *w = wm && !wm->closingAll_ ? wm->FindByHwnd(hwnd) : nullptr;
+			if (w && !w->ready) {
+				HostLog("[window] id=" + std::to_string(w->windowId) + " sent no window.ready within " +
+					std::to_string(kPaintWatchdogMs) +
+					" ms: its page has not painted; its preview surfaces stay held until it does");
+			}
+			return 0;
+		}
+		break;
+	case WM_SHOWWINDOW:
+		DBG(LogCat::Lifecycle, "[window] host %p WM_SHOWWINDOW show=%d status=%ld", static_cast<void *>(hwnd),
+		    int(wparam), long(lparam));
+		break;
 	case WM_NCDESTROY:
 		WindowChrome::Discard(hwnd);
 		break;
@@ -256,15 +394,7 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 				const int windowId = w->windowId;
 				const std::string dockId = w->dockId;
 				const bool announce = !wm->closingAll_;
-				// Surfaces must die before the browser/window (UAF discipline);
-				// drop the host-HWND registration once they are gone.
-				if (PreviewManager *pm = Preview::Instance()) {
-					pm->DestroyWindow(windowId);
-					pm->UnregisterWindow(windowId);
-				}
-				if (w->browser) {
-					w->browser->GetHost()->CloseBrowser(true);
-				}
+				ReleaseWindow(*w);
 				HostLog("[window] closing id=" + std::to_string(windowId));
 				// Erase the tracking entry; the browser's OnBeforeClose still fires
 				// to unregister it from the emit set.

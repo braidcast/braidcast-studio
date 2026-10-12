@@ -497,6 +497,11 @@ void RunPreviewZeroSizeResizeSelfTest();
 // cross-surface bleed. Removes the temp canvas afterward; never Saves. Gated by
 // the caller to the smoke path.
 void RunPreviewSurfaceIsolationSelfTest();
+// Detach the preview dock into a real window and follow it: the host must show at
+// once, its preview surface must stay held until the page reports window.ready, and
+// rise after it. Finishes asynchronously on the UI thread (a few seconds), then
+// redocks. Gated by the caller to the smoke path.
+void RunDetachedReadySelfTest();
 // Headless proof for the audio mixer: drive audio.list, a setDeflection
 // round-trip, and a setMuted round-trip through the bridge, and confirm a
 // volmeter attaches to a real audio source. The default color source has no

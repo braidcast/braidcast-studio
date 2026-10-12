@@ -5176,8 +5176,10 @@ HWND PreviewManager::KnownHostFor(int windowId) const
 
 HWND PreviewManager::HostFor(int windowId) const
 {
-	const HWND known = KnownHostFor(windowId);
-	return known ? known : host_;
+	if (const HWND known = KnownHostFor(windowId)) {
+		return known;
+	}
+	return windowId == 0 ? host_ : nullptr;
 }
 
 void PreviewManager::UnregisterWindow(int windowId)
@@ -5210,10 +5212,18 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 		return existing;
 	}
 
+	// A detached window that is not (or no longer) registered -- a closing page's last
+	// rect -- gets no surface: parented to the main window instead, it would cover that
+	// window's UI at the closing page's coordinates. Checked before the canvas is
+	// activated, so there is no preview ref to balance.
+	const HWND host = HostFor(windowId);
+	if (!host) {
+		DBG(LogCat::Preview, "no surface for unregistered window=%d", windowId);
+		return nullptr;
+	}
+
 	const bool isDefault = IsDefaultCanvasUuid(canvasUuid);
 	const std::string key = isDefault ? std::string() : canvasUuid;
-
-	const HWND host = HostFor(windowId);
 
 	// First use of this (window, canvas): bind the surface to the right mix.
 	// Default => null targetCanvas (global mix); otherwise activate the canvas

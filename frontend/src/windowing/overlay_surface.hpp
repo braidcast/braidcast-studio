@@ -117,6 +117,23 @@ public:
 	// there would open onto the web view. UI thread.
 	static bool CutsInto(HWND host, const RECT &rect);
 
+	// The gate between `host`'s page and its surfaces. While a host is not ready its page
+	// has not yet shown that it paints, so a surface there would sit over an empty web
+	// view. SetRect on such a surface only remembers the rect: no HWND is shown and no
+	// display is created. Making the host ready applies each held surface's latest rect,
+	// which starts the ordinary warm-up. Nothing opens a gate on a timer: a page that
+	// never paints keeps its surfaces held (see WindowManager's lifetime rule). Hosts are
+	// ready unless closed here. UI thread.
+	static void SetHostReady(HWND host, bool ready);
+	// Forget `host`'s gate without applying anything held, for a host being destroyed:
+	// its HWND value can be reused by a later window. UI thread.
+	static void ForgetHostGate(HWND host);
+
+	// Debug channel only (LogCat::Preview): `host`'s direct children in z-order, top first,
+	// with class, visibility and rect, so a log can tell a page covered by a surface from
+	// a page that never painted. UI thread.
+	static void LogHostChildren(HWND host, const char *when);
+
 	// Clear WS_CLIPSIBLINGS on a web view HWND that overlays sit above. A software-composited
 	// web view clipped against its siblings never paints the area under a surface, so a fresh
 	// cut-out would show stale pixels for a few frames before the page repainted into it.
@@ -218,6 +235,14 @@ private:
 	int pendingCx_ = 0;
 	int pendingCy_ = 0;
 	bool resizeDeferred_ = false;
+
+	// The latest rect SetRect received while the host was not ready (SetHostReady),
+	// applied when it becomes ready. Dropped by Hide() and Destroy().
+	bool holding_ = false;
+	int heldX_ = 0;
+	int heldY_ = 0;
+	int heldCx_ = 0;
+	int heldCy_ = 0;
 
 	// Warm-up of a fresh display (see ApplyRect). warming_ is UI-thread state;
 	// drawCalls_ is bumped on the render thread and reset per display; displayGen_

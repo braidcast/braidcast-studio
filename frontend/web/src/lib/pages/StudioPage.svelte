@@ -491,7 +491,12 @@ import { EV } from "$lib/utils/eventNames";
   // Tear-out seam (P3a). The ⧉ affordance asks the host to open a real OS window
   // owning this dock, then drops the panel from this (main) window. The dock comes
   // back via the window.closed subscription wired in onReady.
+  // Docks with a detach in flight: a second press on the same ⧉ before the first answers
+  // would open a second window owning the same dock.
+  const detaching = new Set<string>();
   async function detachDock(panelId: string): Promise<void> {
+    if (detaching.has(panelId)) return;
+    detaching.add(panelId);
     armLayoutPersistence();
     try {
       await obs.call("window.detach", { dock: panelId });
@@ -500,6 +505,8 @@ import { EV } from "$lib/utils/eventNames";
       if (p) api?.removePanel(p);
     } catch (e) {
       failed(`pop out ${api?.getPanel(panelId)?.title ?? panelId}`, e);
+    } finally {
+      detaching.delete(panelId);
     }
   }
 

@@ -13,6 +13,10 @@
   import Toast from "$lib/ui/Toast.svelte";
   import DuplicateSceneDialog from "$lib/dialogs/DuplicateSceneDialog.svelte";
   import { duplicateSceneOpener, closeDuplicateScene } from "$lib/dialogs/duplicateSceneOpener.svelte";
+  import { PAINT_FRAMES } from "$lib/docking/freezeFrame";
+  import { animationFrame } from "$lib/utils/presented";
+  import { log } from "$lib/utils/log";
+  import { Cat } from "$lib/utils/logCategories";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();
@@ -62,11 +66,34 @@
     void obs.call("window.redock", { windowId: WINDOW_ID }).catch(() => {});
   }
 
+  // The host holds this window's preview surfaces until the page shows it paints: the
+  // title bar and the dock are this page, so a surface risen before them is a preview
+  // with nothing around it. Reported once the dock is mounted (or could not be) and the
+  // frames that carry it have run. A page whose frames never run never reports, and its
+  // surfaces stay held; the host logs that it has not painted.
+  async function reportReady(): Promise<void> {
+    try {
+      await resolveAndMount();
+    } finally {
+      const mountedAt = performance.now();
+      for (let i = 0; i < PAINT_FRAMES; i++) {
+        await animationFrame();
+      }
+      const now = performance.now();
+      log.dbg(
+        Cat.lifecycle,
+        `detached window ${WINDOW_ID} ready: mounted at ${Math.round(mountedAt)} ms, ` +
+          `${PAINT_FRAMES} frames took ${Math.round(now - mountedAt)} ms`,
+      );
+      void obs.call("window.ready", { windowId: WINDOW_ID }).catch(() => {});
+    }
+  }
+
   onMount(() => {
     // A popped-out dock's log.dbg lines are held until this window's own copy of the gate
     // is read, as in the main window.
     diagnosticsStore.start();
-    void resolveAndMount();
+    void reportReady();
     return () => {
       if (mounted) void unmount(mounted);
     };

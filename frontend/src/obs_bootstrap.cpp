@@ -34,6 +34,9 @@
 #include <thread>
 #include <vector>
 
+#include "include/base/cef_callback.h"
+#include "include/wrapper/cef_closure_task.h"
+
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
 #include "util/file_util.hpp"
@@ -105,6 +108,7 @@
 #include "windowing/filter_preview.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
+#include "windowing/window_manager.hpp"
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
 #include "util/speaker_layout.hpp"
@@ -8755,6 +8759,27 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	HostLog(std::string("[selftest] preview-isolation: canvas item move -> ") +
 		(movedOk ? "ok (restored)" : "FAIL"));
 
+	// 4) A window id no detached window carries -- what a closed window's last calls name.
+	// Its surface must not exist (HostFor has no host for it, and must not fall back to
+	// the main window's), and its window.ready must be a quiet no-op.
+	constexpr int kNeverIssuedWindowId = 1 << 30;
+	const bool noStrayHost = Preview::Instance()->HostFor(kNeverIssuedWindowId) == nullptr;
+	const bool noStraySurface = Preview::Instance()->SurfaceFor(kNeverIssuedWindowId, canvasUuid) == nullptr &&
+				    Preview::Instance()->FindSurface(kNeverIssuedWindowId, canvasUuid) == nullptr;
+	HostLog(std::string("[selftest] preview-isolation: unregistered window -> ") +
+		(noStrayHost && noStraySurface ? "no host, no surface (OK)"
+					       : "BUG: host=" + std::to_string(!noStrayHost) +
+							 " surface=" + std::to_string(!noStraySurface)));
+	if (WindowManager::Instance()) {
+		bool readyOk = false;
+		const json ready = run("window.ready", json{{"windowId", kNeverIssuedWindowId}}, readyOk);
+		const bool quiet = readyOk && ready.is_object() && ready.value("ready", true) == false;
+		HostLog(std::string("[selftest] preview-isolation: late window.ready -> ") +
+			(quiet ? "no-op (OK)" : "BUG: " + (readyOk ? ready.dump() : std::string("dispatch failed"))));
+	} else {
+		HostLog("[selftest] preview-isolation: late window.ready -> no window manager (skipped)");
+	}
+
 	// Clear the additional surface's selection so it leaves no committed state, then
 	// tear down the temp canvas (drops its surface's mix; the surface itself is
 	// reaped by DestroyAll at shutdown, but its display already has no mix to render
@@ -8775,6 +8800,103 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
 	HostLog(std::string("[selftest] preview-isolation cleanup: temp canvas ") +
 		(gone ? "removed" : "STILL PRESENT (BUG)"));
+}
+
+namespace {
+constexpr int64_t kDetachedReadyPollMs = 100;
+// Far past a cold page's first paint (~1.05 s for the main window), so only a page whose
+// frames never run misses it.
+constexpr ULONGLONG kDetachedReadyBudgetMs = 8000;
+// After window.ready, time for the released surface to finish its warm-up and show.
+constexpr int64_t kDetachedSurfaceSettleMs = 1000;
+
+// Whether `windowId`'s Default preview surface has a visible overlay HWND.
+bool DetachedSurfaceShown(int windowId)
+{
+	PreviewSurface *surface = Preview::Instance() ? Preview::Instance()->FindSurface(windowId, "") : nullptr;
+	return surface && surface->Hwnd() && IsWindowVisible(surface->Hwnd());
+}
+
+void FinishDetachedReadySelfTest(int windowId, long long readyAfterMs, bool surfaceEarly)
+{
+	WindowManager *wm = WindowManager::Instance();
+	if (!wm || !wm->HwndFor(windowId)) {
+		HostLog("[selftest] detached-ready: window " + std::to_string(windowId) +
+			" closed before the check (skipped)");
+		return;
+	}
+	// After ready the surface shows only if the page asks for it, and a Default preview
+	// with no enabled destination is hidden by its own page; the main window's surface
+	// is the same page's answer, so the two are logged side by side.
+	const bool shownAfter = DetachedSurfaceShown(windowId);
+	const bool mainShown = DetachedSurfaceShown(0);
+	const bool pass = readyAfterMs >= 0 && !surfaceEarly;
+	HostLog("[selftest] detached-ready: window " + std::to_string(windowId) + " window.ready " +
+		(readyAfterMs >= 0 ? "after " + std::to_string(readyAfterMs) + " ms"
+				   : "never within " + std::to_string(kDetachedReadyBudgetMs) + " ms") +
+		", surface before ready " + (surfaceEarly ? "SHOWN" : "held") + " -> " + (pass ? "OK" : "FAIL") +
+		"; surface after " + (shownAfter ? "shown" : "not shown") + ", main window's " +
+		(mainShown ? "shown" : "not shown"));
+	Bridge::json result;
+	std::string error;
+	const bool redocked = Bridge::Dispatch("window.redock", Bridge::json{{"windowId", windowId}}, result, error);
+	HostLog("[selftest] detached-ready: redock -> " + (redocked ? std::string("ok") : "FAIL: " + error));
+}
+
+// Polls `windowId` until its page reports window.ready or the budget runs out, noting
+// whether its preview surface ever showed before then.
+void PollDetachedReady(int windowId, ULONGLONG startedAt, bool surfaceEarly)
+{
+	WindowManager *wm = WindowManager::Instance();
+	if (!wm || !wm->HwndFor(windowId)) {
+		FinishDetachedReadySelfTest(windowId, -1, surfaceEarly);
+		return;
+	}
+	const ULONGLONG elapsed = GetTickCount64() - startedAt;
+	if (wm->IsReadyForTest(windowId)) {
+		CefPostDelayedTask(TID_UI,
+				   base::BindOnce(&FinishDetachedReadySelfTest, windowId,
+						  static_cast<long long>(elapsed), surfaceEarly),
+				   kDetachedSurfaceSettleMs);
+		return;
+	}
+	surfaceEarly = surfaceEarly || DetachedSurfaceShown(windowId);
+	if (elapsed >= kDetachedReadyBudgetMs) {
+		FinishDetachedReadySelfTest(windowId, -1, surfaceEarly);
+		return;
+	}
+	CefPostDelayedTask(TID_UI, base::BindOnce(&PollDetachedReady, windowId, startedAt, surfaceEarly),
+			   kDetachedReadyPollMs);
+}
+
+void StartDetachedReadySelfTest()
+{
+	using Bridge::json;
+
+	if (!WindowManager::Instance() || !Preview::Instance()) {
+		HostLog("[selftest] detached-ready: no window manager or preview (skipped)");
+		return;
+	}
+	json result;
+	std::string error;
+	if (!Bridge::Dispatch("window.detach", json{{"dock", "preview"}}, result, error)) {
+		HostLog("[selftest] detached-ready: window.detach FAIL: " + error);
+		return;
+	}
+	const int windowId = result.value("windowId", 0);
+	const HWND host = WindowManager::Instance()->HwndFor(windowId);
+	const bool shown = host && IsWindowVisible(host);
+	HostLog("[selftest] detached-ready: window " + std::to_string(windowId) + " host " +
+		(shown ? "shown at detach (OK)" : "NOT shown at detach (FAIL)"));
+	PollDetachedReady(windowId, GetTickCount64(), false);
+}
+} // namespace
+
+void ObsBootstrap::RunDetachedReadySelfTest()
+{
+	// Started once the UI thread is free: the rest of the smoke battery runs synchronously
+	// after this call, and a page cannot report window.ready while the UI thread is busy.
+	CefPostTask(TID_UI, base::BindOnce(&StartDetachedReadySelfTest));
 }
 
 void ObsBootstrap::RunProjectorSelfTest()

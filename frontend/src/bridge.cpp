@@ -1338,6 +1338,22 @@ static bool RequireBool(const json &params, const char *method, const char *key,
 	return false;
 }
 
+// Read a required integer param; on a non-object params, a missing key or a
+// non-integer value set the bridge's uniform "<method> requires an integer
+// '<key>'" error and return false so the caller returns straight through.
+static bool RequireInt(const json &params, const char *method, const char *key, int &out, std::string &error)
+{
+	if (params.is_object()) {
+		auto it = params.find(key);
+		if (it != params.end() && it->is_number_integer()) {
+			out = it->get<int>();
+			return true;
+		}
+	}
+	error = std::string(method) + " requires an integer '" + key + "'";
+	return false;
+}
+
 // Guard that params is a JSON object, setting the uniform "<method> expects an
 // object" error otherwise.
 static bool RequireObject(const json &params, const char *method, std::string &error)
@@ -10378,11 +10394,20 @@ bool MethodThemeQuarantine(const json & /*params*/, json &result, std::string &e
 // Detached-window control surface — drives WindowManager and broadcasts the
 // window.opened/closed lifecycle to every live browser via EmitEvent.
 
-bool MethodWindowDetach(const json &params, json &result, std::string &error)
+// The window manager, or null with the uniform error when it is not running.
+static WindowManager *RequireWindowManager(std::string &error)
 {
 	WindowManager *wm = WindowManager::Instance();
 	if (!wm) {
 		error = "window manager not active";
+	}
+	return wm;
+}
+
+bool MethodWindowDetach(const json &params, json &result, std::string &error)
+{
+	WindowManager *wm = RequireWindowManager(error);
+	if (!wm) {
 		return false;
 	}
 	std::string dock;
@@ -10402,16 +10427,11 @@ bool MethodWindowDetach(const json &params, json &result, std::string &error)
 
 bool MethodWindowRedock(const json &params, json &result, std::string &error)
 {
-	WindowManager *wm = WindowManager::Instance();
-	if (!wm) {
-		error = "window manager not active";
+	WindowManager *wm = RequireWindowManager(error);
+	int windowId = 0;
+	if (!wm || !RequireInt(params, "window.redock", "windowId", windowId, error)) {
 		return false;
 	}
-	if (!params.is_object() || !params.contains("windowId") || !params["windowId"].is_number_integer()) {
-		error = "window.redock requires an integer 'windowId'";
-		return false;
-	}
-	const int windowId = params["windowId"].get<int>();
 	// Capture the dock id before Redock removes the window, so the broadcast can tell
 	// the main window which dock to restore.
 	std::string dock;
@@ -10428,6 +10448,21 @@ bool MethodWindowRedock(const json &params, json &result, std::string &error)
 	EmitEvent(EventNames::kWindowClosed, json{{"windowId", windowId}, {"dock", dock}});
 	HostLog("[bridge] window.redock -> ok id=" + std::to_string(windowId));
 	result = json{{"redocked", windowId}};
+	return true;
+}
+
+// A detached page's animation frames have run since its dock mounted, so Chromium is
+// producing frames for it: let its preview surfaces rise. Nothing else releases them. A
+// late call from a window already redocked or closed is not an error, just
+// `ready: false`; see WindowManager's lifetime rule.
+bool MethodWindowReady(const json &params, json &result, std::string &error)
+{
+	WindowManager *wm = RequireWindowManager(error);
+	int windowId = 0;
+	if (!wm || !RequireInt(params, "window.ready", "windowId", windowId, error)) {
+		return false;
+	}
+	result = json{{"ready", wm->MarkReady(windowId)}};
 	return true;
 }
 
@@ -15673,6 +15708,7 @@ void Init()
 		{"layout.quarantine", MethodLayoutQuarantine},
 		{"window.detach", MethodWindowDetach},
 		{"window.redock", MethodWindowRedock},
+		{"window.ready", MethodWindowReady},
 		{"window.list", MethodWindowList},
 		{"window.toggleFullscreen", MethodWindowToggleFullscreen},
 		{"window.minimize", MethodWindowMinimize},

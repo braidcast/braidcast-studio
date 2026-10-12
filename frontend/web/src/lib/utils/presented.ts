@@ -64,7 +64,13 @@ export function bounded(step: Promise<unknown>): Promise<void> {
   });
 }
 
+/** An animation frame that actually ran: unbounded, for a caller that must not count a
+ * frame that never came (DetachedApp's paint report). */
+export function animationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 /** The next animation frame, bounded like any other step. */
 export function nextFrame(): Promise<void> {
-  return bounded(new Promise((resolve) => requestAnimationFrame(resolve)));
+  return bounded(animationFrame());
 }

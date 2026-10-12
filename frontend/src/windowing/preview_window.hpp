@@ -377,7 +377,8 @@ private:
 // Each window registers its host HWND (RegisterWindow); a surface's overlay HWND
 // is parented to its window's host. windowId 0 falls back to the constructor's
 // host_, so the main window need not register (main.cpp registers it anyway for
-// symmetry). The windowId params default to 0, so every existing single-window
+// symmetry). Any other windowId that is not registered has no host and gets no
+// surface. The windowId params default to 0, so every existing single-window
 // caller is unchanged and the flag-off build is byte-identical.
 //
 // SetRect/Hide/Destroy run on the host UI thread (the bridge router callback
@@ -400,14 +401,15 @@ public:
 	void RegisterWindow(int windowId, HWND host);
 	void UnregisterWindow(int windowId);
 
-	// The host HWND windowId's surfaces parent to: its registered host, else host_.
+	// The host HWND windowId's surfaces parent to: its registered host; else host_ for
+	// windowId 0; else null, which SurfaceFor (the only caller outside the self-test) answers with no surface.
 	HWND HostFor(int windowId) const;
 	// windowId's registered host, or null for a window that is not (or no longer) registered.
 	HWND KnownHostFor(int windowId) const;
 
 	// Position/size the surface for (windowId, canvasUuid) (empty/Default uuid =>
 	// the Default surface). Lazily creates the surface on first use; an unknown
-	// non-Default uuid (no live canvas mix) is a no-op. The single-arg overloads
+	// non-Default uuid (no live canvas mix) or an unregistered windowId is a no-op. The single-arg overloads
 	// target the main window (windowId 0) so every existing caller is unchanged
 	// (windowId can't be a defaulted leading param, so these are overloads).
 	void SetRect(int windowId, const std::string &canvasUuid, int x, int y, int cx, int cy);
@@ -438,7 +440,8 @@ public:
 
 	// The surface for (windowId, canvasUuid), creating it if absent. Empty/Default
 	// uuid => the Default surface (null targetCanvas). Returns null for a
-	// non-Default uuid with no live canvas mix. Used by the bridge
+	// non-Default uuid with no live canvas mix, and for a windowId with no host
+	// (HostFor). Used by the bridge
 	// select/hit-test/reset paths. The single-arg overload targets the main window.
 	PreviewSurface *SurfaceFor(int windowId, const std::string &canvasUuid);
 
