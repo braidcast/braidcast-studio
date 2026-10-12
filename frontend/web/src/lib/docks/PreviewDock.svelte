@@ -370,38 +370,42 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
 
-  <!-- onwheel forwards to the host's zoom. The native overlay covers this element and
-       has its own wheel handler, but which of the two is sent the event depends on a
-       Windows shell setting, so both entry points exist; they share one anchor
-       implementation on the host side. -->
-  <section
-    class="preview"
-    class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
-    bind:this={previewEl}
-    onwheel={(e) => previewEl && forwardPreviewWheel(previewEl, e)}
-  >
-    <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
-         placeholders still stack above it on DOM order alone -- each is absolutely
-         positioned, so no z-index has to be assigned to keep them visible. -->
-    <PreviewFreezeStill {freeze} />
-    <!-- Same reasoning as the stage chips: the native surface paints over this, so
-         the still must too, or the region gains a label on right-click. -->
-    {#if !freeze.frame}
-      <span class="label">Default</span>
-    {/if}
-    {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
-      <div class="placeholder">
-        <p class="ph-title">Preview disabled</p>
-        <p class="ph-sub">Rendering is stopped to save GPU.</p>
-        <Button variant="filled" face="label" onclick={enablePreview}>Re-enable Preview</Button>
-      </div>
-    {:else if !defaultEnabled}
-      <div class="placeholder">
-        <p class="ph-title">Preview off</p>
-        <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
-      </div>
-    {/if}
-  </section>
+  <!-- The preview runs to the dock's bottom edge, so that edge is inset as well as the
+       sides; the header above is page content the surface never reaches. -->
+  <div class="preview-inset to-bottom">
+    <!-- onwheel forwards to the host's zoom. The native overlay covers this element and
+         has its own wheel handler, but which of the two is sent the event depends on a
+         Windows shell setting, so both entry points exist; they share one anchor
+         implementation on the host side. -->
+    <section
+      class="preview"
+      class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
+      bind:this={previewEl}
+      onwheel={(e) => previewEl && forwardPreviewWheel(previewEl, e)}
+    >
+      <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
+           placeholders still stack above it on DOM order alone -- each is absolutely
+           positioned, so no z-index has to be assigned to keep them visible. -->
+      <PreviewFreezeStill {freeze} />
+      <!-- Same reasoning as the stage chips: the native surface paints over this, so
+           the still must too, or the region gains a label on right-click. -->
+      {#if !freeze.frame}
+        <span class="label">Default</span>
+      {/if}
+      {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
+        <div class="placeholder">
+          <p class="ph-title">Preview disabled</p>
+          <p class="ph-sub">Rendering is stopped to save GPU.</p>
+          <Button variant="filled" face="label" onclick={enablePreview}>Re-enable Preview</Button>
+        </div>
+      {:else if !defaultEnabled}
+        <div class="placeholder">
+          <p class="ph-title">Preview off</p>
+          <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
+        </div>
+      {/if}
+    </section>
+  </div>
 </div>
 
 {#if menu}
@@ -429,8 +433,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   .preview {
     flex: 1;
-    min-height: 0;
-    width: 100%;
+    min-width: 0;
     position: relative;
     /* Transparent: the native overlay HWND paints this region. */
     background: transparent;

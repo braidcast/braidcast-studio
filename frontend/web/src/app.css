@@ -133,6 +133,13 @@
   --border-weight: 1px;
   --radius: 0;
 
+  /* Width of the page band around a native preview surface (.preview-inset). The
+     dockview sash is 4px centred on the dock boundary, so its inner half needs 2px; the
+     surface's far edge can land up to 1 device px past its element, because the host
+     rounds position and size separately (bridge.cpp OverlayRectFromParams). 4px keeps
+     2 * dpr - 1 device px clear of the sash, which is positive at every scale from 100% up. */
+  --preview-edge-inset: 4px;
+
   font-family: var(--font-ui);
   font-size: 13px;
   color: var(--color-text);
@@ -467,6 +474,21 @@ input[type="color"] {
   background: var(--color-surface);
   font-family: var(--font-ui);
   overflow: auto;
+}
+/* The area a dock's native preview surface sits in (PreviewDock, CanvasDock). The surface
+   is a native window above the whole page, so whatever it covers is neither visible nor
+   reachable by the pointer; this band keeps the dock's edges -- the dockview sash and
+   separator between docks -- out from under it. Sides only by default; `to-bottom` adds
+   the bottom edge for a preview that runs to its dock's bottom. */
+.preview-inset {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 0 var(--preview-edge-inset);
+  background: var(--color-base);
+}
+.preview-inset.to-bottom {
+  padding-bottom: var(--preview-edge-inset);
 }
 .dock-list {
   list-style: none;

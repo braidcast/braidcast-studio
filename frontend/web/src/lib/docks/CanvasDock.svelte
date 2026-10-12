@@ -1120,8 +1120,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 <div class="dock-body" bind:this={dockBodyEl}>
   <!-- Stage: the whole preview area, which the native overlay paints through; the chips
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
-       bottom-left). pointer-events:none so they never intercept overlay input. -->
-  <div class="stage-area">
+       bottom-left). pointer-events:none so they never intercept overlay input. Inset at
+       the sides only: the header above and the Splitter below are page content the
+       surface never reaches. -->
+  <div class="preview-inset">
     <!-- onwheel forwards to the host's zoom; see the same handler in PreviewDock. -->
     <div
       class="stage"
@@ -1304,12 +1306,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   /* ---- stage ----------------------------------------------------------- */
-  .stage-area {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    background: var(--color-base);
-  }
   /* The native overlay HWND paints this exact element; stays transparent so the
      video shows through. It fills the area rather than taking the canvas's aspect:
      the host fits the canvas inside with a margin and draws overflow, selection
