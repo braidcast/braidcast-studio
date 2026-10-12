@@ -90,6 +90,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
   const dockError = new DockError();
   const report = dockError.report;
+  // The source list loads separately from the scene list, so its failure is its own load
+  // state: a successful scenes.list must not clear it, nor a successful sceneItems.list
+  // clear a scene-list failure.
+  const itemsLoadError = new DockError();
+  let loadError = $derived(dockError.message ?? itemsLoadError.message);
 
   // One context menu for the whole dock (scene rows, source rows, and the preview
   // all use it).
@@ -178,7 +183,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       currentScene = list.find((s) => s.current)?.name ?? null;
       dockError.clear();
     } catch (e) {
-      report(e);
+      dockError.reportLoad(e);
     } finally {
       loaded = true;
     }
@@ -418,6 +423,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   async function loadItems() {
     if (!currentScene) {
       items = [];
+      itemsLoadError.clear();
       return;
     }
     const mine = ++itemsSeq;
@@ -427,8 +433,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         return;
       }
       items = list;
+      itemsLoadError.clear();
     } catch (e) {
-      report(e);
+      if (mine === itemsSeq) {
+        itemsLoadError.reportLoad(e);
+      }
     }
   }
   // The tree changed the selection (a click or a key, plain or with a modifier). Push the
@@ -1159,8 +1168,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     </div>
   </div>
 
-  {#if dockError.message}
-    <p class="dock-msg err" role="alert">{dockError.message}</p>
+  {#if loadError}
+    <p class="dock-msg err" role="alert">{loadError}</p>
   {/if}
 
   <!-- Drag the divider to trade preview height for the mini-lists' height. -->

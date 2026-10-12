@@ -18,6 +18,7 @@ mock.module("$lib/api/bridge", () => ({
 const toasts: { message: string; opts: { action?: { label: string; onAction: () => void } } }[] = [];
 mock.module("$lib/stores/toastStore.svelte", () => ({
   showToast: (message: string, _title: string, opts: never) => void toasts.push({ message, opts }),
+  toast: { current: null },
 }));
 const { noticeText, startUpdateNotice } = await import("../src/lib/stores/updateNotice");
 

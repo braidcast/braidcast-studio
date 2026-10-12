@@ -5,11 +5,9 @@
 // and the edge predicates are identical and both end in the same bridge call
 // (`scenes.reorder`), so each shape lives here once instead of once per dock.
 //
-// Not shared here: the `obs.call("scenes.reorder", …)` wrappers themselves. The two
-// docks differ in whether they send `canvas` AND in how they surface an error
-// (ScenesDock clears its inline `actionError` before each call; CanvasDock reports
-// through its DockError), so folding them together would change one dock's
-// behaviour to suit the other.
+// Not shared here: the `obs.call("scenes.reorder", …)` wrappers themselves. Each dock
+// addresses its own canvas (ScenesDock sends none) and reports a failure through its
+// own DockError.
 
 import type { ReorderDirection } from "$lib/api/bridge";
 import type { ToolAction } from "$lib/docking/ListToolbar.svelte";

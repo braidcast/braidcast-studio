@@ -107,8 +107,13 @@ export async function startArmedOutput(uuid: string): Promise<StartOutcome> {
 }
 
 // One wording for the detached-window refusal below, which is both spoken as a toast and
-// thrown for the panel's own error strip to render.
+// thrown for a panel with its own error strip to render.
 const MID_STREAM_NEEDS_MAIN_WINDOW = "Arm this destination from the main window while streaming.";
+
+/** A refused arm, already spoken as its own toast. A panel that reports failures as toasts
+ *  reverts its switch on this but does not report it again, which would only replace the
+ *  refusal's toast with a copy that has lost its detail. */
+export class ArmRefusedError extends Error {}
 
 /** Refuse a mid-stream arm out loud. Both refusals below need BOTH halves: the toast is
  * the only surface a detached dock has, and the throw is what puts the panel's optimistic
@@ -116,7 +121,7 @@ const MID_STREAM_NEEDS_MAIN_WINDOW = "Arm this destination from the main window 
  * same terms as every other refusal of a control the user just operated. */
 function refuseArm(message: string, detail: string): never {
   showToast(message, detail, { assertive: true });
-  throw new Error(message);
+  throw new ArmRefusedError(message);
 }
 
 // True while a mid-stream arm is between its persist and the modal actually mounting. For

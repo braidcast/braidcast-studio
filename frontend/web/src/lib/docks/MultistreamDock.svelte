@@ -16,7 +16,13 @@
   import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
   import { STATE_COLOR_EXT, STATE_TEXT_COLOR } from "$lib/theme/stateColors";
-  import { isRetrying, retryDestination, setDestinationsEnabled } from "$lib/ui/destinationArming.svelte";
+  import {
+    ArmRefusedError,
+    isRetrying,
+    retryDestination,
+    setDestinationsEnabled,
+  } from "$lib/ui/destinationArming.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import { fmtCompact } from "$lib/utils/format";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
@@ -30,7 +36,12 @@
   // Canvas + binding lists + live status all come from the shared stores (one source
   // of truth for each leg of the model).
   let canvases = $derived(canvasStore.canvases);
-  let error = $state<string | null>(null);
+  const report = new DockError().report;
+  function reportToggleFailure(e: unknown): void {
+    if (!(e instanceof ArmRefusedError)) {
+      report(e);
+    }
+  }
   let loaded = $derived(multistreamStatusStore.loaded);
 
   $effect(() => {
@@ -190,7 +201,7 @@
       await setDestinationsEnabled(rows.map((b) => b.uuid), target);
       void multistreamStatusStore.refresh();
     } catch (e) {
-      error = (e as Error).message;
+      reportToggleFailure(e);
     }
   }
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
@@ -198,7 +209,7 @@
       await setDestinationsEnabled([b.uuid], enabled);
       void multistreamStatusStore.refresh();
     } catch (e) {
-      error = (e as Error).message;
+      reportToggleFailure(e);
       // Revert the optimistic toggle (checked is two-way bound to b.enabled).
       b.enabled = !enabled;
     }
@@ -206,10 +217,6 @@
 </script>
 
 <div class="dock-body">
-  {#if error}
-    <p class="dock-msg err">{error}</p>
-  {/if}
-
   {#if !loaded}
     <p class="dock-msg">Loading…</p>
   {:else if !hasAny}

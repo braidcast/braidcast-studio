@@ -144,13 +144,13 @@ import { EV } from "$lib/utils/eventNames";
   // response overwrite the newer scene's sources.
   const loadGuard = new RequestGuard();
   async function load() {
+    dockError.clear();
     if (!currentScene) {
       items = [];
       loaded = true;
       return;
     }
     const current = loadGuard.claim();
-    dockError.clear();
     try {
       const list = await obs.call("sceneItems.list", { scene: currentScene });
       if (!current()) {
@@ -158,7 +158,9 @@ import { EV } from "$lib/utils/eventNames";
       }
       items = list;
     } catch (e) {
-      report(e);
+      if (current()) {
+        dockError.reportLoad(e);
+      }
     } finally {
       loaded = true;
     }

@@ -111,7 +111,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // this frame instead of waiting for the next resize/layout event to trigger it.
   function enablePreview() {
     setPreviewDisabled(DEFAULT_PREVIEW_KEY, false);
-    dockError.clear();
     requestAnimationFrame(reportRect);
   }
 
@@ -300,7 +299,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       if (p.canvas != null || p.window !== WINDOW_ID || !previewEl) {
         return;
       }
-      dockError.clear();
       const { x, y } = mapOverlayCursor(previewEl, p);
       void (async () => {
         // Read the surface's view first: both menu shapes end with the Scale and
@@ -366,10 +364,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 </script>
 
 <div class="dock-body">
-  {#if dockError.message}
-    <p class="dock-msg err" role="alert">{dockError.message}</p>
-  {/if}
-
   <!-- The preview runs to the dock's bottom edge, so that edge is inset as well as the
        sides; the header above is page content the surface never reaches. -->
   <div class="preview-inset to-bottom">

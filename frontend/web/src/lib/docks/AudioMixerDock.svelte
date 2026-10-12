@@ -8,6 +8,7 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
 
@@ -43,7 +44,7 @@ import { EV } from "$lib/utils/eventNames";
 
   let sources = $state<AudioSource[]>([]);
   let loaded = $state(false);
-  let error = $state<string | null>(null);
+  const dockError = new DockError();
   // Hidden rows (audio.setHidden) drop out of the list by default; the show-hidden
   // toggle reveals them (dimmed) so they can be unhidden individually. audio.list
   // already sorts pinned sources first, so the render order needs no client sort.
@@ -131,12 +132,8 @@ import { EV } from "$lib/utils/eventNames";
     });
   }
 
-  // `keepError` marks a refresh that repairs a failed write: the banner already names
-  // that failure and it stays worth reporting even once the strip reads true again.
-  async function load(keepError = false) {
-    if (!keepError) {
-      error = null;
-    }
+  async function load() {
+    dockError.clear();
     const current = listGuard.claim();
     const supersedeMutes = muteGuard.mark();
     const supersedeFaders = faderGuard.mark();
@@ -156,7 +153,9 @@ import { EV } from "$lib/utils/eventNames";
         }
       }
     } catch (e) {
-      error = (e as Error).message;
+      if (current()) {
+        dockError.reportLoad(e);
+      }
     } finally {
       loaded = true;
     }
@@ -198,13 +197,13 @@ import { EV } from "$lib/utils/eventNames";
         src.volumeDb = res.volumeDb;
       }
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
       if (current()) {
         // A drag issues a move per pointer step, so `previous` can be an earlier move's
         // optimistic position; re-read for the position the engine actually holds.
         // volumeDb is never asserted optimistically, so it already reads true.
         src.deflection = previous;
-        void load(true);
+        void load();
       }
     }
   }
@@ -224,14 +223,14 @@ import { EV } from "$lib/utils/eventNames";
         src.muted = res.muted;
       }
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
       if (current()) {
         // `previous` is the truth only while this was the sole toggle in flight; a second
         // failing toggle saw the first one's optimistic value. Re-read so the strip cannot
         // settle on a mute the engine never applied -- and only from the newest response,
         // since a reload would discard a toggle still on its way.
         src.muted = previous;
-        void load(true);
+        void load();
       }
     }
   }
@@ -242,7 +241,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("audio.setHidden", { uuid: src.uuid, hidden });
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -250,7 +249,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("audio.unhideAll");
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -258,7 +257,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("audio.setVolumeLocked", { uuid: src.uuid, locked: !src.volumeLocked });
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -266,7 +265,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("audio.setPinned", { uuid: src.uuid, pinned: !src.pinned });
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -302,7 +301,7 @@ import { EV } from "$lib/utils/eventNames";
         monitoring = { ...monitoring, [src.uuid]: aa.monitoringType };
       }
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
       if (current()) {
         // A second click reads the first one's optimistic value, so `previous` is only
         // the truth while this was the sole cycle in flight; re-read for the routing the
@@ -319,7 +318,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       clipboard.filters = (await obs.call("filters.copyChain", { source: src.name })).filters;
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -330,7 +329,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("filters.pasteChain", { source: src.name, filters: clipboard.filters });
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -352,7 +351,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       await obs.call("sources.renameByName", { uuid, name });
     } catch (e) {
-      error = (e as Error).message;
+      dockError.report(e);
     }
   }
 
@@ -394,8 +393,8 @@ import { EV } from "$lib/utils/eventNames";
 </script>
 
 <div class="dock-body">
-  {#if error}
-    <p class="dock-msg err" role="alert">{error}</p>
+  {#if dockError.message}
+    <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
 
   <div class="toolbar">

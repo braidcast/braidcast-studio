@@ -13,6 +13,7 @@ import { EV } from "$lib/utils/eventNames";
   import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { openDuplicateScene } from "$lib/dialogs/duplicateSceneOpener.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import {
     SceneDragReorder,
     sceneMoveActions,
@@ -106,25 +107,20 @@ import { EV } from "$lib/utils/eventNames";
   let newName = $state("");
   let renamingFrom = $state<string | null>(null);
   let renameTo = $state("");
-  let actionError = $state<string | null>(null);
   let menu = $state<ContextMenuState | null>(null);
 
-  function report(e: unknown) {
-    actionError = (e as Error).message;
-  }
+  const report = new DockError().report;
 
   // Clicking any scene row hands the app-level shortcuts to the Default surface and
   // drops the source selection with it — including when the row is already current,
   // where setCurrent no-ops and nothing downstream would clear a selection the user
   // can no longer see (Delete would then remove that stale source).
   function setCurrent(name: string) {
-    actionError = null;
     activeSurface.claimScene(surfaceOwner, null, sourceSelection, name, () => canRemoveScene);
     defaultCanvas.setCurrent(name).catch(report);
   }
 
   function beginAdd() {
-    actionError = null;
     adding = true;
     newName = "";
   }
@@ -135,7 +131,6 @@ import { EV } from "$lib/utils/eventNames";
     if (!name) {
       return;
     }
-    actionError = null;
     try {
       await defaultCanvas.create(name);
     } catch (e) {
@@ -144,7 +139,6 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   function beginRename(name: string) {
-    actionError = null;
     renamingFrom = name;
     renameTo = name;
   }
@@ -152,10 +146,10 @@ import { EV } from "$lib/utils/eventNames";
   // App-level F2 / Delete (scene target): run this dock's own beginRename / remove for the
   // signalled scene. The keyboard is a second caller of these actions, not a second copy:
   // the last-scene refusal and the undo entry both live in the `scenes.remove` bridge
-  // method, and the error lands in this dock's `actionError` exactly as the menu's Remove
-  // does. Consuming the request is what stops an unrelated scene-list mutation from
-  // re-running it, and it is taken only once the scene is confirmed present, so a request
-  // for a row we cannot serve is reported to its sender instead of vanishing.
+  // method, and the error is reported exactly as the menu's Remove does. Consuming the
+  // request is what stops an unrelated scene-list mutation from re-running it, and it is
+  // taken only once the scene is confirmed present, so a request for a row we cannot serve
+  // is reported to its sender instead of vanishing.
   $effect(() => {
     const p = dockAction.pending;
     const action = p?.action;
@@ -197,7 +191,6 @@ import { EV } from "$lib/utils/eventNames";
     if (!from || !to || to === from) {
       return;
     }
-    actionError = null;
     try {
       await defaultCanvas.rename(from, to);
     } catch (e) {
@@ -206,7 +199,6 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function copySceneFilters(name: string) {
-    actionError = null;
     try {
       clipboard.filters = (await obs.call("filters.copyChain", { source: name })).filters;
     } catch (e) {
@@ -218,7 +210,6 @@ import { EV } from "$lib/utils/eventNames";
     if (!clipboard.filters) {
       return;
     }
-    actionError = null;
     try {
       await obs.call("filters.pasteChain", { source: name, filters: clipboard.filters });
     } catch (e) {
@@ -227,7 +218,6 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function remove(name: string) {
-    actionError = null;
     try {
       await defaultCanvas.remove(name);
     } catch (e) {
@@ -236,7 +226,6 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function reorder(name: string, direction: ReorderDirection) {
-    actionError = null;
     try {
       await obs.call("scenes.reorder", { name, direction });
     } catch (e) {
@@ -255,7 +244,6 @@ import { EV } from "$lib/utils/eventNames";
   });
 
   async function reorderTo(name: string, to: number) {
-    actionError = null;
     try {
       await obs.call("scenes.reorder", { name, to });
     } catch (e) {
@@ -400,9 +388,6 @@ import { EV } from "$lib/utils/eventNames";
     {/if}
   {/if}
 
-  {#if actionError}
-    <p class="dock-msg err" role="alert">{actionError}</p>
-  {/if}
   </div>
 
   <ListToolbar left={leftActions} right={rightActions}>

@@ -2,6 +2,7 @@
   import { obs, type TransitionType, type TransitionState } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
 
   // The active scene transition: a type dropdown + a duration (ms) field, wired
   // to transitionTypes.list / transitions.getCurrent / setCurrent / setDuration
@@ -12,7 +13,7 @@ import { EV } from "$lib/utils/eventNames";
 
   let types = $state<TransitionType[]>([]);
   let current = $state<TransitionState | null>(null);
-  let error = $state<string | null>(null);
+  const dockError = new DockError();
   // Whether the active transition exposes any configurable properties. Fade/Cut
   // have none, so the Properties affordance is gated off for them; Stinger,
   // Fade-to-Color and Luma-Wipe report props and enable it.
@@ -35,10 +36,10 @@ import { EV } from "$lib/utils/eventNames";
   async function refresh() {
     try {
       current = await obs.call("transitions.getCurrent");
-      error = null;
+      dockError.clear();
       void checkProps();
     } catch (e) {
-      error = (e as Error).message;
+      dockError.reportLoad(e);
     }
   }
 
@@ -48,10 +49,10 @@ import { EV } from "$lib/utils/eventNames";
         const [t, c] = await Promise.all([obs.call("transitionTypes.list"), obs.call("transitions.getCurrent")]);
         types = t;
         current = c;
-        error = null;
+        dockError.clear();
         void checkProps();
       } catch (e) {
-        error = (e as Error).message;
+        dockError.reportLoad(e);
       }
     })();
     const offChanged = obs.on(EV.transitionsChanged, () => void refresh());
@@ -70,10 +71,9 @@ import { EV } from "$lib/utils/eventNames";
       const res = await obs.call("transitions.setCurrent", { id });
       current.id = res.id;
       current.name = res.name;
-      error = null;
       void checkProps();
     } catch (err) {
-      error = (err as Error).message;
+      dockError.report(err);
       void refresh(); // revert to the authoritative value
     }
   }
@@ -87,9 +87,8 @@ import { EV } from "$lib/utils/eventNames";
     try {
       const res = await obs.call("transitions.setDuration", { durationMs });
       current.durationMs = res.durationMs;
-      error = null;
     } catch (err) {
-      error = (err as Error).message;
+      dockError.report(err);
       void refresh();
     }
   }
@@ -102,8 +101,8 @@ import { EV } from "$lib/utils/eventNames";
 </script>
 
 <div class="dock-body">
-  {#if error}
-    <p class="dock-msg err">{error}</p>
+  {#if dockError.message}
+    <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
 
   {#if !current}
