@@ -9997,6 +9997,105 @@ namespace {
 constexpr const char *kCompositeBlurModule = "obs-composite-blur";
 constexpr const char *kCompositeBlurFilterId = "obs_composite_blur";
 
+// A Composite Blur saved before blur_algorithm had a default: no blur_algorithm key, and an
+// effect mask of type Source with no mask source picked. Loading this used to black the source out.
+constexpr const char *kCompositeBlurSavedSettings =
+	R"({"pixelate_origin_x":1280,"pixelate_origin_y":720,"center_x":1280,"center_y":720,"blur_type":1,)"
+	R"("temporal_current_weight":0.19,"effect_mask":4})";
+
+// The plugin's saved values for its blur_algorithm and blur_type settings.
+constexpr int kBlurAlgorithmGaussian = 1;
+constexpr int kBlurAlgorithmBox = 2;
+constexpr int kBlurTypeArea = 1;
+constexpr int kBlurTypeMotion = 4;
+constexpr int kBlurTypeTiltShift = 5;
+
+void WaitTwoComposites();
+
+// The render checks read an edge: a private scene whose left half is an opaque white colour
+// source and whose right half is empty. A blur softens the edge at x = w / 2; a pass-through
+// leaves it hard.
+struct EdgeRender {
+	bool ok = false;
+	uint32_t w = 0;
+	uint32_t h = 0;
+	std::vector<uint8_t> bgra;
+	std::string err;
+};
+
+// Render `source` with its filter chain at its own size, the way a preview draws it, onto a
+// transparent clear, so black and transparent both read as blank.
+EdgeRender RenderAtOwnSize(obs_source_t *source)
+{
+	EdgeRender r;
+	r.w = obs_source_get_width(source);
+	r.h = obs_source_get_height(source);
+	const auto render = [source]() {
+		obs_source_video_render(source);
+	};
+	r.ok = Bridge::RenderToBgraPixels(r.w, r.h, r.w, r.h, render, false, r.bgra, r.err);
+	return r;
+}
+
+constexpr int kEdgeWindow = 16;
+// A pass-through matches the control exactly (0); the default 10 px blur moves the pixels
+// beside the edge by about half the full range.
+constexpr int kSoftenedMinDiff = 32;
+// Away from any edge a fresh frame matches its control up to rounding; a repeated frame still
+// shows the old edge there.
+constexpr int kFreshMaxDiff = 8;
+
+// Alpha on the middle row at column x; 0 outside the render.
+uint8_t AlphaAt(const EdgeRender &r, int x)
+{
+	if (!r.ok || x < 0 || (uint32_t)x >= r.w) {
+		return 0;
+	}
+	return r.bgra[((size_t)(r.h / 2) * r.w + (size_t)x) * 4 + 3];
+}
+
+std::string EdgeAlphas(const EdgeRender &r, int edge)
+{
+	if (!r.ok) {
+		return r.err;
+	}
+	return std::to_string(r.w) + "x" + std::to_string(r.h) +
+	       " alpha at edge-8,-1,0,+7=" + std::to_string(AlphaAt(r, edge - 8)) + "," +
+	       std::to_string(AlphaAt(r, edge - 1)) + "," + std::to_string(AlphaAt(r, edge)) + "," +
+	       std::to_string(AlphaAt(r, edge + 7));
+}
+
+// Largest per-channel difference from `control` along the middle row, within kEdgeWindow
+// pixels of column `edge`; -1 when the two renders cannot be compared there.
+int EdgeDifference(const EdgeRender &r, const EdgeRender &control, int edge)
+{
+	if (!r.ok || !control.ok || r.w != control.w || r.h != control.h || edge < kEdgeWindow ||
+	    edge + kEdgeWindow > (int)r.w) {
+		return -1;
+	}
+	int maxDiff = 0;
+	const size_t row = (size_t)(r.h / 2) * r.w;
+	for (int dx = -kEdgeWindow; dx < kEdgeWindow; ++dx) {
+		const size_t px = (row + (size_t)(edge + dx)) * 4;
+		for (size_t c = 0; c < 4; ++c) {
+			maxDiff = std::max(maxDiff, std::abs((int)r.bgra[px + c] - (int)control.bgra[px + c]));
+		}
+	}
+	return maxDiff;
+}
+
+// A softened edge differs from the hard-edged control beside it and is partly transparent
+// right at it. A pass-through, a blank frame and a repeated frame from before the edge moved
+// all fail one of the two.
+bool SoftenedEdge(const EdgeRender &r, const EdgeRender &control, int edge, std::string &detail)
+{
+	const int diff = EdgeDifference(r, control, edge);
+	const int alpha = AlphaAt(r, edge - 1);
+	detail = "max diff from control=" + std::to_string(diff) + ", needs > " + std::to_string(kSoftenedMinDiff) +
+		 "; alpha at edge-1=" + std::to_string(alpha) + ", needs 6..249";
+	return diff > kSoftenedMinDiff && alpha > 5 && alpha < 250;
+}
+
 } // namespace
 
 void ObsBootstrap::RunCompositeBlurSelfTest()
@@ -10045,6 +10144,103 @@ void ObsBootstrap::RunCompositeBlurSelfTest()
 	const bool detached = obs_filter_get_parent(filter) == nullptr;
 	check("attach", attached && detached,
 	      "attached=" + std::to_string(attached) + " detached=" + std::to_string(detached));
+
+	OBSSceneAutoRelease scene = obs_scene_create_private("selftest-composite-blur-edge");
+	obs_source_t *edgeTarget = obs_scene_get_source(scene);
+	OBSDataAutoRelease halfSettings = obs_data_create();
+	obs_data_set_int(halfSettings, "width", obs_source_get_width(edgeTarget) / 2);
+	obs_data_set_int(halfSettings, "height", obs_source_get_height(edgeTarget));
+	OBSSourceAutoRelease half =
+		obs_source_create_private("color_source", "selftest-composite-blur-half", halfSettings);
+	if (!check("edge target", scene && half && obs_scene_add(scene, half), "private scene + colour source")) {
+		return;
+	}
+
+	// The filter learns its size in video_tick, and its per-frame output cache is cleared
+	// there too, so every render below waits for the graphics thread to tick it first.
+	WaitTwoComposites();
+	const EdgeRender control = RenderAtOwnSize(edgeTarget);
+	const int edge = (int)control.w / 2;
+	const bool hardEdge = AlphaAt(control, edge - 1) >= 250 && AlphaAt(control, edge) <= 5;
+	if (!check("render control", control.ok && !History::IsBlank(control.bgra) && hardEdge,
+		   EdgeAlphas(control, edge))) {
+		return;
+	}
+
+	auto rendersThrough = [&](const std::string &label, obs_source_t *blur) {
+		obs_source_filter_add(edgeTarget, blur);
+		WaitTwoComposites();
+		const EdgeRender r = RenderAtOwnSize(edgeTarget);
+		obs_source_filter_remove(edgeTarget, blur);
+		check(label, r.ok && !History::IsBlank(r.bgra), EdgeAlphas(r, edge));
+		std::string detail;
+		const bool softened = SoftenedEdge(r, control, edge, detail);
+		check(label + " edge", softened, detail);
+	};
+
+	rendersThrough("render defaults", filter);
+
+	OBSDataAutoRelease saved = obs_data_create_from_json(kCompositeBlurSavedSettings);
+	OBSSourceAutoRelease savedFilter =
+		obs_source_create_private(kCompositeBlurFilterId, "selftest-composite-blur-saved", saved);
+	if (!check("create saved", savedFilter != nullptr, kCompositeBlurSavedSettings)) {
+		return;
+	}
+	rendersThrough("render saved mask-source-unset", savedFilter);
+
+	// Choosing an algorithm that cannot render the current blur type must leave the dropdown
+	// on a type it can, not on an empty selection.
+	OBSDataAutoRelease gaussianTiltShift = obs_data_create();
+	obs_data_set_int(gaussianTiltShift, "blur_algorithm", kBlurAlgorithmGaussian);
+	obs_data_set_int(gaussianTiltShift, "blur_type", kBlurTypeTiltShift);
+	obs_property_modified(obs_properties_get(props, "blur_algorithm"), gaussianTiltShift);
+	const long long coercedType = obs_data_get_int(gaussianTiltShift, "blur_type");
+	check("properties coerce", coercedType == kBlurTypeArea,
+	      "gaussian + tilt-shift -> blur_type=" + std::to_string(coercedType));
+
+	// A filter that has drawn once and is then switched to a blur type its algorithm has no
+	// renderer for (Box has no Motion) must draw from this frame, never repeat its last one.
+	// The edge moves between the two renders, so a repeated frame shows it in the old place.
+	OBSDataAutoRelease boxArea = obs_data_create();
+	obs_data_set_int(boxArea, "blur_algorithm", kBlurAlgorithmBox);
+	obs_data_set_int(boxArea, "blur_type", kBlurTypeArea);
+	OBSSourceAutoRelease switchFilter =
+		obs_source_create_private(kCompositeBlurFilterId, "selftest-composite-blur-switch", boxArea);
+	if (!check("create switch", switchFilter != nullptr, "box + area")) {
+		return;
+	}
+	obs_source_filter_add(edgeTarget, switchFilter);
+	WaitTwoComposites();
+	const EdgeRender boxRender = RenderAtOwnSize(edgeTarget);
+	std::string boxDetail;
+	const bool boxSoftened = SoftenedEdge(boxRender, control, edge, boxDetail);
+	check("render box area edge", boxSoftened, boxDetail);
+
+	const int movedEdge = edge + 4 * kEdgeWindow;
+	OBSDataAutoRelease movedSettings = obs_data_create();
+	obs_data_set_int(movedSettings, "width", movedEdge);
+	obs_source_update(half, movedSettings);
+	OBSDataAutoRelease boxMotion = obs_data_create();
+	obs_data_set_int(boxMotion, "blur_type", kBlurTypeMotion);
+	obs_source_update(switchFilter, boxMotion);
+	WaitTwoComposites();
+	const EdgeRender switched = RenderAtOwnSize(edgeTarget);
+	obs_source_filter_remove(edgeTarget, switchFilter);
+	const EdgeRender movedControl = RenderAtOwnSize(edgeTarget);
+
+	check("render switched box+motion", switched.ok && !History::IsBlank(switched.bgra),
+	      EdgeAlphas(switched, movedEdge));
+	const int staleDiff = EdgeDifference(switched, movedControl, edge);
+	check("render switched box+motion fresh", staleDiff >= 0 && staleDiff <= kFreshMaxDiff,
+	      "max diff from moved control at the old edge=" + std::to_string(staleDiff) +
+		      ", needs <= " + std::to_string(kFreshMaxDiff));
+	std::string movedDetail;
+	const bool movedSoftened = SoftenedEdge(switched, movedControl, movedEdge, movedDetail);
+	check("render switched box+motion edge", movedSoftened, movedDetail);
+	OBSDataAutoRelease switchedSettings = obs_source_get_settings(switchFilter);
+	const long long switchedType = obs_data_get_int(switchedSettings, "blur_type");
+	check("render switched box+motion setting", switchedType == kBlurTypeArea,
+	      "blur_type=" + std::to_string(switchedType));
 }
 
 void ObsBootstrap::RunUserPluginsSelfTest()
