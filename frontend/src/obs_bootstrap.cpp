@@ -2918,6 +2918,117 @@ void ObsBootstrap::RunSettingsSelfTest()
 		}
 	}
 
+	// 6b2c) YouTube Jewels gifts, offline, on both reads: the InnerTube view model and the Data
+	// API's giftEvent make the same line -- the gift's image (or, without one, its name, kept out
+	// of the third-party emote pass) and a `jewels` chip that never carries a money value -- and
+	// the same `jewels` event. The count is the number before "Jewel(s)", never a digit in the
+	// gift's name, labelled or not; a grouped count reads whole; the name comes from the label,
+	// else the sentence, never the sentence itself; a gift with neither shows its sentence as the
+	// line. A count that cannot be read, or an item with no id, keeps the line but raises no
+	// event.
+	{
+		using Chat::YouTubeInnerTube::DecodeChatItem;
+		using Chat::YouTubeInnerTube::DecodedItem;
+		const auto gift = [](const char *id, const char *text, const char *label, const json &image) {
+			json vm =
+				json{{"authorName", json{{"content", "@viewer "}}}, {"text", json{{"content", text}}}};
+			if (id) {
+				vm["id"] = id;
+			}
+			if (label) {
+				vm["giftImageA11yLabel"] = label;
+			}
+			if (!image.is_null()) {
+				vm["giftImage"] = image;
+			}
+			return json{{"giftMessageViewModel", vm}};
+		};
+		const json sources = json{{"sources", json::array({json{{"url", "https://g.example/small.png"}},
+								   json{{"url", "https://g.example/star.png"}}})}};
+		const json thumbnails = json{{"thumbnails", json::array({json{{"url", "//g.example/t.png"}}})}};
+		DecodedItem star, unlabeled, mislabeled, grouped, singular, unreadable, overflow, thumbs, noId, padded,
+			reworded;
+		const bool decoded =
+			DecodeChatItem(gift("j-1", "sent Silver star for 2 Jewels", "Silver star", sources), star) &&
+			DecodeChatItem(gift("j-2", "sent 100 Roses for 50 Jewels", nullptr, json()), unlabeled) &&
+			DecodeChatItem(gift("j-3", "sent 100 Roses for 50 Jewels", "100 roses", json()), mislabeled) &&
+			DecodeChatItem(gift("j-4", "sent 100 Roses for 1,000 Jewels", "100 Roses", json()), grouped) &&
+			DecodeChatItem(gift("j-5", "sent Samosa for 1 Jewel", nullptr, json()), singular) &&
+			DecodeChatItem(gift("j-6", "sent Samosa", "Samosa", json()), unreadable) &&
+			DecodeChatItem(gift("j-7", "sent Samosa for 1234567890 Jewels", "Samosa", json()), overflow) &&
+			DecodeChatItem(gift("j-8", "sent Silver star for 2 Jewels", "Silver star", thumbnails),
+				       thumbs) &&
+			DecodeChatItem(gift(nullptr, "sent Samosa for 2 Jewels", "Samosa", json()), noId) &&
+			DecodeChatItem(gift("j-10", "sent Samosa for 2 Jewels ", nullptr, json()), padded) &&
+			DecodeChatItem(gift("j-11", "gifted a Samosa", nullptr, json()), reworded);
+		const json starLine = json::array(
+			{json{{"type", "emote"}, {"code", "Silver star"}, {"url", "https://g.example/star.png"}}});
+		const json starPaid = json{{"kind", "jewels"}, {"amount", "2 Jewels"}};
+		const json samosaLine = json::array({json{{"type", "text"}, {"text", "Samosa"}}});
+		const bool okInnerTube =
+			decoded && star.authorName == "@viewer" && star.fragments == starLine &&
+			star.paid == starPaid && !star.viewerText && star.hasEvent && star.ev.type == "jewels" &&
+			star.ev.id == "youtube:jewels:j-1" && star.ev.amount == 2 && star.ev.tier == "Silver star" &&
+			star.ev.currency.empty() && unlabeled.ev.amount == 50 && unlabeled.ev.tier == "100 Roses" &&
+			unlabeled.fragments == json::array({json{{"type", "text"}, {"text", "100 Roses"}}}) &&
+			mislabeled.ev.amount == 50 && mislabeled.ev.tier == "100 roses" && grouped.ev.amount == 1000 &&
+			grouped.paid["amount"] == "1000 Jewels" && singular.paid["amount"] == "1 Jewel" &&
+			singular.hasEvent && singular.ev.amount == 1 && singular.ev.tier == "Samosa" &&
+			singular.fragments == samosaLine && unreadable.paid.is_null() && !unreadable.hasEvent &&
+			unreadable.fragments == samosaLine && overflow.paid.is_null() && !overflow.hasEvent &&
+			thumbs.fragments.size() == 1 &&
+			thumbs.fragments[0].value("url", "") == "https://g.example/t.png" && noId.paid == starPaid &&
+			!noId.hasEvent && padded.ev.amount == 2 && padded.ev.tier == "Samosa" &&
+			reworded.fragments == json::array({json{{"type", "text"}, {"text", "gifted a Samosa"}}}) &&
+			reworded.paid.is_null() && !reworded.hasEvent;
+
+		const auto giftEvent = [](const char *id, const json &details) {
+			return json{{"id", id},
+				    {"snippet",
+				     {{"type", "giftEvent"},
+				      {"publishedAt", "2026-10-12T07:48:29.952946+00:00"},
+				      {"displayMessage", details.value("giftName", "")},
+				      {"giftDetails", details}}},
+				    {"authorDetails", {{"channelId", "UCviewer"}, {"displayName", "@viewer"}}}};
+		};
+		const json items = json::array({
+			giftEvent("LCC.gift", {{"giftName", "Silver star"},
+					       {"jewelsAmount", 2},
+					       {"giftUrl", "https://g.example/star.png"},
+					       {"altText", "Silver star"},
+					       {"comboCount", 1}}),
+			giftEvent("LCC.plain", {{"giftName", "Samosa"}, {"jewelsAmount", 1}, {"comboCount", 1}}),
+		});
+		// A third-party emote named like the gift must not turn the gift's name into an emote.
+		const std::unordered_map<std::string, std::string> emotes = {{"Samosa", "https://e.example/s.png"}};
+		std::vector<json> frames;
+		std::vector<Events::NormalizedEvent> events;
+		Chat::ChatContext ctx;
+		ctx.emit = [&frames](const json &frame) {
+			frames.push_back(frame);
+		};
+		Chat::ProcessYouTubeChatItems(
+			ctx, items, "lc", emotes, [] { return false; }, false,
+			[&events](Events::NormalizedEvent &ev) { events.push_back(ev); });
+		const bool okOfficial = frames.size() == 2 && frames[0].value("fragments", json()) == starLine &&
+					frames[0].value("paid", json()) == starPaid &&
+					frames[1].value("fragments", json()) == samosaLine && events.size() == 2 &&
+					events[0].type == "jewels" && events[0].id == "youtube:jewels:LCC.gift" &&
+					events[0].amount == 2 && events[0].tier == "Silver star" &&
+					events[0].currency.empty() && events[1].amount == 1 &&
+					events[1].tier == "Samosa";
+		HostLog(std::string("[selftest] youtube-jewels -> ") + (okInnerTube && okOfficial ? "OK" : "MISMATCH"));
+		if (!okInnerTube || !okOfficial) {
+			HostLog("[selftest] youtube-jewels innertube=" + std::to_string(okInnerTube) +
+				" official=" + std::to_string(okOfficial) + " star.frags=" + star.fragments.dump() +
+				" star.paid=" + star.paid.dump() + " unlabeled=" + std::to_string(unlabeled.ev.amount) +
+				"/" + unlabeled.ev.tier + " mislabeled=" + std::to_string(mislabeled.ev.amount) +
+				" grouped=" + std::to_string(grouped.ev.amount) + " singular.tier=" + singular.ev.tier +
+				" thumbs=" + thumbs.fragments.dump() + " frames=" + json(frames).dump() +
+				" events=" + std::to_string(events.size()));
+		}
+	}
+
 	// 6b2a) InnerTube live reactions, offline: counts read as numbers or numeric strings, a
 	// bucket without reactionsData keeps its total, a missing total is the per-emoji sum, a
 	// payload that is not an object and a non-fountain entity are skipped, and an emoji id that

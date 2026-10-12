@@ -18,7 +18,7 @@ using json = nlohmann::json;
 struct NormalizedEvent {
 	std::string id;       // stable, platform-unique; the dedupe key
 	std::string platform; // "twitch" | "youtube" | "kick"
-	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member|kicks
+	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member|kicks|jewels
 	int64_t ts = 0;       // ms since epoch (event time if the API gives one, else receipt)
 	// WHICH destination produced this. `accountId` is stamped for every event by the hub's
 	// per-account emit path, so `platform` is no longer the only identity two accounts on
@@ -32,11 +32,11 @@ struct NormalizedEvent {
 	std::string actorName;
 	std::string actorColor; // "" if unknown
 	// Optional, per-type (omitted from JSON when empty-string / zero). `amount` is cheer bits /
-	// superchat HUNDREDTHS of the major unit (even JPY) / raid viewers / Kicks sent (a count of
-	// Kick's gift currency, never money).
+	// superchat HUNDREDTHS of the major unit (even JPY) / raid viewers / Kicks or Jewels sent (a
+	// count of Kick's or YouTube's gift currency, never money).
 	int64_t amount = 0;
 	std::string currency; // superchat currency code
-	std::string tier;     // sub/member tier label / Kicks gift name
+	std::string tier;     // sub/member tier label / Kicks or Jewels gift name
 	int months = 0;       // resub cumulative months
 	int count = 0;        // gift count
 	std::string message;  // resub/superchat/Kicks user message (plain text; the dock escapes it)
@@ -112,6 +112,25 @@ inline std::string YouTubeMoneyEventId(const std::string &type, const std::strin
 {
 	return "youtube:" + type + ":" + supporterChannelId + ":" + std::to_string(amountMicros) + ":" +
 	       std::to_string(createdAtEpochSeconds);
+}
+
+// A YouTube Jewels gift as an event, the same from either YouTube live-chat read. `jewels` is a
+// count of YouTube's gift currency, never money, as Kicks are on Kick. One event per gift item:
+// a combo arrives as separate items under their own ids, so the item id is the dedupe key.
+// False, leaving `ev` untouched, when the Jewels could not be read -- an alert claiming zero
+// Jewels would be wrong -- or the item has no id, which every id-less gift would share. The
+// gift's chat line still shows it.
+inline bool FillYouTubeJewelsEvent(NormalizedEvent &ev, const std::string &itemId, int64_t jewels,
+				   const std::string &giftName)
+{
+	if (jewels <= 0 || itemId.empty()) {
+		return false;
+	}
+	ev.type = "jewels";
+	ev.id = "youtube:jewels:" + itemId;
+	ev.amount = jewels;
+	ev.tier = giftName;
+	return true;
 }
 
 } // namespace Events

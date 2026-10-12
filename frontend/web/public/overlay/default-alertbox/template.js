@@ -13,7 +13,7 @@ const cardTpl = document.getElementById("alert-card");
 //   alone  plays alone, whole, with its own sound -- it never joins a burst and none joins
 //          it. The value is the field key naming what its overflow card counts: that card
 //          can follow another kind's burst, so it has to say what it stands for. That is
-//          every tip (cheers, Super Chats, Super Stickers, Kicks), so whoever paid sees their
+//          every tip (cheers, Super Chats, Super Stickers, Kicks, Jewels), so whoever paid sees their
 //          own name and message, and a raid.
 const TYPES = {
   follow: {},
@@ -26,6 +26,7 @@ const TYPES = {
   superchat: { alone: "nounSuperchat" },
   supersticker: { alone: "nounSupersticker" },
   kicks: { alone: "nounKicks" },
+  jewels: { alone: "nounJewels" },
 };
 
 // The card layouts the layout field offers; anything else reads as the default.

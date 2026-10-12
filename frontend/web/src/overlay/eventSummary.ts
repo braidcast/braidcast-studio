@@ -25,6 +25,7 @@ export const EVENT_EMOJI: Readonly<Record<string, string>> = {
   supersticker: "🎨",
   member: "🛡️",
   kicks: "🪙",
+  jewels: "💠",
 };
 
 const SUMMARY: Readonly<Record<string, (e: NormalizedEvent, f: AmountFormat) => string>> = {
@@ -43,6 +44,7 @@ const SUMMARY: Readonly<Record<string, (e: NormalizedEvent, f: AmountFormat) => 
   member: (e) =>
     e.months ? "member · " + e.months + " months" : e.tier ? "became a member · " + e.tier : "became a member",
   kicks: (e, f) => "sent " + f.amountText(e) + (e.tier ? " · " + e.tier : ""),
+  jewels: (e, f) => "sent " + f.amountText(e) + (e.tier ? " · " + e.tier : ""),
 };
 
 /** `e`'s action phrase; an unknown type reads as its raw type string. */

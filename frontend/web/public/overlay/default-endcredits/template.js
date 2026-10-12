@@ -13,6 +13,7 @@ const SECTIONS = [
   { field: "showSuperChats", heading: "Super Chats", types: ["superchat", "supersticker"] },
   { field: "showCheers", heading: "Cheers", types: ["cheer"] },
   { field: "showKicks", heading: "Kicks", types: ["kicks"] },
+  { field: "showJewels", heading: "Jewels", types: ["jewels"] },
   { field: "showRaids", heading: "Raiders", types: ["raid"] },
   { field: "showFollows", heading: "New followers", types: ["follow"] },
 ];

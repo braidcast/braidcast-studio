@@ -8,6 +8,7 @@
   { "key": "dmgBit", "type": "number", "label": "Per bit", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
   { "key": "dmgSuperChat", "type": "number", "label": "Super Chat or Sticker", "group": "Damage", "min": 0, "max": 100000, "step": 1, "default": 100, "help": "The same for any amount: with no exchange rate in this widget, one currency's figure is not another's." },
   { "key": "dmgKick", "type": "number", "label": "Per Kick", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
+  { "key": "dmgJewel", "type": "number", "label": "Per Jewel", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
   { "key": "dmgRaider", "type": "number", "label": "Per raider", "group": "Damage", "min": 0, "max": 1000, "step": 0.1, "default": 1 },
   { "key": "fontFamily", "type": "font", "label": "Font", "group": "Style", "default": "Inter, system-ui, sans-serif" },
   { "key": "fontSize", "type": "slider", "label": "Font size (design px)", "group": "Style", "min": 12, "max": 48, "step": 1, "default": 22 },

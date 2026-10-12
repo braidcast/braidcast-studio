@@ -42,6 +42,8 @@ describe("countEvents", () => {
     ev("c1", "cheer", "twitch", 16, { amount: 500 }),
     ev("c2", "cheer", "twitch", 17),
     ev("k1", "kicks", "kick", 18, { amount: 100 }),
+    ev("j1", "jewels", "youtube", 18, { amount: 2 }),
+    ev("j2", "jewels", "youtube", 18, { amount: 50 }),
     ev("r1", "raid", "twitch", 19, { amount: 40 }),
   ];
 
@@ -58,9 +60,10 @@ describe("countEvents", () => {
     expect(countEvents(events, "subgift", ALL, OPEN)).toBe(6);
   });
 
-  test("bits and Kicks sum the amount, an omitted amount being zero", () => {
+  test("bits, Kicks and Jewels sum the amount, an omitted amount being zero", () => {
     expect(countEvents(events, "cheer", ALL, OPEN)).toBe(500);
     expect(countEvents(events, "kicks", ALL, OPEN)).toBe(100);
+    expect(countEvents(events, "jewels", ALL, OPEN)).toBe(52);
   });
 
   test("raids count raids, not raiders", () => {

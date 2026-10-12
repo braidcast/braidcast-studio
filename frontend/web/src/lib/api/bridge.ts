@@ -1579,13 +1579,15 @@ export type ChatFragment =
  * message. `amount` is the platform's own display string ("$5.00", "₹450.00",
  * "100 bits") -- render it verbatim, never parse it. `color` is the "#RRGGBB" tier
  * color when the platform supplies one (YouTube); absent on the official-API
- * fallback path, which has no color, and always absent for `"cheer"` (Twitch Bits
- * carry no tier color at all). A paid line may have empty `fragments` (a Super Chat
- * or a cheer with no comment is its amount alone); a supersticker's fragments are
- * usually one emote fragment (the sticker image, code "[sticker]"). */
+ * fallback path, which has no color, and always absent for `"cheer"` and `"jewels"`
+ * (neither Bits nor Jewels carry a tier color). A paid line may have empty `fragments`
+ * (a Super Chat or a cheer with no comment is its amount alone); a supersticker's fragments are
+ * usually one emote fragment (the sticker image, code "[sticker]"). A YouTube Jewels
+ * gift (`"jewels"`) is one emote fragment (the gift image, its name as the code) or,
+ * without an image, the name as text; like a cheer it never carries `value`. */
 export interface ChatPaid {
-  kind: "superchat" | "supersticker" | "cheer";
-  /** What the platform shows for what was paid ("$5.00", "100 bits"). */
+  kind: "superchat" | "supersticker" | "cheer" | "jewels";
+  /** What the platform shows for what was paid ("$5.00", "100 bits", "2 Jewels"). */
   amount: string;
   /** Money only, together with `currency` and only when the host could read the figure:
    * hundredths of `currency`'s major unit. What lib/utils/fx.ts converts. */
@@ -1831,14 +1833,16 @@ export type EventType =
   | "superchat"
   | "supersticker"
   | "member"
-  | "kicks";
+  | "kicks"
+  | "jewels";
 
 /** One normalized platform event (the `events.new` event; `events.list` pages and the
  * `events.backfill` event carry arrays of these).
  * Optional fields are omitted by the host when empty/zero: `amount` is cheer
- * bits / superchat hundredths of the major unit (even JPY) / raid viewers / Kicks sent (a count of
- * Kick's gift currency, never money; `tier` is the gift's name); `actorColor` falls back to a
- * platform color when absent; `message` is rendered as plain text, never HTML.
+ * bits / superchat hundredths of the major unit (even JPY) / raid viewers / Kicks or Jewels sent (a
+ * count of Kick's or YouTube's gift currency, never money; `tier` is the gift's name);
+ * `actorColor` falls back to a platform color when absent; `message` is rendered as plain
+ * text, never HTML.
  *
  * `accountId` names the account the event belongs to (absent only for a host-synthesized
  * event). `profileUuid` appears only when the source knew which broadcast it arrived on

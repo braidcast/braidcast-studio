@@ -230,8 +230,16 @@ json BadgesFor(const json &authorDetails)
 	return badges;
 }
 
+// A Jewels gift's display name from a giftEvent's giftDetails, its alt text when the name is
+// missing.
+std::string GiftName(const json &giftDetails)
+{
+	const std::string name = Str(giftDetails, "giftName");
+	return name.empty() ? Str(giftDetails, "altText") : name;
+}
+
 // One liveChatMessages item -> the Phase 9 normalized message, or a null json when
-// the item has neither text nor a `paid` amount (membership, tombstone, chat ended...).
+// the item has no text, no gift and no `paid` amount (membership, tombstone, chat ended...).
 json NormalizeItem(const json &item, const std::string &liveChatId,
 		   const std::unordered_map<std::string, std::string> &thirdPartyEmotes)
 {
@@ -246,6 +254,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	// official read states a tier NUMBER, not a colour, so these lines carry none.
 	const std::string type = Str(snippet, "type");
 	json paid;
+	json fragments = json::array();
 	std::string text;
 	bool stickerAltText = false;
 	if (type == "superChatEvent") {
@@ -259,6 +268,11 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 		WithPaidValue(paid, NumLoose(d, "amountMicros") / 10000, Str(d, "currency"));
 		text = Str(Obj(d, "superStickerMetadata"), "altText");
 		stickerAltText = true;
+	} else if (type == "giftEvent") {
+		// A Jewels gift: no text of its own (displayMessage is only the gift's name), so the
+		// line is the gift itself, assembled exactly as the InnerTube read assembles it.
+		const json &d = Obj(snippet, "giftDetails");
+		BuildJewelsGiftLine(GiftName(d), Str(d, "giftUrl"), NumLoose(d, "jewelsAmount"), fragments, paid);
 	} else {
 		text = Str(snippet, "displayMessage");
 		if (text.empty() && snippet.is_object() && snippet.contains("textMessageDetails") &&
@@ -266,7 +280,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 			text = Str(snippet["textMessageDetails"], "messageText");
 		}
 	}
-	if (text.empty() && !paid.is_object()) {
+	if (text.empty() && fragments.empty() && !paid.is_object()) {
 		return json(nullptr); // non-paid items without text; the events feed carries memberships
 	}
 
@@ -275,7 +289,6 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	// the third-party pass then splits any 7TV/BTTV emote words out of that text. A
 	// sticker's alt text is YouTube's description of the image, not something the viewer
 	// typed, so it skips that pass.
-	json fragments = json::array();
 	if (!text.empty()) {
 		fragments.push_back(json{{"type", "text"}, {"text", text}});
 		if (!stickerAltText) {
@@ -395,6 +408,10 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 		ev.tier = Str(d, "memberLevelName");
 		ev.message = Str(d, "userComment");
 		return true;
+	}
+	if (type == "giftEvent") {
+		const json &d = Obj(snippet, "giftDetails");
+		return Events::FillYouTubeJewelsEvent(ev, itemId, NumLoose(d, "jewelsAmount"), GiftName(d));
 	}
 	if (type == "membershipGiftingEvent") {
 		// One purchase of N gifted memberships, the same single subgift with a count the

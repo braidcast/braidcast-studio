@@ -10,6 +10,7 @@ const EVENTS = {
   giftedsub: "subgift",
   cheer: "cheer",
   kicks: "kicks",
+  jewels: "jewels",
   raid: "raid",
   superchat: "superchat",
 };

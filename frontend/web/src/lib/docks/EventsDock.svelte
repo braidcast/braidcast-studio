@@ -47,7 +47,7 @@
   // Platform dot/tag color (matches the Multichat dock).
   const PLATFORM_COLOR = PLATFORM_COLORS;
 
-  // Accent color per type. follow=blue; sub/resub=purple; subgift/member/kicks=gold;
+  // Accent color per type. follow=blue; sub/resub=purple; subgift/member/kicks/jewels=gold;
   // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
   const TYPE_COLOR = EVENT_TYPE_COLORS;
 
@@ -72,6 +72,7 @@
     member: (e) =>
       e.months ? `member · ${e.months} months` : e.tier ? `became a member · ${e.tier}` : "became a member",
     kicks: (e) => `sent ${fmtTally("kicks", e.amount ?? 0)}` + (e.tier ? ` · ${e.tier}` : ""),
+    jewels: (e) => `sent ${fmtTally("jewels", e.amount ?? 0)}` + (e.tier ? ` · ${e.tier}` : ""),
   };
 
   fxStore.start();
@@ -413,6 +414,10 @@
       <circle cx="12" cy="12" r="10" />
       <path d="M9.5 7.5v9" />
       <path d="M15 7.5l-5.5 4.5 5.5 4.5" />
+    {:else if type === "jewels"}
+      <path d="M6 3h12l4 6-10 12L2 9z" />
+      <path d="M2 9h20" />
+      <path d="M12 21L8 9l4-6 4 6z" />
     {:else}
       <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
     {/if}

@@ -10,6 +10,7 @@ const fillEl = document.getElementById("goal-fill");
 //   gifted subs -> + the subs a gift gave (at least 1)
 //   bits        -> + bits cheered
 //   kicks       -> + Kicks sent (a count of Kick's gift currency, not money)
+//   jewels      -> + Jewels sent (a count of YouTube's gift currency, not money)
 // Donations are money, which no Counter source sums: + e.amount, counting only events in
 // the goal's currency. Amounts arrive in hundredths of the major unit, so a money goal is
 // kept in hundredths too and its configured target/start are scaled to match. With no
@@ -22,6 +23,7 @@ const GOALS = {
   giftedsubs: sourceGoal("subgift"),
   bits: sourceGoal("cheer"),
   kicks: sourceGoal("kicks"),
+  jewels: sourceGoal("jewels"),
   donations: {
     inc: (e) => (["superchat", "supersticker"].indexOf(e.type) !== -1 && e.amount != null ? e.amount : 0),
     money: true,
@@ -100,7 +102,7 @@ function applyFields(f) {
   render();
 }
 
-// Counts (followers/subs/bits/Kicks) render grouped; a money goal renders in its currency.
+// Counts (followers/subs/bits/Kicks/Jewels) render grouped; a money goal renders in its currency.
 function fmt(n) {
   return goal.money ? OBSOverlay.formatMoney(n, currency) : OBSOverlay.formatCount(n);
 }

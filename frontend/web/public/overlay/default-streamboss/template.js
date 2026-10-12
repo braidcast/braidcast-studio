@@ -17,6 +17,7 @@ const DAMAGE = {
   superchat: { field: "dmgSuperChat", fallback: 100, times: () => 1 },
   supersticker: { field: "dmgSuperChat", fallback: 100, times: () => 1 },
   kicks: { field: "dmgKick", fallback: 1, times: (e) => (e.amount > 0 ? e.amount : 0) },
+  jewels: { field: "dmgJewel", fallback: 1, times: (e) => (e.amount > 0 ? e.amount : 0) },
   raid: { field: "dmgRaider", fallback: 1, times: (e) => (e.amount > 0 ? e.amount : 0) },
 };
 

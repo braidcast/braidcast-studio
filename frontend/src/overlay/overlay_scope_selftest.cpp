@@ -315,7 +315,7 @@ bool MigrationStep()
 	return ok;
 }
 
-// The alert box's shipped scopes.json reads, declares the eight events the template handles,
+// The alert box's shipped scopes.json reads, declares the nine events the template handles,
 // and reaches a stock widget through Resolve.
 bool TypeScopesStep()
 {
@@ -331,7 +331,7 @@ bool TypeScopesStep()
 	stock.type = "alertbox";
 	const bool resolved = Overlay::Resolve(stock).scopes == shipped.scopes;
 	const bool ok = shipped.status == Overlay::TemplateStatus::Ok &&
-			keys == "follow,sub,cheer,raid,superchat,supersticker,member,kicks" && resolved;
+			keys == "follow,sub,cheer,raid,superchat,supersticker,member,kicks,jewels" && resolved;
 	HostLog(std::string("[selftest] overlay type scopes -> ") + (ok ? "OK" : "MISMATCH") + " (events=" + keys +
 		")");
 	return ok;

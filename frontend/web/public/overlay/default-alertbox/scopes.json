@@ -7,6 +7,7 @@
     { "key": "superchat", "label": "Super Chats", "types": ["superchat"], "conditions": ["amount"], "message": "{name} sent {amount}!" },
     { "key": "supersticker", "label": "Super Stickers", "types": ["supersticker"], "conditions": ["amount"], "message": "{name} sent a {amount} sticker!" },
     { "key": "member", "label": "Members", "types": ["member"], "conditions": ["tier", "months"], "message": "{name} is now a member!" },
-    { "key": "kicks", "label": "Kicks", "types": ["kicks"], "conditions": ["amount"], "message": "{name} sent {amountText}!" }
+    { "key": "kicks", "label": "Kicks", "types": ["kicks"], "conditions": ["amount"], "message": "{name} sent {amountText}!" },
+    { "key": "jewels", "label": "Jewels", "types": ["jewels"], "conditions": ["amount"], "message": "{name} sent {amountText}!" }
   ]
 }

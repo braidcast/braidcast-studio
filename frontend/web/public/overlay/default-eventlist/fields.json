@@ -5,6 +5,7 @@
   { "key": "showCheers", "type": "checkbox", "label": "Bits", "group": "Events", "default": true },
   { "key": "showSuperChats", "type": "checkbox", "label": "Super Chats and Stickers", "group": "Events", "default": true },
   { "key": "showKicks", "type": "checkbox", "label": "Kicks", "group": "Events", "default": true },
+  { "key": "showJewels", "type": "checkbox", "label": "Jewels", "group": "Events", "default": true },
   { "key": "showRaids", "type": "checkbox", "label": "Raids", "group": "Events", "default": true },
   { "key": "maxItems", "type": "slider", "label": "Events shown", "group": "Content", "min": 1, "max": 20, "step": 1, "default": 6 },
   { "key": "newestOnTop", "type": "checkbox", "label": "Newest on top", "group": "Content", "default": true },

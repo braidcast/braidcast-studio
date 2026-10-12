@@ -7,7 +7,7 @@ import type { EventType, NormalizedEvent } from "$lib/api/bridge";
 import { fillTemplate } from "./fillTemplate";
 
 /** What one event contributes to a session count: one per event, the units it names (the
- * subs a gift gave, or 1), or the amount it carries (bits cheered, Kicks sent). The host
+ * subs a gift gave, or 1), or the amount it carries (bits cheered, Kicks or Jewels sent). The host
  * keeps all three per (platform, type, kind), so a count picks one without a host change. */
 type Measure = "events" | "units" | "amount";
 
@@ -33,6 +33,7 @@ export const COUNTER_EVENT_SOURCES: Readonly<Record<string, EventSource>> = {
   superchat: { types: ["superchat"], measure: "events" },
   member: { types: ["member"], measure: "events", kinds: ["new"] },
   kicks: { types: ["kicks"], measure: "amount" },
+  jewels: { types: ["jewels"], measure: "amount" },
 };
 
 /** `e`'s kind. Mirrors TallyKind in frontend/src/overlay/broadcast_tally.cpp, which files the

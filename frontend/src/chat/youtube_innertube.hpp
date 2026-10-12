@@ -78,9 +78,9 @@ struct Config {
 };
 
 // One live-chat item (addChatItemAction.item) decoded into the normalized parts: the author,
-// the chat line (`fragments`, plus `paid` for a Super Chat or Super Sticker) and, when the item
-// is also a monetization/membership record, the event it raises. A line with no fragments and
-// no `paid` is not emitted.
+// the chat line (`fragments`, plus `paid` for a Super Chat, Super Sticker or Jewels gift) and,
+// when the item is also a monetization/membership record, the event it raises. A line with no
+// fragments and no `paid` is not emitted.
 struct DecodedItem {
 	std::string id;
 	int64_t tsMs = 0;
@@ -89,6 +89,9 @@ struct DecodedItem {
 	json badges = json::array();
 	json fragments = json::array();
 	json paid; // null on an ordinary line
+	// False when the fragments are YouTube's own label rather than what the viewer typed (a
+	// Jewels gift's name), which the third-party emote pass must leave alone.
+	bool viewerText = true;
 	bool hasEvent = false;
 	Events::NormalizedEvent ev;
 };

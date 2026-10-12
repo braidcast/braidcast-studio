@@ -23,6 +23,8 @@
 #include "youtube_poll.hpp"
 #include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
+#include "util/string_util.hpp"
+#include "util/time_util.hpp"
 #include "ws_client.hpp" // CancelableSleep / Backoff
 
 namespace Chat {
@@ -91,10 +93,11 @@ constexpr size_t kMinContinuationChars = 64;
 
 // The largest thumbnail URL from a `{ "thumbnails": [ { "url": ... } ] }` node ("" when
 // absent). InnerTube orders thumbnails smallest-first. Some renderers hand back
-// protocol-relative URLs, which an app:// document cannot resolve, so those are completed.
-std::string LargestThumbnail(const json &node)
+// protocol-relative URLs, which an app:// document cannot resolve, so those are completed. A
+// view model names the same list `sources`, which `arrayKey` selects.
+std::string LargestThumbnail(const json &node, const char *arrayKey = "thumbnails")
 {
-	const json &thumbs = Obj(node, "thumbnails");
+	const json &thumbs = Obj(node, arrayKey);
 	if (!thumbs.is_array()) {
 		return std::string();
 	}
@@ -549,10 +552,97 @@ void BuildGiftRedemption(const json &renderer, DecodedItem &out)
 	out.fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
 }
 
+// A Jewels gift's sentence, "sent <gift> for <N> Jewel(s)", read into the gift's name and its
+// count. The InnerTube client pins hl=en, so the wording is fixed. The count is the digit run
+// right before the trailing Jewel(s), read from the end, so a digit inside the name is never
+// taken for it; a group separator between digits ("1,000") stays inside the run. The name is
+// what lies between "sent " and " for " ahead of the count, empty when the sentence has any
+// other shape. A count that is absent or over nine digits reads as 0, and leaves the name empty.
+struct GiftSentence {
+	std::string name;
+	int64_t jewels = 0;
+};
+
+GiftSentence ReadGiftSentence(const std::string &text)
+{
+	GiftSentence out;
+	size_t end = std::string::npos;
+	for (const char *unit : {" Jewels", " Jewel"}) {
+		const size_t len = std::char_traits<char>::length(unit);
+		if (text.size() >= len && text.compare(text.size() - len, len, unit) == 0) {
+			end = text.size() - len;
+			break;
+		}
+	}
+	if (end == std::string::npos) {
+		return out;
+	}
+	size_t begin = end;
+	int digits = 0;
+	while (begin > 0) {
+		const char c = text[begin - 1];
+		const bool separator = (c == ',' || c == '.') && begin >= 2 && begin < end &&
+				       IsAsciiDigit(text[begin - 2]) && IsAsciiDigit(text[begin]);
+		if (IsAsciiDigit(c)) {
+			++digits;
+		} else if (!separator) {
+			break;
+		}
+		--begin;
+	}
+	if (digits == 0 || digits > 9) {
+		return out;
+	}
+	for (size_t i = begin; i < end; ++i) {
+		if (IsAsciiDigit(text[i])) {
+			out.jewels = out.jewels * 10 + (text[i] - '0');
+		}
+	}
+	static constexpr char kSent[] = "sent ";
+	static constexpr char kFor[] = " for ";
+	constexpr size_t kSentLen = sizeof(kSent) - 1;
+	constexpr size_t kForLen = sizeof(kFor) - 1;
+	if (begin > kSentLen + kForLen && text.compare(0, kSentLen, kSent) == 0 &&
+	    text.compare(begin - kForLen, kForLen, kFor) == 0) {
+		out.name = text.substr(kSentLen, begin - kForLen - kSentLen);
+	}
+	return out;
+}
+
+void BuildJewelsGift(const json &renderer, DecodedItem &out)
+{
+	// A Jewels gift is a view model, not a renderer: its strings are `{content}` nodes rather
+	// than runs, it carries no badges and no timestamp (OnAddChatItem stamps receipt time), and
+	// the Jewels are named only inside its text. About half of gifts carry no giftImage URL, only
+	// a client-side icon, and those still make a line, by name; one with neither a name nor an
+	// image shows its sentence as is, so a gift is never dropped. The name is YouTube's label for
+	// the gift, never viewer text, so it skips the third-party emote pass.
+	const std::string text = StringUtil::Trim(Str(Obj(renderer, "text"), "content"));
+	const GiftSentence sentence = ReadGiftSentence(text);
+	if (out.authorName.empty()) {
+		out.authorName = StringUtil::Trim(Str(Obj(renderer, "authorName"), "content"));
+	}
+	std::string name = Str(renderer, "giftImageA11yLabel");
+	if (name.empty()) {
+		name = sentence.name;
+	}
+	const json &image = Obj(renderer, "giftImage");
+	std::string url = LargestThumbnail(image, "sources");
+	if (url.empty()) {
+		url = LargestThumbnail(image);
+	}
+	BuildJewelsGiftLine(name, url, sentence.jewels, out.fragments, out.paid);
+	if (out.fragments.empty() && !text.empty()) {
+		out.fragments.push_back(json{{"type", "text"}, {"text", text}});
+	}
+	out.viewerText = false;
+	out.hasEvent = Events::FillYouTubeJewelsEvent(out.ev, out.id, sentence.jewels, name);
+}
+
 // addChatItemAction.item.<renderer> -> builder. A renderer name absent from this table is
-// SKIPPED SILENTLY: YouTube adds renderers over time (placeholders, mode-change notices,
-// engagement messages, product purchases) and an unknown one must never break the read loop.
-// Adding support for one is a row here plus its builder.
+// SKIPPED, logged once per read: YouTube adds renderers over time (placeholders, mode-change
+// notices, engagement messages, product purchases) and an unknown one must never break the
+// read loop. Adding support for one is a row here plus its builder.
 const std::pair<const char *, RendererFn> kRenderers[] = {
 	{"liveChatTextMessageRenderer", BuildTextMessage},
 	{"liveChatPaidMessageRenderer", BuildPaidMessage},
@@ -560,6 +650,7 @@ const std::pair<const char *, RendererFn> kRenderers[] = {
 	{"liveChatMembershipItemRenderer", BuildMembership},
 	{"liveChatSponsorshipsGiftPurchaseAnnouncementRenderer", BuildGiftPurchase},
 	{"liveChatSponsorshipsGiftRedemptionAnnouncementRenderer", BuildGiftRedemption},
+	{"giftMessageViewModel", BuildJewelsGift},
 };
 
 // The per-run loop state the action handlers mutate; lives in Run()'s frame.
@@ -585,15 +676,29 @@ struct Loop {
 	std::unordered_map<std::string, bool> goals;
 	// This response's goal mutations, in arrival order, handed over together by FlushGoals.
 	std::vector<YouTubeGoal::Patch> pendingGoals;
-	// Unrecognized entity and goal action names already logged, so each is logged once.
+	// Unrecognized entity, action and chat item names already logged, by category and name, so
+	// each is logged once; capped, so a stream of novel names cannot grow it without bound.
 	std::unordered_set<std::string> loggedNames;
 };
 
+// Defined with the goal log lines below.
+void LogNameOnce(Loop &lp, const char *what, const std::string &name, const char *verdict);
+
 void OnAddChatItem(Loop &lp, const char *, const json &action)
 {
+	const json &item = Obj(action, "item");
 	DecodedItem d;
-	if (!DecodeChatItem(Obj(action, "item"), d)) {
+	if (!DecodeChatItem(item, d)) {
+		if (item.is_object()) {
+			for (const auto &entry : item.items()) {
+				LogNameOnce(lp, "chat item", entry.key(), "no renderer, skipped");
+			}
+		}
 		return;
+	}
+	// An item without a timestamp of its own (a view model carries none) is stamped on receipt.
+	if (d.tsMs <= 0) {
+		d.tsMs = TimeUtil::NowMs();
 	}
 	++lp.items;
 	if (!lp.seen.add(d.id)) {
@@ -606,7 +711,7 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 	}
 
 	if (!d.fragments.empty() || d.paid.is_object()) {
-		const json fragments = ApplyThirdPartyEmotes(d.fragments, *lp.emotes);
+		const json fragments = d.viewerText ? ApplyThirdPartyEmotes(d.fragments, *lp.emotes) : d.fragments;
 		lp.cb.emitMessage(BuildChatMessage("youtube", lp.cfg.channelId, d.id, d.tsMs, d.authorName,
 						   d.authorChannelId, std::string(), d.badges, fragments, d.paid));
 		++lp.emitted;
@@ -672,10 +777,16 @@ std::string LoggedName(const std::string &name)
 	return IsLogSafeLabel(name, kMaxLoggedNameBytes) ? name : std::string("(unprintable)");
 }
 
-// Log `name` once per read: "<what> '<name>', <verdict>".
+// The most distinct names one read logs; past it, new ones go unlogged.
+constexpr size_t kMaxLoggedNames = 256;
+
+// Log `name` once per read and category: "<what> '<name>', <verdict>".
 void LogNameOnce(Loop &lp, const char *what, const std::string &name, const char *verdict)
 {
-	if (lp.loggedNames.insert(name).second) {
+	if (lp.loggedNames.size() >= kMaxLoggedNames) {
+		return;
+	}
+	if (lp.loggedNames.insert(std::string(what) + ':' + name).second) {
 		DBG(LogCat::Chat, "youtube innertube: dest=%s %s '%s', %s (logged once)", lp.cfg.destTag.c_str(), what,
 		    LoggedName(name).c_str(), verdict);
 	}
@@ -782,8 +893,9 @@ void OnGoalTickerChip(Loop &lp, const char *, const json &action)
 				      : "a goal entity this read has not seen");
 }
 
-// An action this read has no handler for, checked only for a goal-shaped name so a goal action
-// YouTube adds later shows up in the log instead of vanishing.
+// An action this read has no handler for, logged once per name so an action YouTube adds later
+// shows up in the log instead of vanishing. clickTrackingParams rides beside the action's own
+// key and names nothing.
 void NoteUnhandledAction(Loop &lp, const json &action)
 {
 	if (!action.is_object()) {
@@ -791,9 +903,11 @@ void NoteUnhandledAction(Loop &lp, const json &action)
 	}
 	for (const auto &item : action.items()) {
 		const std::string &name = item.key();
-		if (name.find("reatorGoal") != std::string::npos) {
-			LogNameOnce(lp, "goal action", name, "no handler");
+		if (name == "clickTrackingParams") {
+			continue;
 		}
+		const bool goal = name.find("reatorGoal") != std::string::npos;
+		LogNameOnce(lp, goal ? "goal action" : "action", name, "no handler");
 	}
 }
 

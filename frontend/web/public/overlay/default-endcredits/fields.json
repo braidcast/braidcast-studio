@@ -6,6 +6,7 @@
   { "key": "showCheers", "type": "checkbox", "label": "Cheers", "group": "Sections", "default": true },
   { "key": "showSuperChats", "type": "checkbox", "label": "Super Chats", "group": "Sections", "default": true },
   { "key": "showKicks", "type": "checkbox", "label": "Kicks", "group": "Sections", "default": true },
+  { "key": "showJewels", "type": "checkbox", "label": "Jewels", "group": "Sections", "default": true },
   { "key": "showRaids", "type": "checkbox", "label": "Raiders", "group": "Sections", "default": true },
   { "key": "emptyText", "type": "text", "label": "Text when there is no one to thank", "group": "Content", "default": "" },
   { "key": "scrollSpeed", "type": "slider", "label": "Scroll speed (design px per second)", "group": "Motion", "min": 10, "max": 200, "step": 5, "default": 50 },

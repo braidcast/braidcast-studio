@@ -10,6 +10,7 @@ const SHOWS = {
   showCheers: ["cheer"],
   showSuperChats: ["superchat", "supersticker"],
   showKicks: ["kicks"],
+  showJewels: ["jewels"],
   showRaids: ["raid"],
 };
 

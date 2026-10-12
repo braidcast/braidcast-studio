@@ -15222,6 +15222,13 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 			 e.tier = "Rage Quit";
 			 e.message = "w";
 		 }},
+		// Jewels exist only on YouTube, likewise.
+		{"jewels",
+		 [](Events::NormalizedEvent &e) {
+			 e.platform = "youtube";
+			 e.amount = 2;
+			 e.tier = "Silver star";
+		 }},
 	};
 	auto def = kDefaults.find(type);
 	if (def != kDefaults.end()) {

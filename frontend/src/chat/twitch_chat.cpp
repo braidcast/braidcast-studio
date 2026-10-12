@@ -401,7 +401,7 @@ json CheerPaid(const std::string &bitsTag)
 	if (bits <= 0) {
 		return json();
 	}
-	return Chat::BuildChatPaid("cheer", bits == 1 ? std::string("1 bit") : std::to_string(bits) + " bits", "");
+	return Chat::BuildChatPaid("cheer", Chat::CountWithUnit(bits, "bit", "bits"), "");
 }
 
 // A `/me` line arrives as the CTCP ACTION "\x01ACTION <text>\x01", and Twitch counts its emote

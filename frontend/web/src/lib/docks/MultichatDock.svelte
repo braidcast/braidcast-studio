@@ -56,6 +56,7 @@
     superchat: "Super Chat",
     supersticker: "Super Sticker",
     cheer: "Cheer",
+    jewels: "Gift",
   };
 
   // A paged window over the host's scrollback, in the order the host admitted each

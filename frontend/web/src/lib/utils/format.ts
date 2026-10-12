@@ -173,7 +173,8 @@ export function fmtFps(num: number, den: number): string {
 // one amount per row, so each formatter is built once and reused.
 let countFormat: Intl.NumberFormat | undefined;
 
-// A whole count shown to a person (bits cheered, raiding viewers, Kicks sent), grouped per locale.
+// A whole count shown to a person (bits cheered, raiding viewers, Kicks or Jewels sent), grouped
+// per locale.
 export function fmtCount(n: number): string {
   if (!countFormat) {
     countFormat = new Intl.NumberFormat();
@@ -187,6 +188,7 @@ const kTallyUnits: Record<string, readonly [string, string]> = {
   cheer: ["bit", "bits"],
   raid: ["viewer", "viewers"],
   kicks: ["Kick", "Kicks"],
+  jewels: ["Jewel", "Jewels"],
 };
 
 export function isTally(type: string): boolean {

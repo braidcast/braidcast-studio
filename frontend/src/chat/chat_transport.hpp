@@ -51,8 +51,8 @@ struct ModerationOp; // chat_archive.hpp
 //                 "badges": [ { "kind": <string>, "url": <string?> } ] },
 //     "fragments": [ { "type": "text",  "text": <string> }
 //                  | { "type": "emote", "code": <string>, "url": <string> } ],
-//     "paid": { "kind":     "superchat" | "supersticker" | "cheer",
-//               "amount":   <string>,   // the platform's display string, "$5.00" / "100 bits"
+//     "paid": { "kind":     "superchat" | "supersticker" | "cheer" | "jewels",
+//               "amount":   <string>,   // the platform's display string, "$5.00" / "100 bits" / "2 Jewels"
 //               "value":    <number?>,  // money only: hundredths of `currency`'s major unit
 //               "currency": <string?>,  // money only: ISO 4217 code
 //               "color":    <string?> } } // "#RRGGBB" tier colour; OMITTED when unknown
@@ -60,7 +60,8 @@ struct ModerationOp; // chat_archive.hpp
 //   Sticker whose amount the transport could read as a number: they are what the chat dock
 //   converts to the streamer's currency (roadmap 9.6), while `amount` stays what was paid.
 //   `paid` is OMITTED on an ordinary line. A paid line may carry NO fragments: a Super
-//   Chat without a comment is its amount alone.
+//   Chat without a comment is its amount alone. A cheer or a Jewels gift never carries
+//   `value`: bits and Jewels are gift currencies, not money.
 //
 // Connection-state payload (event "chat.state"):
 //   { "event": "chat.state", "platform": <providerId>,
@@ -143,6 +144,29 @@ inline json BuildChatPaid(const char *kind, const std::string &amount, const std
 		paid["color"] = color;
 	}
 	return paid;
+}
+
+// A paid line's count with its unit, singular for exactly one: "1 bit", "100 bits".
+inline std::string CountWithUnit(int64_t n, const char *singular, const char *plural)
+{
+	return std::to_string(n) + " " + (n == 1 ? singular : plural);
+}
+
+// A YouTube Jewels gift's chat line, the same from either YouTube read: the gift's image as an
+// emote fragment (its name as the code, so the image has alt text) or, when YouTube sent no
+// image, the name as text; and a `jewels` paid chip counting the Jewels. Jewels are a gift
+// currency, so the chip never carries `value`, and a count that could not be read leaves the
+// line chipless rather than claiming zero.
+inline void BuildJewelsGiftLine(const std::string &giftName, const std::string &imageUrl, int64_t jewels,
+				json &fragments, json &paid)
+{
+	fragments = json::array();
+	if (!imageUrl.empty()) {
+		fragments.push_back(json{{"type", "emote"}, {"code", giftName}, {"url", imageUrl}});
+	} else if (!giftName.empty()) {
+		fragments.push_back(json{{"type", "text"}, {"text", giftName}});
+	}
+	paid = jewels > 0 ? BuildChatPaid("jewels", CountWithUnit(jewels, "Jewel", "Jewels"), std::string()) : json();
 }
 
 // Assemble one normalized chat.message frame from already-normalized parts. The ONE
