@@ -58,6 +58,48 @@ int CountTokens(whisper_context *ctx, const std::string &text)
 	return n < 0 ? -n : n;
 }
 
+// The decoding every whisper_full call here shares: greedy at temperature 0, no
+// timestamps, no context carried from the last call (each command stands alone), blanks
+// suppressed, nothing printed (print_progress defaults to true and would spam the log),
+// and the recognizer's abort poll. Each call site differs only in the arguments.
+whisper_full_params DecodeParams(int threads, const char *language, const char *prompt, ggml_abort_callback abort,
+				 void *abortData)
+{
+	whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+	params.n_threads = std::max(1, threads);
+	// An English-only model ignores it; the multilingual one needs it, or it would guess
+	// the language from every short command.
+	params.language = language;
+	params.translate = false;
+	params.no_timestamps = true;
+	params.single_segment = false;
+	params.print_progress = false;
+	params.print_realtime = false;
+	params.print_timestamps = false;
+	params.print_special = false;
+	params.suppress_blank = true;
+	params.no_context = true;
+	params.temperature = 0.0f;
+	params.initial_prompt = prompt && *prompt ? prompt : nullptr;
+	params.abort_callback = abort;
+	params.abort_callback_user_data = abortData;
+	return params;
+}
+
+// What the last whisper_full on `ctx` heard: every segment's text, joined and cleaned.
+std::string HeardText(whisper_context *ctx)
+{
+	std::string text;
+	const int segments = whisper_full_n_segments(ctx);
+	for (int i = 0; i < segments; ++i) {
+		const char *part = whisper_full_get_segment_text(ctx, i);
+		if (part) {
+			text += part;
+		}
+	}
+	return CleanTranscript(text);
+}
+
 } // namespace
 
 std::string CleanTranscript(const std::string &raw)
@@ -338,24 +380,8 @@ Recognizer::Result Recognizer::Transcribe(int threads)
 		std::lock_guard<std::mutex> lock(mutex_);
 		language = language_;
 	}
-	whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-	params.n_threads = std::max(1, threads);
-	// An English-only model ignores it; the multilingual one needs it, or it would
-	// guess the language from every short command.
-	params.language = language.c_str();
-	params.translate = false;
-	params.no_timestamps = true;
-	params.single_segment = false;
-	params.print_progress = false; // defaults to true, and would spam the log
-	params.print_realtime = false;
-	params.print_timestamps = false;
-	params.print_special = false;
-	params.suppress_blank = true;
-	params.no_context = true; // each command stands alone
-	params.temperature = 0.0f;
-	params.initial_prompt = prompt.empty() ? nullptr : prompt.c_str();
-	params.abort_callback = &Recognizer::ShouldAbort;
-	params.abort_callback_user_data = this;
+	const whisper_full_params params =
+		DecodeParams(threads, language.c_str(), prompt.c_str(), &Recognizer::ShouldAbort, this);
 
 	const int64_t started = SteadyMs();
 	deadlineMs_.store(started + kStaleMs, std::memory_order_release);
@@ -369,15 +395,7 @@ Recognizer::Result Recognizer::Transcribe(int threads)
 		    static_cast<long long>(result.inferenceMs));
 		return result;
 	}
-	std::string text;
-	const int segments = whisper_full_n_segments(ctx_);
-	for (int i = 0; i < segments; ++i) {
-		const char *part = whisper_full_get_segment_text(ctx_, i);
-		if (part) {
-			text += part;
-		}
-	}
-	result.text = CleanTranscript(text);
+	result.text = HeardText(ctx_);
 	result.ok = !result.text.empty();
 	if (!result.ok) {
 		result.error = "I did not hear anything.";
@@ -541,36 +559,16 @@ bool Recognizer::WakeCheck()
 		return false;
 	}
 	const size_t window = std::min(audio_.size(), MsToSamples(kWakeWindowMs));
-	whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-	params.n_threads = 1; // the wake check is short and must not steal the encoder's cores
-	params.language = "en";
-	params.translate = false;
-	params.no_timestamps = true;
-	params.print_progress = false;
-	params.print_realtime = false;
-	params.print_timestamps = false;
-	params.print_special = false;
-	params.suppress_blank = true;
-	params.no_context = true;
-	params.temperature = 0.0f;
-	// The phrase itself biases the tiny model toward spelling it as the user does (the
-	// spec's decoding bias); the match below is still the judge.
-	params.initial_prompt = continuous_.wakePhrase.empty() ? nullptr : continuous_.wakePhrase.c_str();
-	params.abort_callback = &Recognizer::ShouldAbort;
-	params.abort_callback_user_data = this;
+	// One thread: the wake check is short and must not steal the encoder's cores. The
+	// phrase itself biases the tiny model toward spelling it as the user does (the spec's
+	// decoding bias); the match below is still the judge.
+	const whisper_full_params params =
+		DecodeParams(1, "en", continuous_.wakePhrase.c_str(), &Recognizer::ShouldAbort, this);
 	const int64_t started = SteadyMs();
 	if (whisper_full(wakeCtx_, params, audio_.data(), static_cast<int>(window)) != 0) {
 		return false;
 	}
-	std::string text;
-	const int segments = whisper_full_n_segments(wakeCtx_);
-	for (int i = 0; i < segments; ++i) {
-		const char *part = whisper_full_get_segment_text(wakeCtx_, i);
-		if (part) {
-			text += part;
-		}
-	}
-	const WakeResult wake = MatchWakePhrase(CleanTranscript(text), continuous_.wakePhrase);
+	const WakeResult wake = MatchWakePhrase(HeardText(wakeCtx_), continuous_.wakePhrase);
 	// Timings and the verdict only: what was said is never logged here.
 	DBG(LogCat::Voice, "recognizer: wake check over %zu ms in %lld ms: %s (score %.2f)",
 	    window * 1000 / static_cast<size_t>(kVoiceSampleRate), static_cast<long long>(SteadyMs() - started),
