@@ -921,6 +921,12 @@ static inline void unregister_hotkey(obs_hotkey_id id)
 
 	hotkey_signal("hotkey_unregister", hotkey);
 
+	/* Before anything below frees the hotkey or releases its registerer: a binding still
+	 * held down (a push-to-talk key held at quit) is released through binding->hotkey,
+	 * which calls hotkey->func with the hotkey's data. Done after the free, that read and
+	 * call went through freed memory. */
+	remove_bindings(id);
+
 	release_registerer(hotkey);
 
 	if (hotkey->registerer_type == OBS_HOTKEY_REGISTERER_SOURCE) {
@@ -930,8 +936,6 @@ static inline void unregister_hotkey(obs_hotkey_id id)
 	bfree(hotkey->name);
 	bfree(hotkey->description);
 	bfree(hotkey);
-
-	remove_bindings(id);
 }
 
 static inline void unregister_hotkey_pair(obs_hotkey_pair_id id)
