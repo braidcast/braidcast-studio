@@ -676,6 +676,29 @@
       void cancelVoice(spoken.id);
     }
   }
+  // Escape from inside the band cancels the draft, as Cancel does. The voice cancel key
+  // (Escape by default) no longer acts while a Braidcast window is in front, so that
+  // closing a dialog cannot drop a draft; in the app, Escape is the UI's to handle, and
+  // only here, where it can mean nothing else. It goes no further, so the window's own
+  // Escape (leaving a preview group) does not also run.
+  let spokenBand = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const band = spokenBand;
+    if (!band) {
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      cancelSpoken();
+    };
+    band.addEventListener("keydown", onKey);
+    return () => band.removeEventListener("keydown", onKey);
+  });
+
   // Clicking into the draft takes it out of voice's hands: the countdown is cancelled and
   // the text becomes a typed draft, sent (or not) like anything typed, but still to where
   // voice was sending it (voiceTarget), which the target line shows and the user can drop.
@@ -864,7 +887,7 @@
        the region exists before its first message and that message is heard. -->
   <p class="sr-only" role="status" aria-live="polite">{spokenAnnouncement}</p>
   {#if spoken}
-    <div class="vdraft" data-phase={spoken.phase}>
+    <div class="vdraft" data-phase={spoken.phase} bind:this={spokenBand}>
       <span class="vdlabel">
         Voice message{#if spokenTo}&nbsp;<span class="vdto">{spokenTo}</span>{/if} &middot; {draftBandLabel(
           spoken,

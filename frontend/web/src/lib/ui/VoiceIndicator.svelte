@@ -21,12 +21,33 @@
   function cancel(): void {
     void cancelVoice(indicator.pendingId);
   }
+
+  // Escape on the cell's buttons cancels, as Cancel does: the voice cancel key does not act
+  // while the app is in front, so in the app Escape is the UI's to handle, and only where
+  // it can mean nothing else. It goes no further.
+  let cell = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const el = cell;
+    if (!el) {
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || !indicator.cancellable) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    };
+    el.addEventListener("keydown", onKey);
+    return () => el.removeEventListener("keydown", onKey);
+  });
 </script>
 
 {#if indicator.visible}
   <!-- Status, not an alert: a live region so a screen reader hears the change, but polite,
        because it changes on every key press. -->
-  <div class="voice" data-tone={indicator.tone}>
+  <div class="voice" data-tone={indicator.tone} bind:this={cell}>
     <span
       class="state"
       role="status"
