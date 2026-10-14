@@ -143,8 +143,8 @@ void App::OnBeforeCommandLineProcessing(const CefString &process_type, CefRefPtr
 								"EnableWindowsGamingInputDataFetcher,WebBluetooth");
 	command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
 
-	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT on
-	// hardware newer than this libcef); compositing then runs via SwiftShader.
+	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT) on a
+	// machine whose GPU process cannot run; compositing then runs via SwiftShader.
 	if (!software_mode_.load()) {
 		return;
 	}

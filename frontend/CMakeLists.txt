@@ -499,8 +499,14 @@ target_sources(
 # its taskbar/Explorer entry show the Braidcast mark instead of the default
 # blank icon. configure_file substitutes the icon path (forward slashes, which the
 # resource compiler accepts) and the shared OBS_VERSION_*/OBS_LEGAL_COPYRIGHT.
+#
+# The application manifest goes in as an RT_MANIFEST resource because CEF's linker
+# flags pass /MANIFEST:NO. Without its Windows 10/11 supportedOS entry, CEF's GPU
+# process crashes three times on every launch and the UI falls back to software
+# compositing.
 if(OS_WINDOWS)
   set(OBS_FRONTEND_ICON "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/braidcast.ico")
+  set(OBS_FRONTEND_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/braidcast.manifest")
   configure_file(cmake/windows/obs.rc.in obs.rc)
   target_sources(${_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/obs.rc")
 endif()
