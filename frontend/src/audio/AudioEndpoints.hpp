@@ -1,7 +1,9 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_AUDIO_ENDPOINTS_HPP_
 #define OBS_MULTISTREAM_FRONTEND_AUDIO_ENDPOINTS_HPP_
 
+#include <functional>
 #include <string>
+#include <vector>
 
 // Windows audio endpoints, in one place: the ducking control Advanced settings owns,
 // and the device comparison voice control needs. Both open an IMMDeviceEnumerator, and
@@ -25,8 +27,25 @@ std::string ResolveRenderDeviceId(const std::string &id);
 
 // True when the audio monitoring device is an endpoint some output-capture source in
 // the collection captures: the case where a monitor-only sound still reaches the stream.
-// `captureName` receives that source's name ("" when false).
+// `captureName` receives that source's name ("" when false). Reads the sources with
+// OutputCaptures and resolves the device ids after, so no COM call runs under libobs's
+// sources mutex: endpoint enumeration can block on the audio service, and every thread
+// that creates, destroys or enumerates a source waits on that mutex meanwhile.
 bool MonitorSharesCapturedDevice(std::string &captureName);
+
+// An output-capture source as stored: its name and its device_id ("default" kept as is).
+struct OutputCapture {
+	std::string name;
+	std::string deviceId;
+};
+// Every output capture in the collection, whichever scene it sits in or none (the
+// Desktop Audio sources on the global channels count too). Only reads them, under the
+// sources mutex obs_enum_sources holds; no device is resolved here.
+std::vector<OutputCapture> OutputCaptures();
+// The name of the first capture whose device, through `resolve`, is `monitor` (already
+// resolved), or "". A capture with no name reads "Desktop Audio". Pure.
+std::string CaptureOfMonitor(const std::string &monitor, const std::vector<OutputCapture> &captures,
+			     const std::function<std::string(const std::string &)> &resolve);
 
 } // namespace AudioEndpoints
 

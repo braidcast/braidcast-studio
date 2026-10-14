@@ -2878,6 +2878,33 @@ void TestAudioEndpoints(Tally &t)
 	const bool shared = AudioEndpoints::MonitorSharesCapturedDevice(device);
 	t.Check("endpoints", "the shared-device check answers", shared == !device.empty());
 
+	// It reads the sources first and resolves their devices after, outside libobs's
+	// sources mutex; the answer is the same as resolving each one in turn.
+	const std::vector<AudioEndpoints::OutputCapture> captures = AudioEndpoints::OutputCaptures();
+	const char *monitorName = nullptr;
+	const char *monitorId = nullptr;
+	obs_get_audio_monitoring_device(&monitorName, &monitorId);
+	const std::string expected =
+		monitorId ? AudioEndpoints::CaptureOfMonitor(AudioEndpoints::ResolveRenderDeviceId(monitorId), captures,
+							     &AudioEndpoints::ResolveRenderDeviceId)
+			  : std::string();
+	t.Check("endpoints", "the check agrees with the sources read, then resolved", device == expected);
+
+	// Which capture is the monitor's, over a fixed list and resolver.
+	const auto resolve = [](const std::string &id) {
+		return id == "default" ? std::string("{endpoint-a}") : id;
+	};
+	const std::vector<AudioEndpoints::OutputCapture> fixed = {{"Speakers B", "{endpoint-b}"},
+								  {"", "default"},
+								  {"Speakers A", "{endpoint-a}"}};
+	t.Check("endpoints", "a capture on the monitor's endpoint is found by its stored id",
+		AudioEndpoints::CaptureOfMonitor("{endpoint-b}", fixed, resolve) == "Speakers B");
+	t.Check("endpoints", "'default' is matched once resolved, and an unnamed capture reads Desktop Audio",
+		AudioEndpoints::CaptureOfMonitor("{endpoint-a}", fixed, resolve) == "Desktop Audio");
+	t.Check("endpoints", "no capture on the monitor's endpoint, or no monitor, is none",
+		AudioEndpoints::CaptureOfMonitor("{endpoint-c}", fixed, resolve).empty() &&
+			AudioEndpoints::CaptureOfMonitor("", fixed, resolve).empty());
+
 	// Ducking still works after the move (it is a no-op that must not fault). Applied
 	// with the user's own setting, so the run changes nothing.
 	AudioEndpoints::DisableAudioDucking(ObsBootstrap::Advanced().disableAudioDucking);

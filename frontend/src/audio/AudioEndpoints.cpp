@@ -108,6 +108,42 @@ std::string AudioEndpoints::ResolveRenderDeviceId(const std::string &id)
 	return id;
 }
 
+std::vector<AudioEndpoints::OutputCapture> AudioEndpoints::OutputCaptures()
+{
+	std::vector<OutputCapture> captures;
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			const char *type = obs_source_get_id(source);
+			if (!type || std::strcmp(type, "wasapi_output_capture") != 0) {
+				return true;
+			}
+			OBSDataAutoRelease settings = obs_source_get_settings(source);
+			const char *device = settings ? obs_data_get_string(settings, "device_id") : nullptr;
+			if (!device) {
+				return true;
+			}
+			const char *name = obs_source_get_name(source);
+			static_cast<std::vector<OutputCapture> *>(param)->push_back({name ? name : "", device});
+			return true;
+		},
+		&captures);
+	return captures;
+}
+
+std::string AudioEndpoints::CaptureOfMonitor(const std::string &monitor, const std::vector<OutputCapture> &captures,
+					     const std::function<std::string(const std::string &)> &resolve)
+{
+	if (monitor.empty()) {
+		return std::string();
+	}
+	for (const OutputCapture &capture : captures) {
+		if (resolve(capture.deviceId) == monitor) {
+			return capture.name.empty() ? std::string("Desktop Audio") : capture.name;
+		}
+	}
+	return std::string();
+}
+
 bool AudioEndpoints::MonitorSharesCapturedDevice(std::string &captureName)
 {
 	captureName.clear();
@@ -118,34 +154,13 @@ bool AudioEndpoints::MonitorSharesCapturedDevice(std::string &captureName)
 	if (!monitorId) {
 		return false;
 	}
-	struct Search {
-		std::string monitor;
-		std::string found;
-	} search{ResolveRenderDeviceId(monitorId), {}};
-	if (search.monitor.empty()) {
-		return false;
-	}
-
-	// Every output capture in the collection, whichever scene it sits in or none: the
-	// Desktop Audio sources on the global channels count too.
-	obs_enum_sources(
-		[](void *param, obs_source_t *source) {
-			auto *s = static_cast<Search *>(param);
-			const char *type = obs_source_get_id(source);
-			if (!type || std::strcmp(type, "wasapi_output_capture") != 0) {
-				return true;
-			}
-			OBSDataAutoRelease settings = obs_source_get_settings(source);
-			const char *device = settings ? obs_data_get_string(settings, "device_id") : nullptr;
-			if (device && ResolveRenderDeviceId(device) == s->monitor) {
-				const char *name = obs_source_get_name(source);
-				s->found = name && *name ? name : "Desktop Audio";
-				return false;
-			}
-			return true;
-		},
-		&search);
-
-	captureName = search.found;
+	// The sources first, under their mutex and nothing else; the endpoints after, with no
+	// libobs lock held. "default" is resolved once for all of them.
+	const std::vector<OutputCapture> captures = OutputCaptures();
+	const std::string defaultId = DefaultRenderDeviceId();
+	const auto resolve = [&defaultId](const std::string &id) {
+		return (id.empty() || id == "default") && !defaultId.empty() ? defaultId : id;
+	};
+	captureName = CaptureOfMonitor(resolve(monitorId), captures, resolve);
 	return !captureName.empty();
 }
