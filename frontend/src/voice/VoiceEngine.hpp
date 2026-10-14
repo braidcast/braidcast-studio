@@ -122,7 +122,7 @@ private:
 	void StopRuntime(bool block);
 	void Retire(std::shared_ptr<Runtime> runtime);
 	void WaitForRetired();
-	void LoadModel(uint64_t generation, const std::string &path, int threads,
+	void LoadModel(uint64_t generation, const std::string &modelId, const std::string &path, int threads,
 		       const Recognizer::Continuous &continuous, const std::string &wakeReason);
 	void BindMic(Runtime &runtime);
 	void ReconcileMic();

@@ -50,6 +50,12 @@ constexpr const char *kWakeModelsMissing =
 	"Always-listen needs the Tiny (English) model too. Download it in Settings, Voice; push-to-talk works "
 	"meanwhile.";
 constexpr const char *kWakeDidNotStart = "Always-listen could not start; push-to-talk still works.";
+// A model file that was verified once but no longer hashes to its pin (the detail is in
+// the log, and the Voice tab's model list says which file).
+constexpr const char *kSpeechModelDamaged = "The speech model file is damaged. Download it again in Settings, Voice.";
+constexpr const char *kWakeModelDamaged =
+	"Always-listen could not start: a model file is damaged. Download it again in Settings, Voice; push-to-talk "
+	"works meanwhile.";
 
 // The interpreter until one is installed: show what was heard, act on nothing. The
 // command registry (Voice::InstallCommands) replaces it at startup.
@@ -337,8 +343,8 @@ void VoiceEngine::StartRuntime()
 				}
 			}
 			const std::string path = ModelPath(*info);
-			AsyncTask::PostToUi([this, generation, path, threads, continuous, wakeReason] {
-				LoadModel(generation, path, threads, continuous, wakeReason);
+			AsyncTask::PostToUi([this, generation, modelId, path, threads, continuous, wakeReason] {
+				LoadModel(generation, modelId, path, threads, continuous, wakeReason);
 			});
 		});
 	} catch (...) {
@@ -349,7 +355,27 @@ void VoiceEngine::StartRuntime()
 	UpdateArmed();
 }
 
-void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int threads,
+namespace {
+
+// Recognizer worker, as a model it was handed verified fails to load: the file may have
+// changed since its marker was written. Hashed again (ReverifyModel, which marks a bad one
+// damaged so the Voice tab offers it again, and logs it). Returns why it is damaged, or
+// empty when the file is still the pinned one (the load failed for another reason) or
+// the runtime is being torn down.
+std::string RecheckAfterLoadFailure(const char *modelId, const std::atomic<bool> &cancel)
+{
+	const ModelInfo *info = FindModel(modelId);
+	std::string why;
+	if (!info || cancel.load(std::memory_order_acquire) || ReverifyModel(*info, why, &cancel) ||
+	    cancel.load(std::memory_order_acquire)) {
+		return std::string();
+	}
+	return why;
+}
+
+} // namespace
+
+void VoiceEngine::LoadModel(uint64_t generation, const std::string &modelId, const std::string &path, int threads,
 			    const Recognizer::Continuous &continuous, const std::string &wakeReason)
 {
 	if (generation != generation_.load(std::memory_order_acquire)) {
@@ -361,10 +387,30 @@ void VoiceEngine::LoadModel(uint64_t generation, const std::string &path, int th
 		return;
 	}
 	Runtime *raw = runtime.get(); // the callbacks live inside it, so they cannot outlive it
-	runtime->recognizer.SetModelCallback([this, generation](bool ok, const std::string &why) {
+	const bool wantWake = continuous.enabled;
+	// On the recognizer worker, before it listens: a model that was verified but does not
+	// load is hashed again there (seconds at most, and only on a failure), so a file
+	// damaged since its marker was written is reported as such and offered for download
+	// again rather than failing the same way at every start.
+	runtime->recognizer.SetModelCallback([this, generation, modelId, raw, wantWake](bool ok,
+											const std::string &why) {
 		Event event = MakeEvent(ok ? EventType::ModelReady : EventType::ModelFailed);
+		const std::atomic<bool> &cancel = *raw->verifyCancel;
 		if (!ok) {
-			event.text = why.empty() ? "The speech model could not be loaded." : why;
+			const std::string damaged = RecheckAfterLoadFailure(modelId.c_str(), cancel);
+			event.text =
+				!damaged.empty()
+					? std::string(kSpeechModelDamaged)
+					: (why.empty() ? std::string("The speech model could not be loaded.") : why);
+		} else if (wantWake && !raw->recognizer.ContinuousActive()) {
+			// Always-listen's two models verified but did not both load: the same check.
+			for (const char *id : {kVadModelId, kWakeModelId}) {
+				const std::string damaged = RecheckAfterLoadFailure(id, cancel);
+				if (!damaged.empty()) {
+					event.text = kWakeModelDamaged;
+					break;
+				}
+			}
 		}
 		PostEvent(event, generation);
 	});
@@ -650,7 +696,9 @@ void VoiceEngine::HandleOnUi(const Event &event, uint64_t generation)
 		std::shared_ptr<Runtime> runtime = CurrentRuntime();
 		alwaysListen_ = runtime && runtime->recognizer.ContinuousActive();
 		if (settings_.triggerMode == "wake" && !alwaysListen_ && wakeReason_.empty()) {
-			wakeReason_ = kWakeDidNotStart; // its models are there but did not load
+			// Its models are there but did not load; the model callback says when one of
+			// them turned out to be damaged.
+			wakeReason_ = event.text.empty() ? std::string(kWakeDidNotStart) : event.text;
 		}
 	} else if (event.type == EventType::ModelFailed) {
 		modelState_ = ModelState::Failed;

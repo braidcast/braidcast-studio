@@ -49,6 +49,7 @@ const ModelInfo *const kCatalog[] = {&kModels[0], &kModels[1], &kModels[2], &kMo
 static_assert(std::size(kCatalog) == std::size(kModels), "every model must be listed in kCatalog");
 
 constexpr const char *kVerifiedSuffix = ".verified";
+constexpr const char *kHashMismatch = "hash mismatch (the file is not the pinned model)";
 constexpr const char *kPartSuffix = ".part";
 constexpr int kConnectTimeoutSec = 30;
 constexpr int64_t kEmitIntervalMs = 250;
@@ -146,7 +147,7 @@ bool VerifyFile(const std::string &utf8Path, uint64_t bytes, const char *sha256H
 		return false;
 	}
 	if (hex != sha256Hex) {
-		error = "hash mismatch (the file is not the pinned model)";
+		error = kHashMismatch;
 		return false;
 	}
 	return true;
@@ -177,11 +178,25 @@ bool EnsureModelVerified(const ModelInfo &m, std::string &error, const std::atom
 		return true;
 	}
 	if (!VerifyFile(path, m.bytes, m.sha256, error, cancel)) {
+		// Only a mismatch says the file is bad; a read that failed or was cancelled says
+		// nothing about it.
+		const bool damaged = error == kHashMismatch;
 		error = std::string(m.label) + " model: " + error;
+		if (damaged) {
+			Downloads().NoteDamaged(m, error);
+		}
 		return false;
 	}
 	WriteMarker(path, m.sha256);
+	Downloads().NoteSound(m);
 	return true;
+}
+
+bool ReverifyModel(const ModelInfo &m, std::string &error, const std::atomic<bool> *cancel)
+{
+	std::error_code ec;
+	fs::remove(fs::u8path(MarkerPath(ModelPath(m))), ec);
+	return EnsureModelVerified(m, error, cancel);
 }
 
 bool ModelDownloader::Start(const std::string &id, std::string &error)
@@ -201,15 +216,19 @@ bool ModelDownloader::Start(const std::string &id, std::string &error)
 			error = std::string(m->label) + " is already downloading";
 			return false;
 		}
+		// Present means usable here: a damaged file at the right size is downloaded again.
+		const auto needed = [this](const ModelInfo &x) {
+			return !ModelFilePresent(x) || !progress_[x.id].damage.empty();
+		};
 		// The detector every speech model needs, unless it is there or another request is
 		// fetching it already. That request's download is this one's too: refusing here
 		// (as this did) turned "download Tiny" into "the detector is already downloading"
 		// for as long as another model's queue was on the detector.
 		const ModelInfo *vad = FindModel(kVadModelId);
-		if (m->kind == ModelKind::Speech && vad && !ModelFilePresent(*vad) && !progress_[vad->id].active) {
+		if (m->kind == ModelKind::Speech && vad && needed(*vad) && !progress_[vad->id].active) {
 			queue.push_back(vad);
 		}
-		if (!ModelFilePresent(*m)) {
+		if (needed(*m)) {
 			queue.push_back(m);
 		}
 		if (queue.empty()) {
@@ -218,7 +237,9 @@ bool ModelDownloader::Start(const std::string &id, std::string &error)
 		}
 		for (const ModelInfo *q : queue) {
 			Progress &p = progress_[q->id];
+			std::string damage = std::move(p.damage); // until the download commits
 			p = Progress{};
+			p.damage = std::move(damage);
 			p.cancel = cancel;
 			p.active = true;
 		}
@@ -350,6 +371,9 @@ bool ModelDownloader::DownloadOne(const ModelInfo &m, const std::shared_ptr<std:
 		p.active = false;
 		p.received = failure.empty() ? m.bytes : 0;
 		p.error = failure == "cancelled" ? std::string() : failure;
+		if (failure.empty()) {
+			p.damage.clear(); // the damaged file was replaced
+		}
 	}
 	HostLog(std::string("[voice] model download ") + m.id + ": " + (failure.empty() ? "done" : failure));
 	return failure.empty();
@@ -382,6 +406,29 @@ void ModelDownloader::SetLanguage(const std::string &language)
 	language_ = language;
 }
 
+void ModelDownloader::NoteDamaged(const ModelInfo &m, const std::string &why)
+{
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		progress_[m.id].damage = why + "; download it again";
+	}
+	HostLog(std::string("[voice] model ") + m.id + " on disk is not the pinned model; offering the download again");
+	Emit(m);
+}
+
+void ModelDownloader::NoteSound(const ModelInfo &m)
+{
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = progress_.find(m.id);
+		if (it == progress_.end() || it->second.damage.empty()) {
+			return;
+		}
+		it->second.damage.clear();
+	}
+	Emit(m);
+}
+
 nlohmann::json ModelDownloader::StatusFor(const ModelInfo &m) const
 {
 	Progress p;
@@ -397,9 +444,11 @@ nlohmann::json ModelDownloader::StatusFor(const ModelInfo &m) const
 	std::string state = "absent";
 	if (p.active) {
 		state = "downloading";
-	} else if (ModelFilePresent(m)) {
+	} else if (ModelFilePresent(m) && p.damage.empty()) {
 		state = "ready";
-	} else if (!p.error.empty()) {
+	} else if (!p.error.empty() || !p.damage.empty()) {
+		// A failed download over a damaged file reports the download's failure; the file's
+		// own damage shows when nothing else does (a cancelled retry, or no retry yet).
 		state = "failed";
 	}
 	nlohmann::json j = {
@@ -413,7 +462,7 @@ nlohmann::json ModelDownloader::StatusFor(const ModelInfo &m) const
 		{"state", state},
 	};
 	if (state == "failed") {
-		j["error"] = p.error;
+		j["error"] = p.error.empty() ? p.damage : p.error;
 	}
 	return j;
 }

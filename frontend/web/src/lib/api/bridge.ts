@@ -425,8 +425,12 @@ export interface VoiceModelStatus {
   multilingual: boolean;
   bytes: number;
   received: number;
+  /** "failed" also covers a file on disk at the right size that is not the pinned model
+   * (found when it is verified, or re-verified after whisper could not load it): it is not
+   * "ready", and downloading it again replaces it. */
   state: "absent" | "downloading" | "ready" | "failed";
-  /** Why the last download failed; only with state "failed". */
+  /** Why the last download failed, or why the file on disk is unusable; only with state
+   * "failed". */
   error?: string;
 }
 

@@ -292,6 +292,62 @@ void TestModelVerifyAndCommit(Tally &t)
 	fs::remove_all(dir, ec);
 }
 
+// A model file at the right size that is not the pinned model: the Voice tab must not
+// call it ready, and a "verified" marker must not vouch for it once whisper fails to load
+// it. A model of its own (not in the catalog, so nothing of the user's is touched),
+// three bytes pinned to "abc", in the real models directory.
+void TestModelDamage(Tally &t)
+{
+	namespace fs = std::filesystem;
+	const std::string abcSha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+	const Voice::ModelInfo m{"selftest-damage",
+				 "braidcast-selftest-damage.bin",
+				 "https://example.invalid/m.bin",
+				 3,
+				 abcSha.c_str(),
+				 "Self-test",
+				 Voice::ModelKind::Speech,
+				 false};
+	const std::string path = Voice::ModelPath(m);
+	const std::string marker = path + ".verified";
+	const auto write = [&](const char *bytes) {
+		std::ofstream f(fs::u8path(path), std::ios::binary | std::ios::trunc);
+		f << bytes;
+	};
+	const auto state = [&] {
+		return Voice::Downloads().StatusFor(m)["state"].get<std::string>();
+	};
+	std::error_code ec;
+	fs::remove(fs::u8path(marker), ec);
+
+	write("abd"); // the right size, the wrong bytes
+	std::string error;
+	t.Check("models", "a same-size file that is not the model is refused",
+		!Voice::EnsureModelVerified(m, error, nullptr) && error.find("hash mismatch") != std::string::npos);
+	const nlohmann::json bad = Voice::Downloads().StatusFor(m);
+	t.Check("models", "and reads failed, offering the download again, not ready",
+		bad["state"] == "failed" &&
+			bad.value("error", std::string()).find("download it again") != std::string::npos);
+
+	write("abc");
+	t.Check("models", "the right file verifies, gets its marker and reads ready again",
+		Voice::EnsureModelVerified(m, error, nullptr) && fs::exists(fs::u8path(marker)) && state() == "ready");
+
+	write("abd"); // damaged after its marker was written
+	t.Check("models", "a marker vouches for a file damaged since (why a failed load re-hashes)",
+		Voice::EnsureModelVerified(m, error, nullptr) && state() == "ready");
+	t.Check("models", "re-verifying drops the marker and finds the damage",
+		!Voice::ReverifyModel(m, error, nullptr) && !fs::exists(fs::u8path(marker)) && state() == "failed");
+
+	write("abc");
+	t.Check("models", "re-verifying a good file restores its marker and ready",
+		Voice::ReverifyModel(m, error, nullptr) && fs::exists(fs::u8path(marker)) && state() == "ready");
+
+	fs::remove(fs::u8path(path), ec);
+	fs::remove(fs::u8path(marker), ec);
+	t.Check("models", "the self-test's model is gone again", state() == "absent");
+}
+
 // Ordering note: the delayed callback logs its own line after this whole self-test
 // run has finished, so it appears in the log below the "voice overall" verdict.
 void TestPostToUiDelayed(Tally &t)
@@ -2912,6 +2968,7 @@ const Case kCases[] = {
 	&TestHttpCancel,
 	&TestModelCatalog,
 	&TestModelVerifyAndCommit,
+	&TestModelDamage,
 	&TestPostToUiDelayed,
 	&TestSpscRing,
 	&TestResampler,

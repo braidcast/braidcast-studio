@@ -56,8 +56,16 @@ bool VerifyFile(const std::string &utf8Path, uint64_t bytes, const char *sha256H
 bool CommitDownload(const std::string &partPath, const std::string &finalPath, const std::string &sha256Hex,
 		    std::string &error);
 // Worker thread (model load): true when the file is present and verified, hashing it
-// once if it has no marker yet (a hand-copied model). A mismatch reports why.
+// once if it has no marker yet (a hand-copied model). A mismatch reports why, and marks
+// the file damaged in the downloader (ModelDownloader::NoteDamaged), so the Voice tab
+// stops calling it ready and offers the download again.
 bool EnsureModelVerified(const ModelInfo &m, std::string &error, const std::atomic<bool> *cancel);
+// Worker thread, after whisper failed to load a file that was taken as verified: the
+// "<final>.verified" marker vouches for the file as it was when it was written, and a
+// file damaged since (same size, other bytes) would otherwise keep it, and keep failing,
+// for good. Drops the marker and hashes the file again, as EnsureModelVerified does:
+// false, with why, when it is not the pinned model (and it is then marked damaged).
+bool ReverifyModel(const ModelInfo &m, std::string &error, const std::atomic<bool> *cancel);
 
 // Downloads, one worker per request (AsyncTask::RunAsync). Downloading a speech model
 // first fetches the VAD model if it is missing, since every speech model needs it, unless
@@ -79,12 +87,21 @@ public:
 	// UI thread (the engine, as its settings change). Stored under the downloader's own
 	// mutex, because download workers build statuses too.
 	void SetLanguage(const std::string &language);
+	// Any thread (the engine's verification and load workers). The file on disk has the
+	// right size but is not the pinned model: its status reads "failed" with `why` instead
+	// of "ready", and Start downloads it again over it. Cleared by a download that commits,
+	// or by NoteSound (the file verified after all: a good copy put there by hand).
+	void NoteDamaged(const ModelInfo &m, const std::string &why);
+	void NoteSound(const ModelInfo &m);
 
 private:
 	struct Progress {
 		std::shared_ptr<std::atomic<bool>> cancel;
 		uint64_t received = 0;
 		std::string error; // last failure; cleared when a new download starts
+		// Why the file on disk is unusable (NoteDamaged), or empty. Kept across a download
+		// that fails or is cancelled: the damaged file is still what is there.
+		std::string damage;
 		bool active = false;
 	};
 
