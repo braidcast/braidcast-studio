@@ -180,11 +180,13 @@ void VoiceEngine::SetPromptSource(PromptSource fn)
 }
 
 // The prompt biases whisper toward this studio's own scene and source names, so it is
-// rebuilt as each segment opens (scenes are renamed while the app runs) and once the
-// model is up. On the UI thread, where the studio may be read, rather than on the
-// hotkey thread that opens the segment: the recognizer reads the prompt only when the
-// segment closes, at least kMinSegmentMs later, so the event that announced the
-// segment has long been handled by then.
+// rebuilt as each segment opens (scenes are renamed while the app runs), as each wake is
+// matched, and once the model is up. On the UI thread, where the studio may be read,
+// rather than on the hotkey thread that opens the segment: the recognizer reads the
+// prompt only when the segment closes, at least kMinSegmentMs later, so the event that
+// announced the segment has long been handled by then. A woken utterance can end before
+// its wake reaches here, so the recognizer waits for this refresh (briefly) instead
+// (Recognizer::WaitForWakePrompt): every WakeMatched must reach it.
 void VoiceEngine::RefreshPrompt()
 {
 	std::shared_ptr<Runtime> runtime = CurrentRuntime();

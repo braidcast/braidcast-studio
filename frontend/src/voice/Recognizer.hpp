@@ -66,6 +66,9 @@ public:
 	// A running inference older than this is abandoned: nobody is waiting for it. It
 	// lands at the first abort poll after the deadline (see Stop for where those are).
 	static constexpr int64_t kStaleMs = 5000;
+	// How long a woken utterance waits for the prompt refresh its wake asks for. The hop
+	// to the UI thread and back takes milliseconds; this only bounds a busy UI thread.
+	static constexpr int64_t kWakePromptWaitMs = 250;
 
 	Recognizer(SpscRing &ring, std::function<bool()> takeMutedSeen);
 	~Recognizer();
@@ -91,7 +94,8 @@ public:
 	void EndSegment();
 
 	// Bias whisper toward the phrases that matter (command names, scene names, chat
-	// handles), least important first. Trimmed from the front to the model's prompt
+	// handles), least important first. A woken utterance waits up to kWakePromptWaitMs
+	// for the call that answers its wake callback (FinishWoken), so call it on every wake. Trimmed from the front to the model's prompt
 	// budget, which mirrors whisper's own behaviour: whisper_full keeps the LAST tokens
 	// of a long prompt (src/whisper.cpp:7046 and the prompt_past1 take below it).
 	void SetPrompt(std::string prompt);
@@ -136,6 +140,7 @@ private:
 	void ConcludeUtterance();
 	bool WakeCheck();
 	bool ClaimWake();
+	void WaitForWakePrompt();
 	void FinishWoken();
 	void AbandonUtterance();
 	void PullAudio();
@@ -157,6 +162,10 @@ private:
 	// refuses meanwhile, as it does while a segment is in flight. Under mutex_.
 	bool wakeBusy_ = false;
 	std::string prompt_;
+	// Counts SetPrompt calls; wakePromptSeq_ is its value when the current wake was claimed.
+	// Both under mutex_.
+	uint64_t promptSeq_ = 0;
+	uint64_t wakePromptSeq_ = 0;
 	std::string language_ = "en";
 	std::atomic<bool> ready_{false};
 	// Read by the abort callback on whisper's threads. Stop sets stopping_; the worker

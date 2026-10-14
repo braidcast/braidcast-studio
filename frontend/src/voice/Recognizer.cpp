@@ -211,6 +211,8 @@ void Recognizer::SetPrompt(std::string prompt)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	prompt_ = std::move(prompt);
+	++promptSeq_;
+	cv_.notify_all(); // a woken utterance may be waiting for it (FinishWoken)
 }
 
 void Recognizer::SetLanguage(std::string language)
@@ -603,7 +605,32 @@ bool Recognizer::ClaimWake()
 		return false;
 	}
 	wakeBusy_ = true;
+	// Taken with the claim, before the wake callback: a prompt set after this one was set
+	// in answer to this wake (the engine refreshes it on WakeMatched).
+	wakePromptSeq_ = promptSeq_;
 	return true;
+}
+
+// The engine rebuilds the prompt from the studio as the wake reaches the UI thread
+// (WakeMatched), but an utterance the detector ended before the wake check is
+// transcribed right after the wake callback, before that refresh can land, and would be
+// biased toward the studio as it was at the previous refresh (a scene since renamed or
+// added would be missing). So a woken utterance waits for the refresh, at most
+// kWakePromptWaitMs: a UI thread that busy gets the prompt it has. Only once a prompt
+// has ever been set, since nothing refreshes it otherwise. Worker thread.
+void Recognizer::WaitForWakePrompt()
+{
+	std::unique_lock<std::mutex> lock(mutex_);
+	if (promptSeq_ == 0) {
+		return;
+	}
+	const uint64_t seen = wakePromptSeq_;
+	const bool fresh = cv_.wait_for(lock, std::chrono::milliseconds(kWakePromptWaitMs),
+					[&] { return quit_ || promptSeq_ != seen; });
+	if (!fresh) {
+		DBG(LogCat::Voice, "recognizer: no prompt refresh within %d ms of the wake; using the last one",
+		    static_cast<int>(kWakePromptWaitMs));
+	}
 }
 
 // The woken utterance is over: the speech model transcribes all of it and the wake
@@ -611,6 +638,7 @@ bool Recognizer::ClaimWake()
 // one, because the listener is waiting for it.
 void Recognizer::FinishWoken()
 {
+	WaitForWakePrompt();
 	Result result = Transcribe(threads_);
 	result.wake = true;
 	if (result.ok) {
