@@ -79,9 +79,9 @@ public:
 	// Two waits it cannot cut short: a model still loading (whisper's loader has no
 	// abort), and the encoder pass in flight, because whisper.cpp v1.9.4 polls the abort
 	// callback only after the encoder and between decoder steps (src/whisper.cpp:2420-
-	// 2504). That pass costs the same for any segment length, since whisper always
-	// encodes a 30 s window: about 1.4 s for base-sized dims on 2 threads, measured on
-	// a Linux host.
+	// 2504). For the speech model that pass costs the same for any segment length, since
+	// whisper encodes a 30 s window: about 1.4 s for base-sized dims on 2 threads,
+	// measured on a Linux host. The wake check encodes only its clip (WakeAudioCtx).
 	void Stop();
 
 	bool Ready() const { return ready_.load(std::memory_order_acquire); }
@@ -184,6 +184,22 @@ private:
 	whisper_context *wakeCtx_ = nullptr;
 	Utterance utterance_ = Utterance::None;
 };
+
+// One whisper encoder position covers this many 16 kHz samples (20 ms): two mel frames of
+// WHISPER_HOP_LENGTH (160), halved by the encoder's stride-2 convolution.
+inline constexpr size_t kSamplesPerAudioCtx = 320;
+// What the wake check encodes past the end of its clip. whisper pads every clip with
+// silence to 30 s; the decoder sees the clip end inside the window this way too, rather
+// than at its edge.
+inline constexpr int kWakeAudioCtxMarginMs = 1000;
+
+// whisper_full_params::audio_ctx for a wake check over `samples` (16 kHz): enough encoder
+// positions for the clip plus kWakeAudioCtxMarginMs, at most the model's own
+// (`modelAudioCtx`, whisper_model_n_audio_ctx: 1500 positions, 30 s, for every whisper
+// model). whisper refuses a value above the model's (whisper_full returns -5) and treats
+// 0 or less as "the model's own"; 0 is returned when the model's is unknown. Without it
+// whisper encodes the full 30 s window for a 2 s clip. Exposed for the self-test.
+int WakeAudioCtx(size_t samples, int modelAudioCtx);
 
 // Strips whisper's non-speech markers ("[BLANK_AUDIO]", "(wind blowing)"), collapses
 // whitespace and trims. Exposed for the self-test.

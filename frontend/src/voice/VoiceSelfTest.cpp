@@ -1397,6 +1397,19 @@ void TestRecognizerWithoutModel(Tally &t)
 	t.Check("recognizer", "an over-long prompt keeps its tail",
 		Voice::TrimPromptFront("alpha beta gamma delta", 2, words) == "gamma delta");
 
+	// The wake check's audio context: the clip plus a 1 s margin, 20 ms per encoder
+	// position, never more than the model's own 1500 (30 s), which whisper would refuse.
+	const size_t wakeClip = Voice::kVoiceSampleRate * Voice::kWakeWindowMs / 1000;
+	t.Check("recognizer", "the wake check encodes its 2 s clip and a second more, not 30 s",
+		Voice::WakeAudioCtx(wakeClip, 1500) == 150);
+	t.Check("recognizer", "a part position rounds up, so the clip's end is encoded",
+		Voice::WakeAudioCtx(wakeClip + 1, 1500) == 151);
+	t.Check("recognizer", "a short utterance gets a shorter context",
+		Voice::WakeAudioCtx(Voice::kVoiceSampleRate / 2, 1500) == 75);
+	t.Check("recognizer", "never past the model's own context", Voice::WakeAudioCtx(wakeClip * 20, 1500) == 1500);
+	t.Check("recognizer", "an unknown model context leaves whisper's default",
+		Voice::WakeAudioCtx(wakeClip, 0) == 0);
+
 	// A model that is not there fails through the callback, and nothing else breaks.
 	Voice::SpscRing ring(1024);
 	Voice::Recognizer rec(ring, [] { return false; });

@@ -61,7 +61,8 @@ int CountTokens(whisper_context *ctx, const std::string &text)
 // The decoding every whisper_full call here shares: greedy at temperature 0, no
 // timestamps, no context carried from the last call (each command stands alone), blanks
 // suppressed, nothing printed (print_progress defaults to true and would spam the log),
-// and the recognizer's abort poll. Each call site differs only in the arguments.
+// and the recognizer's abort poll. The caller adds what differs: the wake check's audio
+// context, nothing else so far.
 whisper_full_params DecodeParams(int threads, const char *language, const char *prompt, ggml_abort_callback abort,
 				 void *abortData)
 {
@@ -100,7 +101,20 @@ std::string HeardText(whisper_context *ctx)
 	return CleanTranscript(text);
 }
 
+static_assert(kSamplesPerAudioCtx == 2 * WHISPER_HOP_LENGTH,
+	      "one encoder position is two mel frames (the encoder's stride-2 convolution)");
+
 } // namespace
+
+int WakeAudioCtx(size_t samples, int modelAudioCtx)
+{
+	if (modelAudioCtx <= 0) {
+		return 0; // whisper's own default
+	}
+	const size_t margin = static_cast<size_t>(kWakeAudioCtxMarginMs) * static_cast<size_t>(kVoiceSampleRate) / 1000;
+	const size_t positions = (samples + margin + kSamplesPerAudioCtx - 1) / kSamplesPerAudioCtx;
+	return static_cast<int>(std::min<size_t>(positions, static_cast<size_t>(modelAudioCtx)));
+}
 
 std::string CleanTranscript(const std::string &raw)
 {
@@ -562,17 +576,21 @@ bool Recognizer::WakeCheck()
 	// One thread: the wake check is short and must not steal the encoder's cores. The
 	// phrase itself biases the tiny model toward spelling it as the user does (the spec's
 	// decoding bias); the match below is still the judge.
-	const whisper_full_params params =
+	whisper_full_params params =
 		DecodeParams(1, "en", continuous_.wakePhrase.c_str(), &Recognizer::ShouldAbort, this);
+	// whisper encodes a 30 s window whatever it is given, unless audio_ctx says how many
+	// encoder positions (20 ms each) to run: sized to the clip plus a margin, the wake
+	// check encodes about 3 s instead of 30 (WakeAudioCtx).
+	params.audio_ctx = WakeAudioCtx(window, whisper_model_n_audio_ctx(wakeCtx_));
 	const int64_t started = SteadyMs();
 	if (whisper_full(wakeCtx_, params, audio_.data(), static_cast<int>(window)) != 0) {
 		return false;
 	}
 	const WakeResult wake = MatchWakePhrase(HeardText(wakeCtx_), continuous_.wakePhrase);
 	// Timings and the verdict only: what was said is never logged here.
-	DBG(LogCat::Voice, "recognizer: wake check over %zu ms in %lld ms: %s (score %.2f)",
-	    window * 1000 / static_cast<size_t>(kVoiceSampleRate), static_cast<long long>(SteadyMs() - started),
-	    wake.matched ? "woken" : "not for us", wake.score);
+	DBG(LogCat::Voice, "recognizer: wake check over %zu ms (audio_ctx %d) in %lld ms: %s (score %.2f)",
+	    window * 1000 / static_cast<size_t>(kVoiceSampleRate), params.audio_ctx,
+	    static_cast<long long>(SteadyMs() - started), wake.matched ? "woken" : "not for us", wake.score);
 	return wake.matched;
 }
 
