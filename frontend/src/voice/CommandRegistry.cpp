@@ -283,9 +283,10 @@ void RunChat(const PendingAction &action, const std::function<void(bool, std::st
 	const std::string accountId = params.value("accountId", std::string());
 	if (!accountId.empty()) {
 		const OAuth::DestinationId dest{accountId, params.value("profileUuid", std::string())};
-		// False when no live transport holds that exact destination: the broadcast
-		// ended or its chat dropped. Nothing was sent.
-		if (!Chat::Hub().SendToDestination(dest, text)) {
+		// Not live (LiveChatPlatforms' rule), or no transport holds that exact destination
+		// any more: the broadcast ended or its chat dropped. Nothing was sent.
+		if (!DestinationLive(dest.accountId, dest.profileUuid, Chat::Hub().State()) ||
+		    !Chat::Hub().SendToDestination(dest, text)) {
 			finish(false, replyTo.empty() ? "That chat is no longer live, so nothing was sent."
 						      : "The chat " + replyTo +
 								" spoke in is no longer live, so the "
@@ -310,13 +311,9 @@ void RunChat(const PendingAction &action, const std::function<void(bool, std::st
 			}
 		}
 	}
-	bool live = false;
-	for (const nlohmann::json &row : Chat::Hub().State()) {
-		const std::string platform = row.value("platform", std::string());
-		live = live || platforms.empty() ||
-		       std::find(platforms.begin(), platforms.end(), platform) != platforms.end();
-	}
-	if (!live) {
+	// The rule the draft was offered under (CurrentCandidates), checked again now: a chat
+	// that was live then may have dropped while the countdown ran.
+	if (!AnyChatLive(platforms, Chat::Hub().State())) {
 		finish(false, "No chat is live any more, so nothing was sent.");
 		return;
 	}
@@ -364,17 +361,61 @@ CommandCandidates CurrentCandidates()
 		candidates.people.push_back(chatter.displayName);
 		candidates.replyRoutes.push_back({chatter.platform, chatter.accountId, chatter.profileUuid});
 	}
-	// The platforms with a connected chat, for "send to twitch ..." and for where a
-	// message to everyone goes. ChatHub::State is one row per live destination.
-	for (const nlohmann::json &row : Chat::Hub().State()) {
+	// The platforms with a live chat, for "send to twitch ..." and for where a message to
+	// everyone goes. RunChat checks the same rule again at send time.
+	candidates.platforms = LiveChatPlatforms(Chat::Hub().State());
+	return candidates;
+}
+
+namespace {
+
+bool RowLive(const nlohmann::json &row)
+{
+	return row.is_object() && row.value("connected", false) && !row.value("platform", std::string()).empty();
+}
+
+} // namespace
+
+std::vector<std::string> LiveChatPlatforms(const nlohmann::json &hubState)
+{
+	std::vector<std::string> platforms;
+	if (!hubState.is_array()) {
+		return platforms;
+	}
+	for (const nlohmann::json &row : hubState) {
+		if (!RowLive(row)) {
+			continue;
+		}
 		const std::string platform = row.value("platform", std::string());
-		if (!platform.empty() && row.value("connected", false) &&
-		    std::find(candidates.platforms.begin(), candidates.platforms.end(), platform) ==
-			    candidates.platforms.end()) {
-			candidates.platforms.push_back(platform);
+		if (std::find(platforms.begin(), platforms.end(), platform) == platforms.end()) {
+			platforms.push_back(platform);
 		}
 	}
-	return candidates;
+	return platforms;
+}
+
+bool AnyChatLive(const std::vector<std::string> &platforms, const nlohmann::json &hubState)
+{
+	for (const std::string &live : LiveChatPlatforms(hubState)) {
+		if (platforms.empty() || std::find(platforms.begin(), platforms.end(), live) != platforms.end()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool DestinationLive(const std::string &accountId, const std::string &profileUuid, const nlohmann::json &hubState)
+{
+	if (!hubState.is_array()) {
+		return false;
+	}
+	for (const nlohmann::json &row : hubState) {
+		if (RowLive(row) && row.value("accountId", std::string()) == accountId &&
+		    row.value("profileUuid", std::string()) == profileUuid) {
+			return true;
+		}
+	}
+	return false;
 }
 
 std::string PromptBiasFor(const CommandCandidates &candidates, const std::string &wakePhrase)

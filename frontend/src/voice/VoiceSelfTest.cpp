@@ -2630,6 +2630,39 @@ void TestChatCommands(Tally &t)
 	t.Check("chatcmd", "a chat message is not a confirm-at-match command", !toChat.needsConfirm);
 }
 
+// One rule for "a chat is live", whether a message is being drafted or sent: a hub row
+// that names its platform and is connected. Over hub states shaped as ChatHub::State()
+// writes them, so no chat needs to be live.
+void TestChatLiveness(Tally &t)
+{
+	using nlohmann::json;
+	const json state = json::array({
+		json{{"platform", "twitch"}, {"accountId", "twitch:100"}, {"connected", true}, {"error", ""}},
+		json{{"platform", "youtube"},
+		     {"accountId", "youtube:200"},
+		     {"profileUuid", "prof-a"},
+		     {"connected", false},
+		     {"error", "reconnecting"}},
+		json{{"platform", "twitch"}, {"accountId", "twitch:101"}, {"connected", true}, {"error", ""}},
+		json{{"platform", ""}, {"accountId", "x:1"}, {"connected", true}, {"error", ""}},
+	});
+	t.Check("chatlive", "live platforms: connected rows only, each once",
+		Voice::LiveChatPlatforms(state) == std::vector<std::string>({"twitch"}));
+	t.Check("chatlive", "a message to a live platform can go", Voice::AnyChatLive({"twitch"}, state));
+	t.Check("chatlive", "a message to a platform whose chat is not connected cannot",
+		!Voice::AnyChatLive({"youtube"}, state));
+	t.Check("chatlive", "a message to every chat can go while one is live", Voice::AnyChatLive({}, state));
+	const json dropped = json::array({json{{"platform", "kick"}, {"accountId", "kick:1"}, {"connected", false}}});
+	t.Check("chatlive", "a message to every chat cannot go when none is connected",
+		!Voice::AnyChatLive({}, dropped) && Voice::LiveChatPlatforms(dropped).empty());
+	t.Check("chatlive", "a reply's destination is live only while connected",
+		Voice::DestinationLive("twitch:100", "", state) &&
+			!Voice::DestinationLive("youtube:200", "prof-a", state));
+	t.Check("chatlive", "an unknown destination, or no state at all, is not live",
+		!Voice::DestinationLive("twitch:999", "", state) && !Voice::AnyChatLive({}, json()) &&
+			Voice::LiveChatPlatforms(json::object()).empty());
+}
+
 void TestChatDrafts(Tally &t)
 {
 	using namespace Voice;
@@ -2998,6 +3031,7 @@ const Case kCases[] = {
 	&TestChatterFeed,
 	&TestChatLimits,
 	&TestChatCommands,
+	&TestChatLiveness,
 	&TestChatDrafts,
 	&TestReadBackWords,
 };

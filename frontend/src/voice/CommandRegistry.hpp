@@ -4,9 +4,12 @@
 #include "voice/CommandMatcher.hpp"
 #include "voice/VoiceListener.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace Voice {
 
@@ -40,6 +43,19 @@ struct SendPolicy {
 	std::string mode = "countdown";
 	double countdownSec = 3.0;
 };
+
+// One rule for "a chat is live", so a draft is offered and sent on the same terms: a
+// ChatHub::State() row that names its platform and is connected. A row whose transport
+// is there but not connected (still connecting, or dropped) is not live: a message
+// handed to it goes nowhere. Pure, over the hub's state.
+//
+// The platforms with a live chat, each once, in row order: where "send to chat" goes,
+// and which "send to <platform>" can name.
+std::vector<std::string> LiveChatPlatforms(const nlohmann::json &hubState);
+// Whether a message for `platforms` (every live chat when empty) still has one to reach.
+bool AnyChatLive(const std::vector<std::string> &platforms, const nlohmann::json &hubState);
+// Whether the one chat a reply is addressed to is still live.
+bool DestinationLive(const std::string &accountId, const std::string &profileUuid, const nlohmann::json &hubState);
 
 // What a transcript means against a given studio. Pure: the whole decision (muted mic,
 // a pending command's yes/no, the matcher, a chat draft and its send mode, the push-to-talk
