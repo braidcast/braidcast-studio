@@ -41,6 +41,8 @@
     </span>
     {#if indicator.confirmable}
       <Button size="xs" variant="filled" onclick={confirm}>Confirm</Button>
+    {/if}
+    {#if indicator.cancellable}
       <Button size="xs" onclick={cancel}>Cancel</Button>
     {/if}
   </div>

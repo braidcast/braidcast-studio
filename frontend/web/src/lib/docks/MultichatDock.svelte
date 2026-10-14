@@ -43,7 +43,14 @@
   import { chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
   import { moderationMatcher, redactChat, removedLabel } from "$lib/docks/multichat/chatModeration";
   import { voiceStore } from "$lib/stores/voiceStore.svelte";
-  import { composerWithDraft, draftSecondsLeft, keptDraftToFill, voiceDraft } from "$lib/voice/voiceStatus";
+  import {
+    composerWithDraft,
+    draftAnnouncement,
+    draftBandLabel,
+    keptDraftToFill,
+    voiceDraft,
+  } from "$lib/voice/voiceStatus";
+  import { DraftCountdown } from "$lib/voice/draftCountdown.svelte";
   import { cancelVoice, confirmVoice, takeOverDraft } from "$lib/voice/voiceActions";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
@@ -590,25 +597,12 @@
 
   // --- a dictated message ----------------------------------------------------
   // Voice control's chat draft shows here, where the user already looks for chat, with
-  // its countdown and three ways out. The host holds the authoritative timer (a deadline
-  // fixed when the draft was made) and sends on it; the seconds are rendered here from
-  // what the host said was LEFT at its last emit, so a draft that arrived late shows a
-  // short window, never a fresh one.
+  // its window and three ways out. The host holds the authoritative timer and acts on it;
+  // DraftCountdown only renders what the host said was left.
   $effect(() => voiceStore.subscribe());
   let spoken = $derived(voiceDraft(voiceStore.state));
-  let spokenSeconds = $state(0);
-  $effect(() => {
-    const countdownMs = spoken?.countdownMs ?? 0;
-    const startedAt = Date.now();
-    spokenSeconds = draftSecondsLeft(countdownMs, 0);
-    if (countdownMs <= 0) {
-      return;
-    }
-    const timer = setInterval(() => {
-      spokenSeconds = draftSecondsLeft(countdownMs, Date.now() - startedAt);
-    }, 250);
-    return () => clearInterval(timer);
-  });
+  const spokenClock = new DraftCountdown(() => spoken);
+  let spokenAnnouncement = $derived(spoken ? draftAnnouncement(spoken) : "");
 
   let composerBox = $state<HTMLTextAreaElement | null>(null);
 
@@ -804,16 +798,15 @@
     </div>
   {/if}
 
+  <!-- Status, not an alert, and polite. It holds a sentence that changes once per draft
+       and once per change of phase (draftAnnouncement), never the ticking seconds, which
+       only the visible label below carries, outside any live region. Outside the {#if}, so
+       the region exists before its first message and that message is heard. -->
+  <p class="sr-only" role="status" aria-live="polite">{spokenAnnouncement}</p>
   {#if spoken}
-    <!-- Status, not an alert: polite, and on the label only, so the ticking seconds are
-         not re-read every second; the text and the buttons sit beside it. -->
-    <div class="vdraft">
-      <span class="vdlabel" role="status" aria-live="polite">
-        {#if spoken.waitingForWord}
-          Say &ldquo;send&rdquo; to post
-        {:else}
-          Voice message &middot; sending in {spokenSeconds}s
-        {/if}
+    <div class="vdraft" data-phase={spoken.phase}>
+      <span class="vdlabel">
+        Voice message &middot; {draftBandLabel(spoken, spokenClock.seconds)}
       </span>
       <button type="button" class="vdtext" title="Edit it as a typed message" onclick={editSpoken}
         >{spoken.text}</button

@@ -182,7 +182,7 @@
   // How a dictated chat message goes out, safest first. The host refuses anything else.
   const SEND_MODES: { value: VoiceSettingsState["sendMode"]; label: string }[] = [
     { value: "countdown", label: "Show it, then send it" },
-    { value: "say", label: "Wait until I say \u201csend\u201d" },
+    { value: "say", label: "Send it when I say \u201csend\u201d" },
     { value: "instant", label: "Send it straight away" },
   ];
 
@@ -375,6 +375,10 @@
       Say "send to chat", "reply to" someone who just chatted, or name a platform, and the message appears above the
       Multichat composer before it goes, so you can cancel or edit it. With push-to-talk, anything that is not a
       command is a message to chat. Sending straight away skips that look, which is quick and unforgiving.
+      {#if s.sendMode === "say"}
+        A message waits only a few seconds for "send", with the time left shown beside it; if the word does not
+        come, it is not sent, and moves to the Multichat composer instead.
+      {/if}
     </p>
   </section>
 

@@ -11,3 +11,16 @@ export function root(fn: () => void): () => void {
 export function pre(fn: () => void): void {
   $effect.pre(fn);
 }
+
+/** A reactive cell, for a test to drive a runes class's input from outside it. */
+export function cell<T>(initial: T): { value: T } {
+  let value = $state.raw(initial);
+  return {
+    get value() {
+      return value;
+    },
+    set value(next: T) {
+      value = next;
+    },
+  };
+}

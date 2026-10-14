@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { VoicePendingAction, VoiceSettingsState } from "$lib/api/bridge";
 import {
   composerWithDraft,
+  draftAnnouncement,
+  draftBandLabel,
   draftSecondsLeft,
   keptDraftToFill,
   voiceDraft,
@@ -143,6 +145,7 @@ describe("voiceIndicator", () => {
       label: "Voice ready",
       detail: "Microphone (Yeti)",
       confirmable: false,
+      cancellable: false,
       pendingId: 0,
     });
   });
@@ -169,9 +172,23 @@ describe("voiceIndicator", () => {
     expect(indicator.detail).toBe("Say yes to confirm");
   });
 
-  it("asks for the key again when the command needs no spoken yes", () => {
+  it("never asks for a second key press, which confirms nothing", () => {
     const indicator = voiceIndicator(state({ state: "pending", pending: pending({ needsConfirmWord: false }) }));
-    expect(indicator.detail).toBe("Press the key again to confirm");
+    expect(indicator.detail).toBe("Say yes to confirm");
+  });
+
+  it("keeps Cancel, and only Cancel, for a draft due while a segment is spoken", () => {
+    const due = pending({ id: 9, commandId: "chat.send", runOnTimeout: true, due: true, remainingMs: 0, text: "gg" });
+    for (const s of ["listening", "thinking"] as const) {
+      const indicator = voiceIndicator(state({ state: s, pending: due }));
+      expect(indicator.cancellable).toBe(true);
+      expect(indicator.confirmable).toBe(false);
+      expect(indicator.pendingId).toBe(9);
+      expect(indicator.detail).toContain("send or cancel");
+    }
+    const notDue = voiceIndicator(state({ state: "listening", pending: { ...due, due: false } }));
+    expect(notDue.cancellable).toBe(false);
+    expect(notDue.detail).toBe("Microphone (Yeti)");
   });
 
   it("still says something when pending arrives without the action", () => {
@@ -309,6 +326,7 @@ describe("voiceEnableGate", () => {
 
 describe("voiceDraft", () => {
   const draft = pending({
+    id: 3,
     commandId: "chat.send",
     summary: "Send to chat: hello everyone",
     needsConfirmWord: false,
@@ -316,47 +334,88 @@ describe("voiceDraft", () => {
     timeoutMs: 3000,
     remainingMs: 3000,
     text: "hello everyone",
+    to: { platforms: ["twitch", "youtube"] },
   });
+  const held = { ...draft, runOnTimeout: false, needsConfirmWord: true, timeoutMs: 8000, remainingMs: 8000 };
 
   it("is nothing unless a chat draft is pending", () => {
     expect(voiceDraft(state())).toBeNull();
     expect(voiceDraft(state({ state: "pending", pending: pending() }))).toBeNull();
-    expect(voiceDraft(state({ state: "idle", pending: draft }))).toBeNull();
+    expect(voiceDraft(state({ state: "disabled", pending: draft }))).toBeNull();
+    expect(voiceDraft(state({ state: "notReady", pending: draft }))).toBeNull();
   });
 
-  it("carries the text and the countdown", () => {
+  it("carries the id, the text, its address and the countdown", () => {
     const shown = voiceDraft(state({ state: "pending", pending: draft }));
-    expect(shown?.id).toBe(1);
-    expect(shown?.text).toBe("hello everyone");
-    expect(shown?.summary).toBe("Send to chat: hello everyone");
-    expect(shown?.countdownMs).toBe(3000);
-    expect(shown?.waitingForWord).toBe(false);
+    expect(shown).toEqual({
+      id: 3,
+      text: "hello everyone",
+      to: { platforms: ["twitch", "youtube"] },
+      summary: "Send to chat: hello everyone",
+      phase: "countdown",
+      remainingMs: 3000,
+      limitSec: 3,
+    });
   });
 
   it("counts what is left, not how long the window was", () => {
     const shown = voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: 900 } }));
-    expect(shown?.countdownMs).toBe(900);
+    expect(shown?.remainingMs).toBe(900);
+    expect(shown?.limitSec).toBe(3);
   });
 
   it("shows no window at all when the deadline is already spent", () => {
-    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: 0 } }))?.countdownMs).toBe(0);
-    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: -50 } }))?.countdownMs).toBe(0);
+    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: 0 } }))?.remainingMs).toBe(0);
+    expect(voiceDraft(state({ state: "pending", pending: { ...draft, remainingMs: -50 } }))?.remainingMs).toBe(0);
   });
 
-  it("says when it is waiting for the word instead of a countdown", () => {
-    const shown = voiceDraft(
-      state({ state: "pending", pending: { ...draft, runOnTimeout: false, needsConfirmWord: true } }),
-    );
-    expect(shown?.countdownMs).toBe(0);
-    expect(shown?.waitingForWord).toBe(true);
+  it("waits for the word with a limit, the default window included", () => {
+    const shown = voiceDraft(state({ state: "pending", pending: { ...held, remainingMs: 6100 } }));
+    expect(shown?.phase).toBe("waiting");
+    expect(shown?.remainingMs).toBe(6100);
+    expect(shown?.limitSec).toBe(8);
   });
 
-  it("tells the indicator a draft is not confirmed like a command", () => {
+  // W-13: the band and its Cancel stay while a new segment is open, and above all while a
+  // countdown that ran out mid-segment waits for it: that draft can still go out.
+  it("stays on screen while a segment is open, and is due once its countdown ran out then", () => {
+    for (const s of ["listening", "thinking", "idle"] as const) {
+      expect(voiceDraft(state({ state: s, pending: draft }))?.phase).toBe("countdown");
+      const due = voiceDraft(state({ state: s, pending: { ...draft, due: true, remainingMs: 0 } }));
+      expect(due?.phase).toBe("due");
+      expect(due?.remainingMs).toBe(0);
+      expect(due?.id).toBe(3);
+    }
+  });
+
+  it("tells the indicator a draft is not confirmed like a command, and names the limit", () => {
     expect(voiceIndicator(state({ state: "pending", pending: draft })).detail).toBe("Sends unless you cancel");
-    expect(
-      voiceIndicator(state({ state: "pending", pending: { ...draft, runOnTimeout: false, needsConfirmWord: true } }))
-        .detail,
-    ).toBe("Say send to post it");
+    expect(voiceIndicator(state({ state: "pending", pending: held })).detail).toBe("Say send within 8s to post it");
+  });
+});
+
+describe("draftBandLabel and draftAnnouncement", () => {
+  const base = { id: 1, text: "gg", to: null, summary: "", remainingMs: 3000, limitSec: 3 };
+
+  it("says what happens next, with the seconds left", () => {
+    expect(draftBandLabel({ ...base, phase: "countdown" }, 2)).toBe("Sending in 2s");
+    expect(draftBandLabel({ ...base, phase: "waiting", limitSec: 8 }, 6)).toBe("Say \u201csend\u201d within 6s");
+    expect(draftBandLabel({ ...base, phase: "due", remainingMs: 0 }, 0)).toBe("Waiting for you to finish");
+  });
+
+  it("announces the limit and what happens at its end, and no ticking seconds", () => {
+    expect(draftAnnouncement({ ...base, phase: "countdown" })).toBe(
+      "Voice message: sends in 3 seconds unless you cancel.",
+    );
+    const waiting = draftAnnouncement({ ...base, phase: "waiting", limitSec: 8 }, "to Twitch chat");
+    expect(waiting).toBe(
+      "Voice message to Twitch chat: say send within 8 seconds, or it is not sent and moves to the composer.",
+    );
+    // The same sentence whatever is left, so the live region is not re-read as it counts.
+    expect(draftAnnouncement({ ...base, phase: "countdown", remainingMs: 1200 })).toBe(
+      draftAnnouncement({ ...base, phase: "countdown", remainingMs: 2900 }),
+    );
+    expect(draftAnnouncement({ ...base, phase: "due" })).toContain("Say send or cancel");
   });
 });
 
