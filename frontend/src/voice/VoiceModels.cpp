@@ -58,6 +58,19 @@ std::string MarkerPath(const std::string &finalPath)
 	return finalPath + kVerifiedSuffix;
 }
 
+// The marker only saves a re-hash on the next load, so a failed write costs that and
+// nothing else; it is logged, not reported. A partly written one does not match the pin
+// and reads as no marker.
+void WriteMarker(const std::string &finalPath, const std::string &sha256Hex)
+{
+	std::ofstream marker(fs::u8path(MarkerPath(finalPath)), std::ios::binary | std::ios::trunc);
+	marker << sha256Hex;
+	marker.close();
+	if (!marker) {
+		HostLog("[voice] could not write the verified marker beside a model; it is hashed again next load");
+	}
+}
+
 } // namespace
 
 const ModelInfo *const *ModelCatalog(size_t &count)
@@ -148,8 +161,7 @@ bool CommitDownload(const std::string &partPath, const std::string &finalPath, c
 		error = "could not move the download into place: " + ec.message();
 		return false;
 	}
-	std::ofstream marker(fs::u8path(MarkerPath(finalPath)), std::ios::binary | std::ios::trunc);
-	marker << sha256Hex;
+	WriteMarker(finalPath, sha256Hex);
 	return true;
 }
 
@@ -168,8 +180,7 @@ bool EnsureModelVerified(const ModelInfo &m, std::string &error, const std::atom
 		error = std::string(m.label) + " model: " + error;
 		return false;
 	}
-	std::ofstream out(fs::u8path(MarkerPath(path)), std::ios::binary | std::ios::trunc);
-	out << m.sha256;
+	WriteMarker(path, m.sha256);
 	return true;
 }
 
@@ -181,26 +192,29 @@ bool ModelDownloader::Start(const std::string &id, std::string &error)
 		return false;
 	}
 	std::vector<const ModelInfo *> queue;
-	const ModelInfo *vad = FindModel(kVadModelId);
-	if (m->kind == ModelKind::Speech && vad && !ModelFilePresent(*vad)) {
-		queue.push_back(vad);
-	}
-	if (!ModelFilePresent(*m)) {
-		queue.push_back(m);
-	}
-	if (queue.empty()) {
-		error = std::string(m->label) + " is already downloaded";
-		return false;
-	}
 	auto cancel = std::make_shared<std::atomic<bool>>(false);
 	{
+		// Decided and claimed under one lock, so two requests cannot both decide to fetch
+		// the same file.
 		std::lock_guard<std::mutex> lock(mutex_);
-		for (const ModelInfo *q : queue) {
-			Progress &p = progress_[q->id];
-			if (p.active) {
-				error = std::string(q->label) + " is already downloading";
-				return false;
-			}
+		if (progress_[m->id].active) {
+			error = std::string(m->label) + " is already downloading";
+			return false;
+		}
+		// The detector every speech model needs, unless it is there or another request is
+		// fetching it already. That request's download is this one's too: refusing here
+		// (as this did) turned "download Tiny" into "the detector is already downloading"
+		// for as long as another model's queue was on the detector.
+		const ModelInfo *vad = FindModel(kVadModelId);
+		if (m->kind == ModelKind::Speech && vad && !ModelFilePresent(*vad) && !progress_[vad->id].active) {
+			queue.push_back(vad);
+		}
+		if (!ModelFilePresent(*m)) {
+			queue.push_back(m);
+		}
+		if (queue.empty()) {
+			error = std::string(m->label) + " is already downloaded";
+			return false;
 		}
 		for (const ModelInfo *q : queue) {
 			Progress &p = progress_[q->id];
@@ -212,7 +226,27 @@ bool ModelDownloader::Start(const std::string &id, std::string &error)
 	for (const ModelInfo *q : queue) {
 		Emit(*q);
 	}
-	AsyncTask::RunAsync([this, queue, cancel] { Run(queue, cancel); });
+	try {
+		AsyncTask::RunAsync([this, queue, cancel] { Run(queue, cancel); });
+	} catch (...) {
+		// No thread to run it on (std::thread can throw). Without this the entries stayed
+		// "downloading" with nothing downloading them, and Start refused them for good.
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			for (const ModelInfo *q : queue) {
+				Progress &p = progress_[q->id];
+				p.active = false;
+				p.received = 0;
+				p.error = "could not start the download";
+			}
+		}
+		for (const ModelInfo *q : queue) {
+			Emit(*q);
+		}
+		HostLog(std::string("[voice] model download ") + m->id + ": could not start a worker");
+		error = "Could not start the download.";
+		return false;
+	}
 	return true;
 }
 
@@ -280,7 +314,12 @@ bool ModelDownloader::DownloadOne(const ModelInfo &m, const std::shared_ptr<std:
 			return true;
 		},
 		errorBody, error);
+	// The last buffered bytes are written here, not in the callback: a failure now (a full
+	// disk) would otherwise commit a short file whose streamed hash was right.
 	out.close();
+	if (!out) {
+		writeFailed = true;
+	}
 
 	std::string failure;
 	unsigned char digest[32];

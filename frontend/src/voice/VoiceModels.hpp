@@ -60,12 +60,13 @@ bool CommitDownload(const std::string &partPath, const std::string &finalPath, c
 bool EnsureModelVerified(const ModelInfo &m, std::string &error, const std::atomic<bool> *cancel);
 
 // Downloads, one worker per request (AsyncTask::RunAsync). Downloading a speech model
-// first fetches the VAD model if it is missing, since every speech model needs it.
-// Progress is pushed as voice.model.status events (throttled to 4 Hz).
+// first fetches the VAD model if it is missing, since every speech model needs it, unless
+// another request is fetching it already. Progress is pushed as voice.model.status events
+// (throttled to 4 Hz).
 class ModelDownloader {
 public:
-	// UI thread. False with `error` if the id is unknown, already downloading, or
-	// already present.
+	// UI thread. False with `error` if the id is unknown, already downloading, already
+	// present, or no worker could be started (the entries then read "failed").
 	bool Start(const std::string &id, std::string &error);
 	// Any thread. True if a download for `id` was running and is now told to stop.
 	bool Cancel(const std::string &id);
