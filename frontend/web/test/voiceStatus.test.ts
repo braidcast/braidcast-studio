@@ -143,6 +143,7 @@ describe("voiceIndicator", () => {
       label: "Voice ready",
       detail: "Microphone (Yeti)",
       confirmable: false,
+      pendingId: 0,
     });
   });
 
@@ -177,8 +178,10 @@ describe("voiceIndicator", () => {
     expect(voiceIndicator(state({ state: "pending", pending: null })).label).toBe("Waiting for confirmation");
   });
 
-  it("offers buttons while a command is pending", () => {
-    expect(voiceIndicator(state({ state: "pending", pending: pending() })).confirmable).toBe(true);
+  it("offers buttons while a command is pending, for that action by its id", () => {
+    const indicator = voiceIndicator(state({ state: "pending", pending: pending({ id: 42 }) }));
+    expect(indicator.confirmable).toBe(true);
+    expect(indicator.pendingId).toBe(42);
   });
 
   it("offers no buttons when nothing is pending", () => {
@@ -323,6 +326,7 @@ describe("voiceDraft", () => {
 
   it("carries the text and the countdown", () => {
     const shown = voiceDraft(state({ state: "pending", pending: draft }));
+    expect(shown?.id).toBe(1);
     expect(shown?.text).toBe("hello everyone");
     expect(shown?.summary).toBe("Send to chat: hello everyone");
     expect(shown?.countdownMs).toBe(3000);

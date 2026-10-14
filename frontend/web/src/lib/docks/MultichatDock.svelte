@@ -44,6 +44,7 @@
   import { moderationMatcher, redactChat, removedLabel } from "$lib/docks/multichat/chatModeration";
   import { voiceStore } from "$lib/stores/voiceStore.svelte";
   import { composerWithDraft, draftSecondsLeft, keptDraftToFill, voiceDraft } from "$lib/voice/voiceStatus";
+  import { cancelVoice, confirmVoice, takeOverDraft } from "$lib/voice/voiceActions";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -611,28 +612,31 @@
 
   let composerBox = $state<HTMLTextAreaElement | null>(null);
 
-  // Either call can lose a race with the window closing a moment earlier; the host then
-  // refuses it and the next voice.state says what happened.
+  // Every click names the draft it was made for (voiceActions): one that loses a race
+  // with the window closing, or lands after another action became pending, is refused and
+  // acts on nothing, and the next voice.state says what happened.
   function sendSpokenNow(): void {
-    void obs.call("voice.confirm").catch(() => {});
+    if (spoken) {
+      void confirmVoice(spoken.id);
+    }
   }
   function cancelSpoken(): void {
-    void obs.call("voice.cancel").catch(() => {});
+    if (spoken) {
+      void cancelVoice(spoken.id);
+    }
   }
   // Clicking into the draft takes it out of voice's hands: the countdown is cancelled and
   // the text becomes an ordinary typed draft, sent (or not) like anything typed, to where
-  // the composer points. Only once the host confirms the cancel: if the window closed
-  // first the message is already out, and handing it to the composer would invite sending
-  // it twice.
+  // the composer points. Only once the host confirms the cancel (takeOverDraft).
   async function editSpoken(): Promise<void> {
-    const text = spoken?.text ?? "";
-    try {
-      await obs.call("voice.cancel");
-    } catch {
+    if (!spoken) {
       return;
     }
-    draft = composerWithDraft(draft, text);
-    composerBox?.focus();
+    const taken = await takeOverDraft(spoken);
+    if (taken) {
+      draft = composerWithDraft(draft, taken.text);
+      composerBox?.focus();
+    }
   }
 
   // A dictated message refused as too long is kept, not lost: it lands in an empty

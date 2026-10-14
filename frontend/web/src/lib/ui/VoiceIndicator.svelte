@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { obs } from "$lib/api/bridge";
   import { voiceStore } from "$lib/stores/voiceStore.svelte";
   import Button from "$lib/ui/Button.svelte";
+  import { cancelVoice, confirmVoice } from "$lib/voice/voiceActions";
   import { voiceIndicator } from "$lib/voice/voiceStatus";
 
   // Push-to-talk is invisible by nature: the user is looking at their game, not the app.
@@ -12,14 +12,14 @@
   const indicator = $derived(voiceIndicator(voiceStore.state));
 
   // A spoken yes is the point, but a hand already on the mouse should not have to speak.
-  // Either call can lose a race with the pending window closing a moment earlier; the
-  // host then refuses it and the next voice.state says what happened, so a refusal is
-  // dropped rather than thrown into the console.
+  // Each click names the action it was made for, read when it is made: one that lands
+  // after that action is gone is refused and acts on nothing, and the next voice.state
+  // says what happened.
   function confirm(): void {
-    void obs.call("voice.confirm").catch(() => {});
+    void confirmVoice(indicator.pendingId);
   }
   function cancel(): void {
-    void obs.call("voice.cancel").catch(() => {});
+    void cancelVoice(indicator.pendingId);
   }
 </script>
 

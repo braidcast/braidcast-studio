@@ -2,6 +2,7 @@
 // the tone are decided in tests rather than in markup. The Settings tab and the status
 // indicator only render what these return.
 import type {
+  VoiceDraftAddress,
   VoicePayload,
   VoiceModelStatus,
   VoicePendingAction,
@@ -20,6 +21,9 @@ export interface VoiceIndicator {
   detail: string;
   /** A command is waiting: offer Confirm and Cancel beside the spoken yes. */
   confirmable: boolean;
+  /** The pending action those buttons act on (pending.id), 0 with none: every click names
+   * it, so one that lands after the action is gone acts on nothing. */
+  pendingId: number;
 }
 
 const MEGABYTE = 1024 * 1024;
@@ -60,13 +64,27 @@ function readyDetail(state: VoiceState): string {
 
 export function voiceIndicator(state: VoiceState): VoiceIndicator {
   if (!state.settings.enabled || state.state === "disabled") {
-    return { visible: false, tone: "idle", label: "", detail: "", confirmable: false };
+    return { visible: false, tone: "idle", label: "", detail: "", confirmable: false, pendingId: 0 };
   }
   switch (state.state) {
     case "listening":
-      return { visible: true, tone: "live", label: "Listening", detail: state.device, confirmable: false };
+      return {
+        visible: true,
+        tone: "live",
+        label: "Listening",
+        detail: state.device,
+        confirmable: false,
+        pendingId: 0,
+      };
     case "thinking":
-      return { visible: true, tone: "busy", label: "Thinking", detail: state.transcript, confirmable: false };
+      return {
+        visible: true,
+        tone: "busy",
+        label: "Thinking",
+        detail: state.transcript,
+        confirmable: false,
+        pendingId: 0,
+      };
     case "pending":
       return {
         visible: true,
@@ -74,6 +92,7 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
         label: state.pending?.summary || "Waiting for confirmation",
         detail: pendingDetail(state.pending),
         confirmable: state.pending !== null,
+        pendingId: state.pending?.id ?? 0,
       };
     case "notReady":
       return {
@@ -82,6 +101,7 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
         label: "Voice not ready",
         detail: readyDetail(state) || state.message,
         confirmable: false,
+        pendingId: 0,
       };
     default: {
       // Always-listen says what it is waiting for. Asked for but not running (its models
@@ -95,6 +115,7 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
           label: `Listening for \u201c${state.settings.wakePhrase}\u201d`,
           detail: state.message || state.device,
           confirmable: false,
+          pendingId: 0,
         };
       }
       return {
@@ -103,6 +124,7 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
         label: "Voice ready",
         detail: (wake && state.ready.wakeReason) || state.message || state.device,
         confirmable: false,
+        pendingId: 0,
       };
     }
   }
@@ -177,8 +199,12 @@ export function voiceEnableGate(
 }
 
 export interface VoiceDraft {
+  /** The pending action this draft is (pending.id): Send now, Edit and Cancel name it. */
+  id: number;
   /** The message exactly as it will be posted (a reply carries its "@name "). */
   text: string;
+  /** Where it goes (pending.to). */
+  to: VoiceDraftAddress | null;
   summary: string;
   /**
    * Milliseconds LEFT until it sends itself, as of the host's last emit, or 0 when it is
@@ -198,7 +224,9 @@ export function voiceDraft(state: VoiceState): VoiceDraft | null {
     return null;
   }
   return {
+    id: pending.id,
     text: pending.text,
+    to: pending.to,
     summary: pending.summary,
     countdownMs: pending.runOnTimeout ? Math.max(0, pending.remainingMs) : 0,
     waitingForWord: !pending.runOnTimeout,
