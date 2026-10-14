@@ -55,6 +55,7 @@ using PromptSource = std::function<std::string()>;
 // is using. Every event posted to the UI carries the generation it was posted under;
 // turning voice off (or changing the model) starts a new generation, so whatever the old
 // runtime still reports is dropped rather than acted on.
+// The retire protocol and its invariant: voice/CONCURRENCY.md, section 1.
 class VoiceEngine {
 public:
 	VoiceEngine();

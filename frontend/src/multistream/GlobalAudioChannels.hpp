@@ -134,6 +134,7 @@ bool PersistedMuteOverride(obs_source_t *source, bool actualMuted);
 // guard's mute. Read MuteOverrideEpoch() before the snapshot and pass the snapshot's
 // "muted" here; when a register or clear landed in between, the live state is read
 // again until no transition overlaps the read.
+// The whole protocol, its threads and its tests: voice/CONCURRENCY.md, section 2.
 uint64_t MuteOverrideEpoch();
 bool PersistedMuteForSnapshot(obs_source_t *source, uint64_t epochBefore, bool snapshotMuted);
 

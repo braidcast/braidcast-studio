@@ -29,6 +29,8 @@ namespace Voice {
 // a save mid-hold stores what the user wants, never the guard's own mute.
 // The source is held weakly, so a mic removed mid-hold simply ends the guard.
 //
+// How this and GlobalAudio's override keep a save right: voice/CONCURRENCY.md, section 2.
+//
 // libobs reports the guard's own mute to every audio capture callback, VoiceCapture's
 // included, exactly as it reports the user's. Engage says whether the guard holds a mute
 // of its own, so the engine can tell the two apart.

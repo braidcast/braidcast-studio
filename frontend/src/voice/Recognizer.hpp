@@ -29,6 +29,7 @@ namespace Voice {
 // the opening of each utterance for the wake phrase with a tiny model, and runs the
 // speech model only on an utterance the wake phrase opened. A held key still works and
 // takes precedence over an utterance that has not been claimed by the wake phrase yet.
+// Who owns the audio when a key and a wake collide: voice/CONCURRENCY.md, section 3.
 class Recognizer {
 public:
 	struct Result {
