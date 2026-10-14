@@ -90,6 +90,10 @@ struct Interpretation {
 	// It is not sent and not lost: the Multichat composer takes it over to edit (the spec's
 	// "too long" row, draft kept).
 	std::string keptDraft;
+	// Where keptDraft was going (DraftAddress of the draft's params), so the composer that
+	// takes it over sends it there and not to wherever it happens to point: a reply's
+	// "@name ..." must not go to every chat. null with no kept draft.
+	nlohmann::json keptTo;
 };
 
 enum class Trigger { Ptt, Wake };
@@ -172,7 +176,27 @@ struct Status {
 	// whose "say send" window closed unsent, until the next segment, a cancel or turning
 	// voice off. Shown, never logged.
 	std::string keptDraft;
+	// Where it was going (Interpretation::keptTo), and which kept draft this is: never
+	// reused, so a composer can tell a draft it already took over from a new one with the
+	// same words. null and 0 with no kept draft.
+	nlohmann::json keptTo;
+	uint64_t keptId = 0;
 };
+
+// A chat draft's address: its params without the message, exactly chat.send's routing keys
+// ({platforms} for chats, {accountId, profileUuid, replyTo} for a reply to one chat). null
+// for an action with no "text" param, which is not a message.
+// Inline so the interpreter (CommandRegistry), which builds the address, needs nothing of the
+// listener's.
+inline nlohmann::json DraftAddress(const nlohmann::json &params)
+{
+	if (!params.is_object() || !params.contains("text")) {
+		return nullptr;
+	}
+	nlohmann::json to = params;
+	to.erase("text");
+	return to;
+}
 
 // Pure: no clock, no threads, no libobs, no I/O. Every input is an Event carrying its
 // own timestamp, and every output is an Effect for the caller to perform. This is what
@@ -219,6 +243,10 @@ private:
 	Trigger trigger_ = Trigger::Ptt;
 	uint64_t tickSeq_ = 0;    // incremented per scheduled timeout; stale ticks are ignored
 	uint64_t pendingSeq_ = 0; // the last PendingAction::id handed out
+	uint64_t keptSeq_ = 0;    // the last Status::keptId handed out
+
+	void KeepDraft(const std::string &text, const nlohmann::json &to);
+	void ClearKept();
 };
 
 } // namespace Voice

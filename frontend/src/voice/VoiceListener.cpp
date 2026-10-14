@@ -73,12 +73,30 @@ void VoiceListener::ClearPending()
 	status_.pending = PendingAction{};
 }
 
+void VoiceListener::KeepDraft(const std::string &text, const nlohmann::json &to)
+{
+	if (text.empty()) {
+		ClearKept();
+		return;
+	}
+	status_.keptDraft = text;
+	status_.keptTo = to;
+	status_.keptId = ++keptSeq_;
+}
+
+void VoiceListener::ClearKept()
+{
+	status_.keptDraft.clear();
+	status_.keptTo = nullptr;
+	status_.keptId = 0;
+}
+
 std::vector<Effect> VoiceListener::BeginSegment(int64_t, Trigger trigger)
 {
 	trigger_ = trigger;
 	status_.state = State::Listening;
 	status_.transcript.clear();
-	status_.keptDraft.clear();
+	ClearKept();
 	return {CueEffect(Cue::Start)};
 }
 
@@ -122,7 +140,7 @@ std::vector<Effect> VoiceListener::ApplyInterpretation(const Interpretation &int
 	case Interpretation::Kind::Miss:
 	case Interpretation::Kind::Shown:
 		status_.message = interpretation.message;
-		status_.keptDraft = interpretation.keptDraft;
+		KeepDraft(interpretation.keptDraft, interpretation.keptTo);
 		status_.state = status_.pending.commandId.empty() ? State::Idle : State::Pending;
 		if (interpretation.kind == Interpretation::Kind::Miss) {
 			effects.push_back(CueEffect(Cue::Reject));
@@ -223,7 +241,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ClearPending();
 		status_.state = State::Disabled;
 		status_.transcript.clear();
-		status_.keptDraft.clear();
+		ClearKept();
 		return effects;
 
 	case EventType::ModelReady:
@@ -360,7 +378,7 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 		ClearPending();
 		status_.transcript.clear();
 		status_.message.clear();
-		status_.keptDraft.clear();
+		ClearKept();
 		if (status_.state != State::Disabled && status_.state != State::NotReady) {
 			status_.state = State::Idle;
 		}
@@ -411,10 +429,11 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 			// refused as too long is, and the reason says so. Silently dropping it is what
 			// the "say send" wording, which promises the message is held, cannot survive.
 			const std::string draft = TextParam(status_.pending.params);
+			const nlohmann::json to = DraftAddress(status_.pending.params);
 			ClearPending();
 			status_.message = draft.empty() ? kTimedOut : kDraftExpired;
 			if (!draft.empty()) {
-				status_.keptDraft = draft;
+				KeepDraft(draft, to);
 			}
 		}
 		if (status_.state == State::Pending) {
@@ -429,9 +448,15 @@ std::vector<Effect> VoiceListener::Handle(const Event &event)
 nlohmann::json VoiceListener::StatusJson() const
 {
 	nlohmann::json j = {
-		{"state", StateName(status_.state)}, {"message", status_.message},
-		{"transcript", status_.transcript},  {"device", status_.device},
+		{"state", StateName(status_.state)},
+		{"message", status_.message},
+		{"transcript", status_.transcript},
+		{"device", status_.device},
 		{"keptDraft", status_.keptDraft},
+		// Where the kept draft was going, and which one it is, so a composer sends it there
+		// and takes each one over once (Status::keptTo, keptId).
+		{"keptTo", status_.keptTo},
+		{"keptId", status_.keptId},
 	};
 	if (!status_.pending.commandId.empty()) {
 		j["pending"] = {
@@ -454,6 +479,9 @@ nlohmann::json VoiceListener::StatusJson() const
 			// limit for every pending action, not only for a countdown.
 			{"timeoutMs", status_.pending.timeoutMs > 0 ? status_.pending.timeoutMs : kPendingTimeoutMs},
 			{"text", TextParam(status_.pending.params)},
+			// A chat draft's address (DraftAddress), so the UI can say where it is going and
+			// an edit of it keeps going there; null for anything else.
+			{"to", DraftAddress(status_.pending.params)},
 		};
 	} else {
 		j["pending"] = nullptr;

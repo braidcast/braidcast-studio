@@ -430,6 +430,16 @@ export interface VoiceModelStatus {
   error?: string;
 }
 
+/** Where a dictated chat message goes: chat.send's own routing keys, the message left out.
+ * `platforms` for a message to chats; `accountId` + `profileUuid` for a reply to ONE chat
+ * (never widened to the platform), with `replyTo`, the name it answers. */
+export interface VoiceDraftAddress {
+  platforms?: string[];
+  accountId?: string;
+  profileUuid?: string | null;
+  replyTo?: string;
+}
+
 /** A command waiting for a confirmation (voice.state's `pending`). */
 export interface VoicePendingAction {
   /** Which pending action this is; never reused. voice.confirm must name it ({id}), and
@@ -460,6 +470,9 @@ export interface VoicePendingAction {
   timeoutMs: number;
   /** A chat draft's message, exactly as it will be posted ("" for anything else). */
   text: string;
+  /** A chat draft's address, so the UI can say where it is going and an edit of it keeps
+   * going there; null for anything else. */
+  to: VoiceDraftAddress | null;
 }
 
 /** Voice control's live state (voice.state, the method and the event). */
@@ -476,6 +489,12 @@ export interface VoiceState {
    * closed unsent, kept for the Multichat composer to take over; "" when there is none.
    * Cleared at the next utterance. */
   keptDraft: string;
+  /** Where the kept draft was going (null with none): a composer taking it over sends it
+   * there, not to wherever the composer points. */
+  keptTo: VoiceDraftAddress | null;
+  /** Which kept draft this is, never reused (0 with none): a composer takes each one over
+   * once, even one with the same words as the last. */
+  keptId: number;
   /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic; and in
    * always-listen, whether it is running (`wake`) and, when it is not, why (`wakeReason`,
    * "" otherwise). Push-to-talk works either way. */

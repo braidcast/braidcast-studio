@@ -169,6 +169,7 @@ Interpretation ChatDraft(const CommandMatch &match, const CommandCandidates &can
 		}
 		Interpretation tooLong = Miss("That message is too long for " + LabelOf(offender) + ".");
 		tooLong.keptDraft = text;
+		tooLong.keptTo = DraftAddress(out.action.params);
 		return tooLong;
 	}
 

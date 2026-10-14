@@ -20,6 +20,8 @@ export const VOICE_STATE_EMPTY: VoiceState = {
   device: "",
   pending: null,
   keptDraft: "",
+  keptTo: null,
+  keptId: 0,
   ready: { cpu: true, cpuReason: "", model: false, mic: false, wake: false, wakeReason: "" },
   settings: {
     enabled: false,

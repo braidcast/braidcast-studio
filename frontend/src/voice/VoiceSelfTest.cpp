@@ -678,6 +678,16 @@ Voice::Interpretation TestInterpret(const std::string &text, const Voice::Interp
 		out.action.summary = "hold " + out.action.commandId;
 		out.action.needsConfirmWord = true;
 		out.action.params = {{"text", "held words"}};
+	} else if (text.rfind("reply ", 0) == 0) {
+		// A "say send" reply to one chat, addressed as the registry addresses one.
+		out.kind = Voice::Interpretation::Kind::Pending;
+		out.action.commandId = text.substr(6);
+		out.action.summary = "reply " + out.action.commandId;
+		out.action.needsConfirmWord = true;
+		out.action.params = {{"text", "@bob hi"},
+				     {"accountId", "twitch:1"},
+				     {"profileUuid", "p1"},
+				     {"replyTo", "bob"}};
 	} else if (text.rfind("ask ", 0) == 0) {
 		// A confirm-tier command as the registry words it: a question, read back if asked.
 		out.kind = Voice::Interpretation::Kind::Pending;
@@ -1291,6 +1301,42 @@ void TestVoiceListener(Tally &t)
 			missed == "cue:reject" && failed == "cue:error" && named &&
 				std::string(CueName(Cue::Heard)) == "heard" &&
 				std::string(CueName(Cue::Error)) == "error");
+	}
+
+	// 40. (W-11, W-12) A chat draft says where it is going (pending.to: its address, the
+	// message left out), and so does a kept one (keptTo), so the UI can show it and a
+	// composer taking it over sends it to the same chat. Each kept draft has its own id,
+	// even with the same words, so a composer takes each one over once.
+	{
+		auto l = fresh();
+		const nlohmann::json address = {{"accountId", "twitch:1"}, {"profileUuid", "p1"}, {"replyTo", "bob"}};
+		l->Handle(Ev(EventType::PttDown, 100));
+		l->Handle(Ev(EventType::PttUp, 900));
+		const std::vector<Effect> fx = l->Handle(Transcript("reply chat.send", 1400));
+		const bool shown = l->StatusJson()["pending"]["to"] == address;
+		Event tick = Ev(EventType::Tick, 1400 + VoiceListener::kPendingTimeoutMs);
+		tick.seq = fx.back().seq;
+		l->Handle(tick);
+		const nlohmann::json kept = l->StatusJson();
+		const uint64_t firstId = l->Snapshot().keptId;
+		const bool keptThere = kept["keptDraft"] == "@bob hi" && kept["keptTo"] == address && firstId != 0;
+		l->Handle(Ev(EventType::PttDown, 20000));
+		const bool cleared = l->StatusJson()["keptTo"].is_null() && l->Snapshot().keptId == 0;
+		l->Handle(Ev(EventType::PttUp, 20900));
+		const std::vector<Effect> again = l->Handle(Transcript("reply chat.send", 21400));
+		Event tick2 = Ev(EventType::Tick, 21400 + VoiceListener::kPendingTimeoutMs);
+		tick2.seq = again.back().seq;
+		l->Handle(tick2);
+		const bool newId = l->Snapshot().keptId != 0 && l->Snapshot().keptId != firstId;
+		auto c = fresh();
+		c->Handle(Ev(EventType::PttDown, 100));
+		c->Handle(Ev(EventType::PttUp, 900));
+		c->Handle(Transcript("confirm streaming.stop", 1400));
+		const bool commandHasNone = c->StatusJson()["pending"]["to"].is_null();
+		t.Check("listener", "a draft and a kept draft say where they go; each kept draft has its own id",
+			shown && keptThere && cleared && newId && commandHasNone &&
+				DraftAddress(nlohmann::json{{"text", "x"}, {"platforms", {"twitch"}}}) ==
+					nlohmann::json{{"platforms", {"twitch"}}});
 	}
 }
 
@@ -2582,6 +2628,14 @@ void TestChatDrafts(Tally &t)
 	t.Check("drafts", "an over-long message is refused with a reason",
 		big.kind == Kind::Miss && big.message.find("too long for YouTube") != std::string::npos &&
 			big.keptDraft == tooLong);
+	// Kept with where it was going (W-12), so the composer that takes it over sends it to the
+	// same chats, and a reply to the same one chat.
+	const Interpretation longReply =
+		Interpret("reply to Dave " + std::string(600, 'x'), ctx, studio, countdownMode);
+	t.Check("drafts", "an over-long message keeps its address, a reply its one chat",
+		big.keptTo == nlohmann::json{{"platforms", {"twitch", "youtube"}}} && longReply.kind == Kind::Miss &&
+			longReply.keptTo.value("accountId", "") == "twitch:100" && !longReply.keptTo.contains("text") &&
+			!longReply.keptTo.contains("platforms"));
 
 	// Push-to-talk: words no command claims are a message to every live chat. Always-listen:
 	// never.

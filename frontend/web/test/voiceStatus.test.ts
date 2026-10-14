@@ -23,6 +23,8 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     device: "Microphone (Yeti)",
     pending: null,
     keptDraft: "",
+    keptTo: null,
+    keptId: 0,
     ready: READY,
     settings: {
       enabled: true,
@@ -52,6 +54,7 @@ function pending(overrides: Partial<VoicePendingAction> = {}): VoicePendingActio
     due: false,
     timeoutMs: 0,
     text: "",
+    to: null,
     ...overrides,
   };
 }
