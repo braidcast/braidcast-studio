@@ -15,6 +15,7 @@ import { EV } from "$lib/utils/eventNames";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
+  import { LiveSettings } from "./liveSettings.svelte";
   import { fxStore } from "$lib/stores/fxStore.svelte";
   import { automaticLabel, currencyChoices, fxStatusText } from "./fxSettings";
   import Button from "$lib/ui/Button.svelte";
@@ -35,95 +36,39 @@ import { EV } from "$lib/utils/eventNames";
     { label: "Scenes Only (24)", value: "scenesOnly24" },
   ];
 
-  const DEFAULTS: GeneralSettings = {
-    projectorAlwaysOnTop: false,
-    snapEnabled: true,
-    snapDistance: 10,
-    snapToEdge: true,
-    snapToSource: true,
-    snapToCenter: true,
-    previewOverflow: "selection",
-    previewOverflowInvisible: false,
-    previewSafeAreas: false,
-    previewSpacingHelpers: true,
-    warnBeforeGoLive: false,
-    warnBeforeStop: false,
-    scheduleRequireAllDestinations: false,
-    chatHistoryRetention: "off",
-    fxHomeCurrency: "",
-    checkForUpdates: true,
-    startMinimized: false,
-    minimizeToTray: false,
-    alwaysShowTray: false,
-    multiviewLayout: "horizontalTop",
-    multiviewDrawNames: true,
-    multiviewDrawSafeAreas: false,
-    importerPrompts: true,
-    scenesGridMode: false,
-  };
-
-  let s = $state<GeneralSettings>({ ...DEFAULTS });
-  let loaded = $state(false);
-  let error = $state<string | null>(null);
-  const guard = new RequestGuard();
-
-  // The state the engine last confirmed, which is what a rejected apply rolls back to.
-  // Not the value the control saw: with two applies in flight that one already carries
-  // the earlier patch, which may itself have been rejected.
-  let confirmed: GeneralSettings = { ...DEFAULTS };
-
-  function adopt(g: GeneralSettings): void {
-    s = g;
-    confirmed = { ...g };
-    // Another window may have changed retention under a pending confirm; it is asked
-    // only while the change it would make still deletes something.
-    if (historyConfirm?.kind === "retention" && !retentionChangeDeletes(g.chatHistoryRetention, historyConfirm.to)) {
-      historyConfirm = null;
-    }
-  }
-
-  $effect(() => {
-    let active = true;
-    const current = guard.claim();
-    obs
-      .call("settings.getGeneral")
-      .then((g) => {
-        if (active && current()) adopt(g);
-      })
-      .catch((e) => {
-        if (active) error = (e as Error).message;
-      })
-      .finally(() => {
-        if (active) loaded = true;
-      });
-    const off = obs.on(EV.settingsGeneralChanged, (g) => {
-      // The push is the engine's own account of what it holds, so it outranks every
-      // reply still in flight -- including a revert about to restore an older value.
-      guard.supersede();
-      adopt(g);
-    });
-    return () => {
-      active = false;
-      off();
-    };
+  // Read, followed and applied through LiveSettings, the skeleton this tab shares with
+  // the Voice tab: nothing is shown until the engine has answered, a refused change rolls
+  // back to what the engine last confirmed, and the engine's push outranks every reply in
+  // flight.
+  const live = new LiveSettings<GeneralSettings>({
+    read: () => obs.call("settings.getGeneral"),
+    write: (patch) => obs.call("settings.setGeneral", patch),
+    listen: (onPush) => obs.on(EV.settingsGeneralChanged, onPush),
+    settingsOf: (g) => g,
+    adopted: (g) => {
+      // Another window may have changed retention under a pending confirm; it is asked
+      // only while the change it would make still deletes something.
+      if (historyConfirm?.kind === "retention" && !retentionChangeDeletes(g.chatHistoryRetention, historyConfirm.to)) {
+        historyConfirm = null;
+      }
+    },
+    errorText: (e, fallback) => (e as Error | undefined)?.message || fallback,
   });
+  const s = $derived(live.settings);
+  // A failure outside the settings (clearing the chat history); a refused setting is
+  // live.refused.
+  let error = $state<string | null>(null);
 
-  // Optimistic local set, then reconcile from the echoed full state.
+  $effect(() => live.start());
+
   fxStore.start();
   const FX_ID = "fx-home-currency";
   const fxLine = $derived(fxStatusText(fxStore.snapshot));
 
+  // Shown at once, then reconciled from the echoed full state (LiveSettings.apply).
   async function apply(patch: Partial<GeneralSettings>): Promise<void> {
     error = null;
-    const current = guard.claim();
-    s = { ...s, ...patch };
-    try {
-      const g = await obs.call("settings.setGeneral", patch);
-      if (current()) adopt(g);
-    } catch (e) {
-      error = (e as Error).message;
-      if (current()) s = { ...confirmed };
-    }
+    await live.apply(patch);
   }
 
   // Chat history. The status line is read on the async lane and refreshed after anything
@@ -182,7 +127,7 @@ import { EV } from "$lib/utils/eventNames";
   const CONFIRM_MESSAGE_ID = "chat-history-confirm-message";
 
   const shownRetention = $derived(
-    historyConfirm?.kind === "retention" ? historyConfirm.to : s.chatHistoryRetention,
+    historyConfirm?.kind === "retention" ? historyConfirm.to : s?.chatHistoryRetention,
   );
   // Said through a live region rather than by moving focus: arrow keys on a closed select
   // change its value at once, and taking focus away would stop the user mid-way.
@@ -191,6 +136,9 @@ import { EV } from "$lib/utils/eventNames";
   );
 
   function chooseRetention(to: ChatHistoryRetention): void {
+    if (!s) {
+      return;
+    }
     if (retentionChangeDeletes(s.chatHistoryRetention, to)) {
       historyConfirm = { kind: "retention", to };
       return;
@@ -259,7 +207,13 @@ import { EV } from "$lib/utils/eventNames";
   }
 </script>
 
-{#if !loaded}
+{#if live.readError}
+  <!-- Nothing is known, so nothing is shown as if it were the user's settings. -->
+  <div class="readfail" role="alert">
+    <p class="error">{live.readError}</p>
+    <Button size="sm" onclick={() => live.retry()}>Try again</Button>
+  </div>
+{:else if !s}
   <p class="dim">Loading settings…</p>
 {:else}
   <section class="group">
@@ -526,7 +480,7 @@ import { EV } from "$lib/utils/eventNames";
     <p class="dim note">Show the current session log for troubleshooting and bug reports.</p>
   </section>
 
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error || live.refused}<p class="error" role="alert">{error ?? live.refused?.message}</p>{/if}
 {/if}
 
 <style>
@@ -628,5 +582,14 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-live-text);
     margin: 6px 0 0;
     font-size: 12px;
+  }
+  .readfail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .readfail .error {
+    margin: 0;
   }
 </style>
