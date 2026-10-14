@@ -702,7 +702,7 @@ void RunOverlayScopeSelfTest();
 void RunFxSelfTest();
 // GpuSafeMode's pure rules (gpu_safe_mode_selftest.cpp): renderer strings mapped to
 // hardware or software, the boot plan per override/marker/sentinel state, the
-// once-per-CEF-version re-probe, and the override's precedence. File-free.
+// once-per-build re-probe, and the override's precedence. File-free.
 void RunGpuSafeModeSelfTest();
 // Headless proof that the host's residual native chrome was darkened at startup:
 // assert NativeTheme::AppliedCount() >= 1 (the host is the only owned window up at

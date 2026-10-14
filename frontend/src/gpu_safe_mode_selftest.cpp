@@ -1,6 +1,6 @@
 // RunGpuSafeModeSelfTest: GpuSafeMode's pure rules -- which WebGL renderer strings count as
 // hardware, the boot plan for each combination of override, marker, sentinels and strikes
-// (including the once-per-CEF-version re-probe and the override's precedence), what a
+// (including the once-per-build re-probe and the override's precedence), what a
 // renderer report and a no-verdict close do, and the marker/strike bodies. File-free: the
 // decisions are tested as data, not through the config directory the running app uses.
 
@@ -20,6 +20,8 @@ using GpuSafeMode::Renderer;
 
 constexpr char kCef[] = "127.145.7+g2b7d20b+chromium-127.0.6533.120";
 constexpr char kOtherCef[] = "150.0.0+gabcdef0+chromium-150.0.7871.0";
+constexpr char kBuild[] = "v0.9.0-109-g99fbc62f5";
+constexpr char kOtherBuild[] = "v0.9.0-110-gabcdef012-dirty";
 
 struct RendererCase {
 	const char *renderer;
@@ -39,8 +41,8 @@ constexpr RendererCase kRendererCases[] = {
 	{"", Renderer::Software},
 };
 
-BootInputs Inputs(bool disableMarker, bool marker, const char *markerCef, bool paint, bool renderer, int strikes = 0,
-		  bool haveBase = true)
+BootInputs Inputs(bool disableMarker, bool marker, const char *markerCef, const char *markerBuild, bool paint,
+		  bool renderer, int strikes = 0, bool haveBase = true)
 {
 	BootInputs in;
 	in.disableMarker = disableMarker;
@@ -48,6 +50,8 @@ BootInputs Inputs(bool disableMarker, bool marker, const char *markerCef, bool p
 	in.safeModeMarker = marker;
 	in.markerCefVersion = markerCef;
 	in.runningCefVersion = kCef;
+	in.markerBuild = markerBuild;
+	in.runningBuild = kBuild;
 	in.paintSentinel = paint;
 	in.rendererSentinel = renderer;
 	in.strikes = strikes;
@@ -76,35 +80,43 @@ BootPlan Expect(bool disableGpu, BootReason reason, bool writeMarker, bool remov
 
 // Expect(disableGpu, reason, writeMarker, removeMarker, clearProbes, armProbes, strikes)
 const PlanCase kPlanCases[] = {
-	{"clean", Inputs(false, false, "", false, false),
+	{"clean", Inputs(false, false, "", "", false, false),
 	 Expect(false, BootReason::Hardware, false, false, false, true, 0)},
-	{"clean-carries-strike", Inputs(false, false, "", false, false, 1),
+	{"clean-carries-strike", Inputs(false, false, "", "", false, false, 1),
 	 Expect(false, BootReason::Hardware, false, false, false, true, 1)},
-	{"no-base", Inputs(false, false, "", false, false, 0, false),
+	{"no-base", Inputs(false, false, "", "", false, false, 0, false),
 	 Expect(false, BootReason::NoConfigBase, false, false, false, false, 0)},
-	{"override", Inputs(true, false, "", false, false),
+	{"override", Inputs(true, false, "", "", false, false),
 	 Expect(true, BootReason::ManualOverride, false, false, false, false, 0)},
 	// The override wins over everything and consumes nothing: a stale-version marker
 	// and both sentinels are left for the boot after the override is removed.
-	{"override-beats-reprobe", Inputs(true, true, kOtherCef, true, true),
+	{"override-beats-reprobe", Inputs(true, true, kOtherCef, kOtherBuild, true, true),
 	 Expect(true, BootReason::ManualOverride, false, false, false, false, 0)},
-	{"persisted", Inputs(false, true, kCef, false, false),
+	{"persisted", Inputs(false, true, kCef, kBuild, false, false),
 	 Expect(true, BootReason::PersistedSafeMode, false, false, true, false, 0)},
 	// Stale sentinels under a same-version marker are cleared, so deleting the marker
 	// later yields a clean probe boot rather than a strike.
-	{"persisted-stale-sentinels", Inputs(false, true, kCef, true, true, 1),
+	{"persisted-stale-sentinels", Inputs(false, true, kCef, kBuild, true, true, 1),
 	 Expect(true, BootReason::PersistedSafeMode, false, false, true, false, 0)},
-	{"reprobe-new-cef", Inputs(false, true, kOtherCef, false, false),
-	 Expect(false, BootReason::ReprobeAfterCefChange, false, true, true, true, 0)},
-	{"reprobe-legacy-marker", Inputs(false, true, "", false, false),
-	 Expect(false, BootReason::ReprobeAfterCefChange, false, true, true, true, 0)},
-	{"no-paint-strike-1", Inputs(false, false, "", true, true),
+	{"reprobe-new-cef", Inputs(false, true, kOtherCef, kBuild, false, false),
+	 Expect(false, BootReason::ReprobeAfterBuildChange, false, true, true, true, 0)},
+	{"reprobe-new-build", Inputs(false, true, kCef, kOtherBuild, false, false),
+	 Expect(false, BootReason::ReprobeAfterBuildChange, false, true, true, true, 0)},
+	// A re-probe starts from zero strikes and ignores leftover sentinels.
+	{"reprobe-resets-strikes", Inputs(false, true, kCef, kOtherBuild, true, true, 1),
+	 Expect(false, BootReason::ReprobeAfterBuildChange, false, true, true, true, 0)},
+	// A marker from before markers carried a build re-probes even under this same CEF.
+	{"reprobe-no-build-line", Inputs(false, true, kCef, "", false, false),
+	 Expect(false, BootReason::ReprobeAfterBuildChange, false, true, true, true, 0)},
+	{"reprobe-legacy-marker", Inputs(false, true, "", "", false, false),
+	 Expect(false, BootReason::ReprobeAfterBuildChange, false, true, true, true, 0)},
+	{"no-paint-strike-1", Inputs(false, false, "", "", true, true),
 	 Expect(false, BootReason::NoPaintLastBoot, false, false, true, true, 1)},
-	{"no-paint-strike-2", Inputs(false, false, "", true, false, 1),
+	{"no-paint-strike-2", Inputs(false, false, "", "", true, false, 1),
 	 Expect(true, BootReason::NoPaintLastBoot, true, false, true, false, 0)},
-	{"no-report-strike-1", Inputs(false, false, "", false, true),
+	{"no-report-strike-1", Inputs(false, false, "", "", false, true),
 	 Expect(false, BootReason::NoRendererReportLastBoot, false, false, true, true, 1)},
-	{"no-report-strike-2", Inputs(false, false, "", false, true, 1),
+	{"no-report-strike-2", Inputs(false, false, "", "", false, true, 1),
 	 Expect(true, BootReason::NoRendererReportLastBoot, true, false, true, false, 0)},
 };
 
@@ -120,7 +132,7 @@ bool SamePlan(const BootPlan &a, const BootPlan &b)
 BootPlan NextBoot(const GpuSafeMode::ProbeClose &close, bool painted, int strikes)
 {
 	const bool paintLeft = !painted && !close.removePaintSentinel;
-	return GpuSafeMode::PlanBoot(Inputs(false, false, "", paintLeft, !close.removeRendererSentinel, strikes));
+	return GpuSafeMode::PlanBoot(Inputs(false, false, "", "", paintLeft, !close.removeRendererSentinel, strikes));
 }
 
 } // namespace
@@ -152,7 +164,7 @@ void ObsBootstrap::RunGpuSafeModeSelfTest()
 		failures += " report:software";
 	}
 	if (hw.persistSoftware || !hw.clearRendererSentinel || !hw.clearStrikes ||
-	    !SamePlan(GpuSafeMode::PlanBoot(Inputs(false, false, "", false, false, 0)),
+	    !SamePlan(GpuSafeMode::PlanBoot(Inputs(false, false, "", "", false, false, 0)),
 		      Expect(false, BootReason::Hardware, false, false, false, true, 0))) {
 		failures += " report:hardware-clears-strikes";
 	}
@@ -178,16 +190,33 @@ void ObsBootstrap::RunGpuSafeModeSelfTest()
 		failures += " close:blank-exit";
 	}
 
-	// A re-probe does not repeat: the marker a failed re-probe writes carries this CEF, and
-	// the boot after reads it as persisted rather than probing again.
-	const std::string written = GpuSafeMode::FormatMarker(kCef, BootReason::NoPaintLastBoot);
-	const BootPlan afterFailedReprobe = GpuSafeMode::PlanBoot(
-		Inputs(false, true, GpuSafeMode::MarkerCefVersion(written).c_str(), false, false));
+	// A re-probe does not repeat: any marker this build writes carries its build and CEF,
+	// and the boot after reads it as persisted rather than probing again.
+	const std::string written = GpuSafeMode::FormatMarker(kCef, kBuild, BootReason::NoPaintLastBoot);
+	const BootPlan afterFailedReprobe =
+		GpuSafeMode::PlanBoot(Inputs(false, true, GpuSafeMode::MarkerCefVersion(written).c_str(),
+					     GpuSafeMode::MarkerBuild(written).c_str(), false, false));
 	if (afterFailedReprobe.reason != BootReason::PersistedSafeMode) {
 		failures += " reprobe-once";
 	}
+	// The body an earlier build wrote, parsed as the boot parses it, re-probes.
+	const std::string legacy = "cef=" + std::string(kCef) + "\nreason=no-paint-last-boot\n";
+	const BootPlan afterLegacy =
+		GpuSafeMode::PlanBoot(Inputs(false, true, GpuSafeMode::MarkerCefVersion(legacy).c_str(),
+					     GpuSafeMode::MarkerBuild(legacy).c_str(), false, false));
+	if (afterLegacy.reason != BootReason::ReprobeAfterBuildChange) {
+		failures += " reprobe-legacy-body";
+	}
+	std::string writtenCrlf;
+	for (char c : written) {
+		writtenCrlf += c == '\n' ? std::string("\r\n") : std::string(1, c);
+	}
+	if (GpuSafeMode::MarkerCefVersion(written) != kCef || GpuSafeMode::MarkerBuild(written) != kBuild ||
+	    GpuSafeMode::MarkerCefVersion(writtenCrlf) != kCef || GpuSafeMode::MarkerBuild(writtenCrlf) != kBuild) {
+		failures += " marker-round-trip";
+	}
 	if (GpuSafeMode::MarkerCefVersion("reason=x\r\ncef=" + std::string(kCef) + "\r\n") != kCef ||
-	    !GpuSafeMode::MarkerCefVersion("").empty()) {
+	    !GpuSafeMode::MarkerCefVersion("").empty() || !GpuSafeMode::MarkerBuild(legacy).empty()) {
 		failures += " marker-parse";
 	}
 	if (GpuSafeMode::ParseStrikes(GpuSafeMode::FormatStrikes(1)) != 1 || GpuSafeMode::ParseStrikes("") != 0 ||

@@ -25,8 +25,9 @@
 // keeps the paint sentinel, because a UI that never came up and was closed is the
 // blank-window failure this exists for.
 //
-// The persisted marker records the CEF version it was written under; a different
-// CEF drops it and probes the GPU afresh, so upgrading CEF retries hardware by itself.
+// The persisted marker records the build and the CEF version it was written under;
+// any other build or CEF drops it and probes the GPU afresh, so every update retries
+// hardware by itself.
 // That probe follows the usual rules: a software report re-persists at once, a
 // sentinel-only failure after the usual strikes. Deleting the marker always yields a
 // probe boot.
@@ -41,8 +42,8 @@ enum class BootReason {
 	Hardware,                 // probes armed, GPU requested
 	NoConfigBase,             // GPU requested, but no writable dir to probe in
 	ManualOverride,           // braidcast_disable_gpu.txt beside the exe
-	PersistedSafeMode,        // marker written under this same CEF version
-	ReprobeAfterCefChange,    // marker from another CEF version: GPU requested once more
+	PersistedSafeMode,        // marker written under this same build and CEF version
+	ReprobeAfterBuildChange,  // marker from another build or CEF version: GPU requested once more
 	NoPaintLastBoot,          // the paint sentinel survived (a strike)
 	NoRendererReportLastBoot, // the renderer sentinel survived (a strike)
 	SoftwareRendererReported  // marker only: the page reported a software renderer
@@ -56,6 +57,9 @@ struct BootInputs {
 	// The `cef=` line of the marker; empty for a marker written before it carried one.
 	std::string markerCefVersion;
 	std::string runningCefVersion;
+	// The `build=` line of the marker; empty for a marker written before it carried one.
+	std::string markerBuild;
+	std::string runningBuild;
 	bool paintSentinel = false;
 	bool rendererSentinel = false;
 	// Consecutive strikes recorded by earlier boots.
@@ -66,8 +70,8 @@ struct BootInputs {
 struct BootPlan {
 	bool disableGpu = false;
 	BootReason reason = BootReason::Hardware;
-	bool writeMarker = false;  // persist safe mode under the running CEF version
-	bool removeMarker = false; // a stale-version marker being re-probed
+	bool writeMarker = false;  // persist safe mode under the running build and CEF version
+	bool removeMarker = false; // a stale marker being re-probed
 	bool clearProbes = false;  // delete leftover sentinels
 	bool armProbes = false;    // arm both sentinels once the main browser exists
 	int strikes = 0;           // strike count to keep on disk (0 removes it)
@@ -106,9 +110,10 @@ Renderer ClassifyRenderer(const std::string &renderer);
 // "(0x0000xxxx)" device ids ANGLE embeds removed, length capped.
 std::string SanitizeRenderer(const std::string &renderer);
 
-// Marker body: one `key=value` per line. Only `cef=` is read back.
-std::string FormatMarker(const std::string &cefVersion, BootReason reason);
+// Marker body: one `key=value` per line. Only `cef=` and `build=` are read back.
+std::string FormatMarker(const std::string &cefVersion, const std::string &build, BootReason reason);
 std::string MarkerCefVersion(const std::string &markerBody);
+std::string MarkerBuild(const std::string &markerBody);
 
 // Strike file body (`strikes=N`); a missing or malformed body reads as 0.
 std::string FormatStrikes(int strikes);

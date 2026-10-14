@@ -12,6 +12,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "build_info.hpp"
 #include "include/cef_version.h"
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
@@ -35,11 +36,12 @@ constexpr char kRendererSentinelFile[] = "gpu-renderer-probe.lock";
 constexpr char kStrikesFile[] = "gpu-probe.strikes";
 
 // Sticky safe-mode marker: once software is detected the app persists this so every
-// later boot under the same CEF stays on software rendering without re-probing (and
+// later boot of the same build and CEF stays on software rendering without re-probing (and
 // re-crashing). Body per FormatMarker.
 constexpr char kSafeModeFile[] = "gpu-safe-mode.on";
 
 constexpr char kMarkerCefKey[] = "cef=";
+constexpr char kMarkerBuildKey[] = "build=";
 constexpr char kStrikesKey[] = "strikes=";
 
 // WebGL renderer substrings that mean the page is not on a hardware GPU, matched
@@ -177,7 +179,7 @@ void WriteTextFile(const std::string &absPath, const std::string &body, const ch
 
 void WriteSafeModeMarker(const std::string &absPath, GpuSafeMode::BootReason reason)
 {
-	WriteTextFile(absPath, GpuSafeMode::FormatMarker(CEF_VERSION, reason),
+	WriteTextFile(absPath, GpuSafeMode::FormatMarker(CEF_VERSION, Braidcast::BuildDescribe(), reason),
 		      "software mode will not persist to the next boot");
 }
 
@@ -196,6 +198,7 @@ GpuSafeMode::BootDecision ResolveBootDecision()
 {
 	GpuSafeMode::BootInputs in;
 	in.runningCefVersion = CEF_VERSION;
+	in.runningBuild = Braidcast::BuildDescribe();
 	in.disableMarker = MarkerFileBesideExe(kDisableGpuMarker);
 
 	std::string sentinel;
@@ -211,7 +214,9 @@ GpuSafeMode::BootDecision ResolveBootDecision()
 		rendererSentinel = BraidcastConfigPath(kRendererSentinelFile);
 		in.safeModeMarker = FileExists(safeMode);
 		if (in.safeModeMarker) {
-			in.markerCefVersion = GpuSafeMode::MarkerCefVersion(ReadTextFile(safeMode));
+			const std::string body = ReadTextFile(safeMode);
+			in.markerCefVersion = GpuSafeMode::MarkerCefVersion(body);
+			in.markerBuild = GpuSafeMode::MarkerBuild(body);
 		}
 		in.paintSentinel = FileExists(sentinel);
 		in.rendererSentinel = FileExists(rendererSentinel);
@@ -301,7 +306,7 @@ GpuSafeMode::BootPlan GpuSafeMode::PlanBoot(const BootInputs &in)
 	}
 
 	if (in.safeModeMarker) {
-		if (in.markerCefVersion == in.runningCefVersion) {
+		if (in.markerCefVersion == in.runningCefVersion && in.markerBuild == in.runningBuild) {
 			// Software boots arm nothing, so anything left over is stale; clearing it
 			// here is what makes deleting the marker always yield a clean probe boot.
 			plan.disableGpu = true;
@@ -309,10 +314,10 @@ GpuSafeMode::BootPlan GpuSafeMode::PlanBoot(const BootInputs &in)
 			plan.clearProbes = true;
 			return plan;
 		}
-		// Written under another CEF (or before markers carried a version): this CEF
-		// may handle the GPU, so probe it afresh from zero strikes. Whatever marker the
-		// probe ends up writing carries THIS version, so it is not probed again.
-		plan.reason = BootReason::ReprobeAfterCefChange;
+		// Written under another build or CEF (or before markers carried either): this
+		// one may handle the GPU, so probe it afresh from zero strikes. Whatever marker
+		// the probe ends up writing carries THIS build and CEF, so it is not probed again.
+		plan.reason = BootReason::ReprobeAfterBuildChange;
 		plan.removeMarker = true;
 		plan.clearProbes = true;
 		plan.armProbes = true;
@@ -407,14 +412,20 @@ std::string GpuSafeMode::SanitizeRenderer(const std::string &renderer)
 	return out;
 }
 
-std::string GpuSafeMode::FormatMarker(const std::string &cefVersion, BootReason reason)
+std::string GpuSafeMode::FormatMarker(const std::string &cefVersion, const std::string &build, BootReason reason)
 {
-	return std::string(kMarkerCefKey) + cefVersion + "\nreason=" + ReasonName(reason) + "\n";
+	return std::string(kMarkerCefKey) + cefVersion + "\n" + kMarkerBuildKey + build +
+	       "\nreason=" + ReasonName(reason) + "\n";
 }
 
 std::string GpuSafeMode::MarkerCefVersion(const std::string &markerBody)
 {
 	return LineValue(markerBody, kMarkerCefKey);
+}
+
+std::string GpuSafeMode::MarkerBuild(const std::string &markerBody)
+{
+	return LineValue(markerBody, kMarkerBuildKey);
 }
 
 std::string GpuSafeMode::FormatStrikes(int strikes)
@@ -443,8 +454,8 @@ const char *GpuSafeMode::ReasonName(BootReason reason)
 		return "manual-override";
 	case BootReason::PersistedSafeMode:
 		return "persisted-safe-mode";
-	case BootReason::ReprobeAfterCefChange:
-		return "reprobe-after-cef-change";
+	case BootReason::ReprobeAfterBuildChange:
+		return "reprobe-after-build-change";
 	case BootReason::NoPaintLastBoot:
 		return "no-paint-last-boot";
 	case BootReason::NoRendererReportLastBoot:
@@ -479,7 +490,8 @@ void GpuSafeMode::LogBootDecision()
 	const BootDecision &d = g_bootDecision;
 	std::string line = std::string("[gpu] boot: requested=") + (d.disableGpu ? "software" : "gpu") +
 			   " reason=" + ReasonName(d.reason) + " strikes=" + std::to_string(d.strikes) + "/" +
-			   std::to_string(kStrikesToPersist) + " cef=" + CEF_VERSION;
+			   std::to_string(kStrikesToPersist) + " cef=" + CEF_VERSION +
+			   " build=" + Braidcast::BuildDescribe();
 	if (!d.safeModeFile.empty()) {
 		line += " marker=" + d.safeModeFile;
 	}
