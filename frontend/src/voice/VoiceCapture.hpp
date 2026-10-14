@@ -23,7 +23,11 @@ namespace Voice {
 // Bind, on the UI thread, before the callback is registered; the registration takes the
 // same audio_cb_mutex libobs holds while dispatching, so the callback sees it complete.
 //
-// Bind/Unbind/WatchChannelChanges run on the UI thread, and so does the destructor.
+// Bind/Unbind/WatchChannelChanges/StopWatchingChannelChanges run on the UI thread. The
+// destructor runs wherever the engine's runtime loses its last reference: a retire
+// worker (VoiceEngine::Retire), the UI thread, or the hotkey thread finishing a key
+// press that still held the runtime. The engine has already stopped watching and
+// unbound on the UI thread by then, so the destructor's own calls find nothing to do.
 // Unbind removes the libobs callback before releasing the source reference, so no
 // callback can be in flight afterwards. The ring is never reset here: its consumer (the
 // recognizer worker) may be reading it, and Reset is only safe with both sides idle.

@@ -41,7 +41,9 @@ using PromptSource = std::function<std::string()>;
 //
 //   libobs hotkey thread  OnPtt, OnCancelKey: open or close the recognizer segment,
 //                         engage or release the mute guard, post the listener event.
-//                         Nothing that can block.
+//                         Nothing that can block. (A key-up can also arrive on the UI
+//                         thread, when a held key is rebound or unregistered there;
+//                         libobs serializes all hotkey callbacks under its own mutex.)
 //   libobs audio thread   the capture callback only (VoiceCapture)
 //   recognizer worker     model load and whisper (Recognizer)
 //   CEF UI thread         everything else: the listener, every effect, every event

@@ -567,8 +567,9 @@ void VoiceEngine::NoteModelsChanged()
 
 void VoiceEngine::OnPtt(bool down)
 {
-	// libobs hotkey thread. Everything here is an atomic, a short mutex, or a libobs call
-	// that is safe off the UI thread; the listener is reached only by posting.
+	// libobs hotkey thread (or, for a key-up only, the UI thread rebinding a held key).
+	// Everything here is an atomic, a short mutex, or a libobs call that is safe off the
+	// UI thread; the listener is reached only by posting.
 	const uint64_t generation = generation_.load(std::memory_order_acquire);
 	std::shared_ptr<Runtime> runtime = CurrentRuntime();
 

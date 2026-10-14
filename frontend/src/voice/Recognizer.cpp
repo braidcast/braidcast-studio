@@ -636,9 +636,17 @@ void Recognizer::AbandonUtterance()
 
 void Recognizer::WorkerMain(std::string modelPath, int threads)
 {
-	// Voice must never cost the encoder a frame. This covers our own thread; whisper's
-	// internal workers set their own priority (index correction 2), which is why the
-	// thread count is capped by the P0 measurements rather than left to whisper.
+	// Voice must never cost the encoder a frame, so this thread runs below normal. That
+	// covers this thread only, inference included: whisper exposes no threadpool, so ggml
+	// builds a disposable one per graph compute at its default priority, and for that
+	// default ggml_thread_apply_priority leaves the calling thread's priority alone
+	// (ggml-cpu.c, "Keep inherited policy/priority"). The other n_threads - 1 compute
+	// threads are new threads (CreateThread), which Windows starts at NORMAL priority,
+	// and ggml leaves them there; it also opts every compute thread, this one included,
+	// out of power throttling. So during inference voice competes with the encoder at
+	// NORMAL priority on all but one of its threads, which is why the thread count is
+	// capped by the P0 measurements rather than left to whisper (index correction 2,
+	// Risk R1).
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 
 	threads_ = std::max(1, threads);

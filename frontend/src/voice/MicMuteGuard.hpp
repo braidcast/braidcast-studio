@@ -8,9 +8,14 @@
 namespace Voice {
 
 // Mutes the microphone for the length of a spoken command so viewers do not hear it,
-// then puts it back. Engage and Release are called from the libobs hotkey thread, and
-// once more from the UI thread in the engine's Stop, after the hotkeys are unregistered;
-// they are never called concurrently. Engaged() may be read from any thread.
+// then puts it back. Engage and Release are called from libobs hotkey callbacks. A press
+// (Engage) is only ever seen on the libobs hotkey thread; a release usually is too, but
+// when the UI thread rebinds or unregisters a key that is held down, libobs releases the
+// binding there and Release runs on the UI thread (obs-hotkey.c, remove_bindings). libobs
+// runs every hotkey callback under its hotkeys mutex, so two never overlap. Release runs
+// once more on the UI thread in the engine's Stop, after the hotkeys are unregistered.
+// So they are never called concurrently. Engaged() may be read from any thread, and the
+// "mute" handler (OnMute) runs on whichever thread mutes the mic.
 //
 // Release unmutes only when the source is *still* muted and it was unmuted before
 // Engage, and the user did not mute it during the hold: if the user changed their own
