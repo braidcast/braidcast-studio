@@ -39,11 +39,13 @@
         <span class="detail">{indicator.detail}</span>
       {/if}
     </span>
-    {#if indicator.confirmable}
-      <Button size="xs" variant="filled" onclick={confirm}>Confirm</Button>
-    {/if}
     {#if indicator.cancellable}
-      <Button size="xs" onclick={cancel}>Cancel</Button>
+      <span class="acts">
+        {#if indicator.confirmable}
+          <Button size="xs" variant="filled" onclick={confirm}>Confirm</Button>
+        {/if}
+        <Button size="xs" onclick={cancel}>Cancel</Button>
+      </span>
     {/if}
   </div>
 {/if}
@@ -51,8 +53,12 @@
 <style>
   /* One full-height cell of the bottom bar's left cluster, divided like the viewer count
      beside it: same hairline, same mono face, same square dot as the focus dot. */
+  /* It is the cell that gives way when the bar runs short: a dictated draft's summary can
+     be a whole message long. The text shrinks, down to nothing if it must, and the buttons
+     never do, so Confirm and Cancel stay on screen (the title keeps the full text). */
   .voice {
     display: flex;
+    flex: 0 1 auto;
     align-items: center;
     gap: 7px;
     min-width: 0;
@@ -65,9 +71,16 @@
   }
   .state {
     display: flex;
+    flex: 0 1 auto;
     align-items: center;
     gap: 7px;
     min-width: 0;
+    overflow: hidden;
+  }
+  .acts {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 7px;
   }
   .dot {
     width: 7px;
@@ -86,9 +99,14 @@
     animation: pulse 1s ease-in-out infinite;
   }
   .label {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--color-text);
   }
   .detail {
+    flex: 0 2 auto;
     min-width: 0;
     max-width: 28ch;
     overflow: hidden;
