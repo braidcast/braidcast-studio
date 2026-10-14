@@ -56,6 +56,11 @@ self-test (`[selftest] voice-whisper version ...`, whose expected string names t
 version). The OpenAI Whisper weights it loads are MIT as well; they are downloaded
 at run time and never vendored.
 
+Its MIT license (one notice for whisper.cpp and the ggml code in the same tree,
+"The ggml authors") travels with the binaries it ships as:
+`frontend/data/license/whisper.cpp-ggml-MIT.txt`, a copy of the submodule's
+`LICENSE`, installed with the rest of `data/`. Recopy it when the tag changes.
+
 ### Why DLLs, delay-loaded
 
 `ggml-cpu` is compiled for one ISA, `/arch:AVX2`, and the app must still start on a
