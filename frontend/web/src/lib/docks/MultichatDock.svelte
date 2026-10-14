@@ -47,9 +47,12 @@
     composerWithDraft,
     draftAnnouncement,
     draftBandLabel,
-    keptDraftToFill,
+    draftDestination,
+    draftSendAddress,
     voiceDraft,
   } from "$lib/voice/voiceStatus";
+  import { takeKeptDraft } from "$lib/voice/keptDraft";
+  import type { VoiceDraftAddress } from "$lib/api/bridge";
   import { DraftCountdown } from "$lib/voice/draftCountdown.svelte";
   import { cancelVoice, confirmVoice, takeOverDraft } from "$lib/voice/voiceActions";
 
@@ -181,6 +184,8 @@
 
   function select(next: DestinationSelection): void {
     selection = next;
+    // Picking a chip is choosing where the composer sends, a dictated message included.
+    voiceTarget = null;
     // Switching scope changes what the window holds; reload it from the newest message.
     feed.load();
   }
@@ -426,6 +431,20 @@
         placeholder: "Go live to chat",
       };
     }
+    if (voiceTarget) {
+      // A dictated message keeps its own destination (voiceTarget above); the host refuses
+      // the send, and the toast says why, if that chat is no longer connected.
+      const label = voiceTarget.label || "where it was dictated to";
+      return {
+        address: voiceTarget.address,
+        tone: (voiceTarget.address.platforms?.length ?? 0) > 1 ? "fan" : "calm",
+        lead: "Voice message",
+        to: label,
+        button: "Send",
+        buttonTitle: "Send it " + label + ", where the voice message was going",
+        placeholder: "Type a message…",
+      };
+    }
     if (sel.kind === "destination") {
       const d = target;
       const t = targetTransport;
@@ -579,6 +598,33 @@
 
   let draft = $state("");
 
+  // A dictated message taken into the composer (Edit, or a kept draft) keeps going where
+  // voice was sending it: a reply's "@bob ..." goes to bob's chat, not to whatever the
+  // chips point at. The target line says so, and offers to send to the chips instead. It
+  // lasts as long as that text: it ends when the message is sent, when the composer is
+  // emptied, when the user picks a chip, or when they drop it from the target line.
+  interface VoiceTarget {
+    address: Omit<ChatSendParams, "text">;
+    label: string;
+  }
+  let voiceTarget = $state<VoiceTarget | null>(null);
+
+  function aimAtVoiceTarget(to: VoiceDraftAddress | null): void {
+    const address = draftSendAddress(to);
+    voiceTarget = address ? { address, label: draftDestination(to, platformOfAccount) } : null;
+  }
+
+  $effect(() => {
+    if (draft.trim() === "" && untrack(() => voiceTarget) !== null) {
+      voiceTarget = null;
+    }
+  });
+
+  function dropVoiceTarget(): void {
+    voiceTarget = null;
+    composerBox?.focus();
+  }
+
   function send(): void {
     const text = draft.trim();
     const address = composer.address;
@@ -586,12 +632,17 @@
       return;
     }
     const params: ChatSendParams = { text, ...address };
+    const target = voiceTarget;
     // Clear optimistically; restore the message (if the box is still empty) when the
-    // send is rejected so the user doesn't silently lose what they typed.
+    // send is rejected so the user doesn't silently lose what they typed, nor where a
+    // dictated message was going.
     draft = "";
     void (async () => {
       const res = await callOrToast("chat.send", params, "Message not sent");
-      if (res === null && draft === "") draft = text;
+      if (res === null && draft === "") {
+        draft = text;
+        voiceTarget = target;
+      }
     })();
   }
 
@@ -602,7 +653,13 @@
   $effect(() => voiceStore.subscribe());
   let spoken = $derived(voiceDraft(voiceStore.state));
   const spokenClock = new DraftCountdown(() => spoken);
-  let spokenAnnouncement = $derived(spoken ? draftAnnouncement(spoken) : "");
+  let spokenTo = $derived(spoken ? draftDestination(spoken.to, platformOfAccount) : "");
+  let spokenAnnouncement = $derived(spoken ? draftAnnouncement(spoken, spokenTo) : "");
+
+  /** A reply's platform, from the account it is addressed to ("" when not known here). */
+  function platformOfAccount(accountId: string): string {
+    return destByAccount.get(accountId)?.[0]?.platform ?? "";
+  }
 
   let composerBox = $state<HTMLTextAreaElement | null>(null);
 
@@ -620,8 +677,9 @@
     }
   }
   // Clicking into the draft takes it out of voice's hands: the countdown is cancelled and
-  // the text becomes an ordinary typed draft, sent (or not) like anything typed, to where
-  // the composer points. Only once the host confirms the cancel (takeOverDraft).
+  // the text becomes a typed draft, sent (or not) like anything typed, but still to where
+  // voice was sending it (voiceTarget), which the target line shows and the user can drop.
+  // Only once the host confirms the cancel (takeOverDraft).
   async function editSpoken(): Promise<void> {
     if (!spoken) {
       return;
@@ -629,20 +687,22 @@
     const taken = await takeOverDraft(spoken);
     if (taken) {
       draft = composerWithDraft(draft, taken.text);
+      aimAtVoiceTarget(taken.to);
       composerBox?.focus();
     }
   }
 
-  // A dictated message refused as too long is kept, not lost: it lands in an empty
-  // composer to be shortened there. Once per refusal, and never over what is typed.
-  let keptSeen = "";
+  // A dictated message voice kept rather than sent (too long, or a "say send" draft whose
+  // window closed) lands in an empty composer, to be fixed or sent there, still addressed
+  // where voice was sending it. Once per kept draft across every composer (keptDraft.ts),
+  // and never over what is typed.
   $effect(() => {
-    const kept = voiceStore.state.keptDraft;
+    const state = voiceStore.state;
     untrack(() => {
-      const fill = keptDraftToFill(kept, keptSeen, draft);
-      keptSeen = kept;
-      if (fill !== null) {
-        draft = fill;
+      const kept = takeKeptDraft(state, draft);
+      if (kept) {
+        draft = kept.text;
+        aimAtVoiceTarget(kept.to);
       }
     });
   });
@@ -806,7 +866,10 @@
   {#if spoken}
     <div class="vdraft" data-phase={spoken.phase}>
       <span class="vdlabel">
-        Voice message &middot; {draftBandLabel(spoken, spokenClock.seconds)}
+        Voice message{#if spokenTo}&nbsp;<span class="vdto">{spokenTo}</span>{/if} &middot; {draftBandLabel(
+          spoken,
+          spokenClock.seconds,
+        )}
       </span>
       <button type="button" class="vdtext" title="Edit it as a typed message" onclick={editSpoken}
         >{spoken.text}</button
@@ -823,6 +886,9 @@
     <p id="replyto-label" class="replyto" class:warn={composer.tone === "warn"} class:fan={composer.tone === "fan"}>
       <span>{composer.lead}</span>
       {#if composer.to}<span class="to">{composer.to}</span>{/if}
+      {#if voiceTarget}
+        <button type="button" class="retarget" onclick={dropVoiceTarget}>Send to the picked chats instead</button>
+      {/if}
     </p>
     <div class="inputrow">
       <!-- aria-disabled, not disabled: CEF dispatches no mouse events to a disabled
@@ -1025,12 +1091,19 @@
     animation: vdraft-in 140ms ease-out;
   }
   .vdlabel {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: 9.5px;
     letter-spacing: 0.09em;
     text-transform: var(--label-case);
     color: var(--color-accent);
+  }
+  /* Where the draft is going, in the band's own words ("replying to bob on Twitch"), set
+     apart from the label around it as the composer's target is in its line. */
+  .vdto {
+    color: var(--color-text);
+    overflow-wrap: anywhere;
   }
   /* The message itself, one line, and the way into editing it: a click turns it into a
      typed draft. */
@@ -1091,6 +1164,28 @@
   .replyto .to {
     color: var(--color-accent);
     overflow-wrap: anywhere;
+  }
+  /* Drops a dictated message's own destination for the chips': a quiet text button at
+     the end of the line, in the line's own small mono face. */
+  .retarget {
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: var(--color-muted);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .retarget:hover {
+    color: var(--color-text);
+  }
+  .retarget:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 2px;
   }
   .replyto.warn {
     background: color-mix(in srgb, var(--color-warn) 9%, transparent);

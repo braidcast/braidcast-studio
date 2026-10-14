@@ -5,7 +5,8 @@ import {
   draftAnnouncement,
   draftBandLabel,
   draftSecondsLeft,
-  keptDraftToFill,
+  draftDestination,
+  draftSendAddress,
   voiceDraft,
   voiceEnableGate,
   voiceIndicator,
@@ -447,18 +448,30 @@ describe("composerWithDraft", () => {
   });
 });
 
-describe("keptDraftToFill", () => {
-  it("hands a refused message to an empty composer once", () => {
-    expect(keptDraftToFill("a long message", "", "")).toBe("a long message");
-    expect(keptDraftToFill("a long message", "a long message", "")).toBeNull();
+describe("draftDestination and draftSendAddress", () => {
+  const platformOf = (accountId: string) => (accountId === "twitch:1" ? "twitch" : "");
+  const reply = { accountId: "twitch:1", profileUuid: "p1", replyTo: "bob" };
+
+  it("names a reply's person and platform, and chats by platform", () => {
+    expect(draftDestination(reply, platformOf)).toBe("replying to bob on Twitch");
+    expect(draftDestination({ ...reply, accountId: "kick:9" }, platformOf)).toBe("replying to bob");
+    expect(draftDestination({ platforms: ["twitch"] }, platformOf)).toBe("to Twitch chat");
+    expect(draftDestination({ platforms: ["twitch", "youtube"] }, platformOf)).toBe("to Twitch and YouTube chats");
+    expect(draftDestination({ platforms: ["twitch", "youtube", "kick"] }, platformOf)).toBe(
+      "to Twitch, YouTube and Kick chats",
+    );
+    expect(draftDestination(null, platformOf)).toBe("");
+    expect(draftDestination({ platforms: [] }, platformOf)).toBe("");
   });
 
-  it("leaves a composer the user is typing in alone", () => {
-    expect(keptDraftToFill("a long message", "", "typing")).toBeNull();
-  });
-
-  it("does nothing without one", () => {
-    expect(keptDraftToFill("", "", "")).toBeNull();
+  // W-12: the composer sends a taken-over draft exactly where voice was sending it: a reply
+  // to ONE chat stays one chat (never widened to its platform, never to all).
+  it("gives chat.send the draft's own routing, the reply's name left out", () => {
+    expect(draftSendAddress(reply)).toEqual({ accountId: "twitch:1", profileUuid: "p1" });
+    expect(draftSendAddress({ accountId: "twitch:1" })).toEqual({ accountId: "twitch:1", profileUuid: null });
+    expect(draftSendAddress({ platforms: ["twitch", "youtube"] })).toEqual({ platforms: ["twitch", "youtube"] });
+    expect(draftSendAddress({ platforms: [] })).toBeNull();
+    expect(draftSendAddress(null)).toBeNull();
   });
 });
 

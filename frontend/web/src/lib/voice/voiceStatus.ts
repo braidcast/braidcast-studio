@@ -1,7 +1,9 @@
 // How voice control reads in the UI: one pure function per surface, so the wording and
 // the tone are decided in tests rather than in markup. The Settings tab and the status
 // indicator only render what these return.
+import { platformName } from "$lib/theme/platformColors";
 import type {
+  ChatSendParams,
   VoiceDraftAddress,
   VoicePayload,
   VoiceModelStatus,
@@ -297,6 +299,46 @@ export function draftAnnouncement(draft: VoiceDraft, destination = ""): string {
   }
 }
 
+/** "Twitch", "Twitch and YouTube", "Twitch, YouTube and Kick". */
+function listPlatforms(platforms: string[]): string {
+  const names = platforms.map(platformName);
+  return names.length <= 1 ? names.join("") : names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+}
+
+/** Where a dictated message goes, in words: "to Twitch and YouTube chats", "to Twitch
+ * chat", "replying to bob on Twitch". `platformOf(accountId)` names a reply's platform
+ * when the caller knows the account ("" when not). "" with no address. Worded to follow
+ * "Voice message", and unlike the composer's own target line ("Replying to", "Broadcasting
+ * to" a chip), so the band right above it cannot be read as the composer's. */
+export function draftDestination(to: VoiceDraftAddress | null, platformOf: (accountId: string) => string): string {
+  if (!to) {
+    return "";
+  }
+  if (to.accountId) {
+    const platform = platformOf(to.accountId);
+    const who = to.replyTo ? to.replyTo : "one chat";
+    return `replying to ${who}` + (platform ? ` on ${platformName(platform)}` : "");
+  }
+  const platforms = to.platforms ?? [];
+  if (platforms.length === 0) {
+    return "";
+  }
+  return `to ${listPlatforms(platforms)} ${platforms.length === 1 ? "chat" : "chats"}`;
+}
+
+/** A draft's address as chat.send takes it (the reply's name left out), or null when it
+ * names nowhere to send. The composer sends a draft it took over here, not to wherever
+ * its chips point. */
+export function draftSendAddress(to: VoiceDraftAddress | null): Omit<ChatSendParams, "text"> | null {
+  if (to?.accountId) {
+    return { accountId: to.accountId, profileUuid: to.profileUuid ?? null };
+  }
+  if (to?.platforms && to.platforms.length > 0) {
+    return { platforms: [...to.platforms] };
+  }
+  return null;
+}
+
 /** A dictated message taken into the composer: in place of an empty one, or after what is
  * already typed there, never over it. */
 export function composerWithDraft(composer: string, text: string): string {
@@ -304,14 +346,4 @@ export function composerWithDraft(composer: string, text: string): string {
     return text;
   }
   return composer.replace(/\s+$/, "") + " " + text;
-}
-
-/** The message voice refused as too long, for a composer to take over: the kept draft when
- * it is one this composer has not acted on yet and the composer is empty, else null. A
- * composer the user is typing in is never overwritten. */
-export function keptDraftToFill(kept: string, seen: string, composer: string): string | null {
-  if (kept === "" || kept === seen || composer.trim() !== "") {
-    return null;
-  }
-  return kept;
 }
