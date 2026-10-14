@@ -1,9 +1,15 @@
 # Generates the voice recognizer's test fixtures with the Windows speech synthesizer,
-# so the repository carries a small WAV rather than a recording of anyone's voice.
+# so they are small synthesized WAVs rather than a recording of anyone's voice.
+#
+# The repository does not carry them yet: the owner runs this once on Windows and
+# commits the two WAVs it writes to frontend/selftest-data/voice/fixtures/. Until then
+# the self-test cases that need them (voice-wav, voice-recognizer, voice-vad and
+# voice-continuous) report SKIPPED, naming the missing file.
+#
 # Run from the repository root:
 #   powershell.exe -ExecutionPolicy Bypass -File frontend/selftest-data/voice/make-fixture.ps1
-# Regenerate only if a fixture is lost: a different voice changes what the model
-# hears, and the recognizer self-test asserts on the text.
+# Once committed, regenerate only if a fixture is lost: a different voice changes what
+# the model hears, and the recognizer self-test asserts on the text.
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Speech
 

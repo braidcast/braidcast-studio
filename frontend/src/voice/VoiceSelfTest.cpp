@@ -61,6 +61,11 @@
 // and the run ends with one "voice overall" verdict. Transcripts are never logged.
 namespace {
 
+// The recognizer's fixture WAVs are not in the repository until the owner generates and
+// commits them (selftest-data/voice/make-fixture.ps1); the cases that need one skip, and
+// say this, until then. A fixture that is there but does not load is a failure.
+constexpr const char *kFixtureMissing = " not found; the owner generates it with selftest-data/voice/make-fixture.ps1";
+
 struct Tally {
 	int failures = 0;
 
@@ -1408,7 +1413,7 @@ void TestWavFile(Tally &t)
 {
 	const std::string path = VoiceDataPath("fixtures/switch-to-gameplay.wav");
 	if (path.empty()) {
-		t.Skip("wav", "fixture loads", "fixtures/switch-to-gameplay.wav not found in the data dir");
+		t.Skip("wav", "fixture loads", std::string("fixtures/switch-to-gameplay.wav") + kFixtureMissing);
 		return;
 	}
 	Voice::WavData wav;
@@ -1506,10 +1511,15 @@ void TestRecognizer(Tally &t)
 	}
 	const std::string modelPath = *modelDir + "/ggml-base.en-q5_1.bin";
 	const std::string wavPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
+	if (wavPath.empty()) {
+		t.Skip("recognizer", "transcribes the fixture",
+		       std::string("fixtures/switch-to-gameplay.wav") + kFixtureMissing);
+		return;
+	}
 	Voice::WavData wav;
 	std::string error;
-	if (wavPath.empty() || !Voice::LoadWavMono(wavPath, wav, error)) {
-		t.Check("recognizer", "fixture available", false);
+	if (!Voice::LoadWavMono(wavPath, wav, error)) {
+		t.Check("recognizer", "fixture loads", false);
 		return;
 	}
 
@@ -1608,8 +1618,13 @@ void TestVadEndpointer(Tally &t)
 	// the end is looked for over the fixture and the silence after it together.
 	Voice::WavData wav;
 	const std::string wavPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
-	if (wavPath.empty() || !Voice::LoadWavMono(wavPath, wav, error)) {
-		t.Check("vad", "fixture available", false);
+	if (wavPath.empty()) {
+		t.Skip("vad", "finds speech in the fixture",
+		       std::string("fixtures/switch-to-gameplay.wav") + kFixtureMissing);
+		return;
+	}
+	if (!Voice::LoadWavMono(wavPath, wav, error)) {
+		t.Check("vad", "fixture loads", false);
 		return;
 	}
 	vad.Reset();
@@ -1664,9 +1679,15 @@ void TestContinuousRecognizer(Tally &t)
 	std::string error;
 	const std::string wokenPath = VoiceDataPath("fixtures/braidcast-switch-to-gameplay.wav");
 	const std::string ordinaryPath = VoiceDataPath("fixtures/switch-to-gameplay.wav");
-	if (wokenPath.empty() || ordinaryPath.empty() || !Voice::LoadWavMono(wokenPath, woken, error) ||
-	    !Voice::LoadWavMono(ordinaryPath, ordinary, error)) {
-		t.Check("continuous", "fixtures available", false);
+	if (wokenPath.empty() || ordinaryPath.empty()) {
+		t.Skip("continuous", "wakes on the wake phrase",
+		       std::string(wokenPath.empty() ? "fixtures/braidcast-switch-to-gameplay.wav"
+						     : "fixtures/switch-to-gameplay.wav") +
+			       kFixtureMissing);
+		return;
+	}
+	if (!Voice::LoadWavMono(wokenPath, woken, error) || !Voice::LoadWavMono(ordinaryPath, ordinary, error)) {
+		t.Check("continuous", "fixtures load", false);
 		return;
 	}
 

@@ -929,11 +929,14 @@ add_custom_command(
 # bundle contents (index.html, assets/, overlay/) into the destination.
 install(DIRECTORY "${_web_dist}/" DESTINATION "${OBS_DATA_DESTINATION}/braidcast/web" COMPONENT Runtime)
 
-# The voice recognizer's test fixture. Copied to the rundir for the smoke test only,
-# and deliberately NOT installed: it is a test asset, not something users need. It
-# lives in selftest-data/ rather than data/ because set_target_properties_obs installs
-# all of data/ (target_install_resources). The cue WAVs below are the opposite case
-# and do get an install() rule.
+# The voice recognizer's test fixtures. Copied to the rundir for the smoke test only,
+# and deliberately NOT installed: they are test assets, not something users need. They
+# live in selftest-data/ rather than data/ because set_target_properties_obs installs
+# all of data/ (target_install_resources). The WAVs are not in the repository yet: the
+# owner generates them on Windows with selftest-data/voice/make-fixture.ps1 and commits
+# them to selftest-data/voice/fixtures/; until then the copy carries only the script and
+# the self-test cases that need a fixture report SKIPPED. The cue WAVs below are the
+# opposite case and do get an install() rule.
 add_custom_command(
   TARGET ${_target}
   POST_BUILD
