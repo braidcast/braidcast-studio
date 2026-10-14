@@ -518,6 +518,10 @@ export interface VoicePayload {
   /** Why viewers would hear the command cues and what to change (the monitoring device
    * is one a Desktop Audio source captures); "" when they would not. */
   cueWarning: string;
+  /** The recognition language codes setVoice accepts, in the order to offer them. */
+  languages: string[];
+  /** The id (in `models`) of the model always-listen checks the wake phrase with. */
+  wakeModel: string;
 }
 
 /** Advanced app settings (process priority, stream delay, auto-reconnect, network,

@@ -7,6 +7,7 @@ import {
   draftSecondsLeft,
   draftDestination,
   draftSendAddress,
+  languageLabel,
   voiceDraft,
   voiceEnableGate,
   voiceIndicator,
@@ -479,17 +480,19 @@ describe("wakeModelNote", () => {
   const tiny = (overrides: Partial<VoiceModelStatus> = {}) =>
     model({ id: "tiny.en-q5_1", label: "Tiny (English, fastest)", bytes: 32166155, ...overrides });
   const wakeMode: VoiceSettingsState = { ...off, enabled: true, triggerMode: "wake" };
+  // The host names its wake model in the payload (wakeModel); the tab keeps no copy.
+  const WAKE = "tiny.en-q5_1";
 
   it("says nothing in push-to-talk", () => {
-    expect(wakeModelNote({ ...wakeMode, triggerMode: "ptt" }, [tiny()])).toBeNull();
+    expect(wakeModelNote({ ...wakeMode, triggerMode: "ptt" }, [tiny()], WAKE)).toBeNull();
   });
 
   it("says nothing once the wake model is on disk", () => {
-    expect(wakeModelNote(wakeMode, [tiny({ state: "ready" })])).toBeNull();
+    expect(wakeModelNote(wakeMode, [tiny({ state: "ready" })], WAKE)).toBeNull();
   });
 
   it("points at the model list in English, where the model is offered", () => {
-    expect(wakeModelNote(wakeMode, [tiny()])).toEqual({
+    expect(wakeModelNote(wakeMode, [tiny()], WAKE)).toEqual({
       text: "Always-listen also needs Tiny (English, fastest) below, for the wake phrase.",
       model: null,
     });
@@ -497,12 +500,29 @@ describe("wakeModelNote", () => {
 
   it("carries the download itself in another language, where the list does not offer it", () => {
     const hidden = tiny({ selectable: false, state: "downloading", received: 1000 });
-    const note = wakeModelNote({ ...wakeMode, language: "de" }, [hidden]);
+    const note = wakeModelNote({ ...wakeMode, language: "de" }, [hidden], WAKE);
     expect(note?.model).toEqual(hidden);
     expect(note?.text).toBe("Always-listen also needs Tiny (English, fastest), for the wake phrase.");
   });
 
   it("says nothing when the catalog has no wake model", () => {
-    expect(wakeModelNote(wakeMode, [model()])).toBeNull();
+    expect(wakeModelNote(wakeMode, [model()], WAKE)).toBeNull();
+  });
+});
+
+describe("languageLabel", () => {
+  // The codes come from the host (the payload's languages); the page only names them.
+  it("names each language in itself, capitalized", () => {
+    expect(languageLabel("en")).toBe("English");
+    expect(languageLabel("de")).toBe("Deutsch");
+    expect(languageLabel("es")).toBe("Espa\u00f1ol");
+    expect(languageLabel("fr")).toBe("Fran\u00e7ais");
+    expect(languageLabel("uk")).toBe("\u0423\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430");
+    expect(languageLabel("zh")).toBe("\u4e2d\u6587");
+  });
+
+  it("falls back to the code for one the runtime cannot name", () => {
+    expect(languageLabel("xx")).toBe("xx");
+    expect(languageLabel("")).toBe("");
   });
 });

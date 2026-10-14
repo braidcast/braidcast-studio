@@ -31,7 +31,9 @@ std::string CueWarning()
 }
 
 // The settings block plus everything the Voice tab needs to render it, so the tab
-// makes one call rather than three.
+// makes one call rather than three. The language codes setVoice accepts and the wake
+// model's id come from the tables that decide them, so the tab holds no copy of either
+// to fall out of step.
 json VoicePayload()
 {
 	std::string cpuReason;
@@ -41,6 +43,8 @@ json VoicePayload()
 		{"models", Downloads().StatusJson()["models"]},
 		{"cpu", {{"supported", cpuOk}, {"reason", cpuReason}}},
 		{"cueWarning", CueWarning()},
+		{"languages", VoiceLanguages()},
+		{"wakeModel", kWakeModelId},
 	};
 }
 

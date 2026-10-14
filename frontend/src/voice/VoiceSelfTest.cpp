@@ -2776,6 +2776,10 @@ void TestVoiceBridge(Tally &t)
 	const bool modelsListed = result["models"].is_array() && !result["models"].empty() &&
 				  result["models"][0].contains("selectable");
 	t.Check("bridge", "the catalog comes with the settings", modelsListed);
+	// The tab offers the languages and names the wake model from these, not from copies.
+	t.Check("bridge", "getVoice carries the language codes and the wake model's id",
+		result["languages"] == nlohmann::json(VoiceLanguages()) && result["languages"].size() == 15 &&
+			result["languages"][0] == "en" && result.value("wakeModel", "") == Voice::kWakeModelId);
 
 	// An unknown model id is refused rather than stored and failing later at load.
 	const bool badModel = Dispatch("settings.setVoice", nlohmann::json{{"model", "not-a-model"}}, result, error);

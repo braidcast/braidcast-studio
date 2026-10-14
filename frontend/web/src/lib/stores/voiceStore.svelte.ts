@@ -12,7 +12,10 @@ import type { VoiceState } from "$lib/api/bridge";
 import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 
-/** What the store holds with no feed: voice off, nothing to show. */
+/** What the store holds with no feed: voice off, nothing to show. Its settings are not
+ * defaults and are never shown as values (state "disabled" renders nothing); the only
+ * source of the user's voice settings is the host's payload, which the Voice tab waits
+ * for. */
 export const VOICE_STATE_EMPTY: VoiceState = {
   state: "disabled",
   message: "",

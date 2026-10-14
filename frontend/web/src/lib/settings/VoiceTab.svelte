@@ -7,120 +7,92 @@
     type VoiceSettingsState,
   } from "$lib/api/bridge";
   import { setSettingsTab } from "$lib/dialogs/settingsOpener.svelte";
+  import { LiveSettings } from "$lib/settings/liveSettings.svelte";
   import { voiceStore } from "$lib/stores/voiceStore.svelte";
   import Button from "$lib/ui/Button.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { EV } from "$lib/utils/eventNames";
-  import { RequestGuard } from "$lib/utils/requestGuard";
-  import { voiceEnableGate, voiceIndicator, voiceModelLabel, wakeModelNote } from "$lib/voice/voiceStatus";
+  import {
+    languageLabel,
+    voiceEnableGate,
+    voiceIndicator,
+    voiceModelLabel,
+    wakeModelNote,
+  } from "$lib/voice/voiceStatus";
 
-  // Voice control settings, live-applied like the General tab: each change pushes only
-  // its own key through settings.setVoice and reconciles from the full payload it
-  // answers. settings.voiceChanged keeps this in sync with any other window, and each
-  // download step arrives as one model's voice.model.status.
-  const DEFAULTS: VoiceSettingsState = {
-    enabled: false,
-    model: "",
-    logTranscripts: false,
-    cueVolume: 0.6,
-    sendMode: "countdown",
-    countdownSec: 3,
-    triggerMode: "ptt",
-    wakePhrase: "Braidcast",
-    readBack: false,
-    language: "en",
-  };
-
-  let s = $state<VoiceSettingsState>({ ...DEFAULTS });
+  // Voice control settings, live-applied like the General tab (LiveSettings): each change
+  // pushes only its own key through settings.setVoice and reconciles from the full payload
+  // it answers. settings.voiceChanged keeps this in sync with any other window, and each
+  // download step arrives as one model's voice.model.status. Everything shown comes from
+  // the host's payload: the settings, and the lists to choose them from (the language
+  // codes, the wake model), so the tab holds no defaults and no copy of the host's tables.
   let models = $state<VoiceModelStatus[]>([]);
   let cpu = $state<{ supported: boolean; reason: string }>({ supported: true, reason: "" });
   // Why viewers would hear the cues ("" when they would not); the host decides.
   let cueWarning = $state("");
-  let loaded = $state(false);
-  let error = $state<string | null>(null);
-  const guard = new RequestGuard();
-  // What the host last confirmed: a rejected apply rolls back to this, not to the value
-  // the control saw (with two applies in flight that one may carry a rejected patch).
-  let confirmed: VoiceSettingsState = { ...DEFAULTS };
+  let languages = $state<string[]>([]);
+  let wakeModel = $state("");
 
-  function adopt(p: VoicePayload): void {
-    s = p.settings;
-    confirmed = { ...p.settings };
-    models = p.models;
-    cpu = p.cpu;
-    cueWarning = p.cueWarning;
-  }
-
-  $effect(() => {
-    let active = true;
-    const current = guard.claim();
-    obs
-      .call("settings.getVoice")
-      .then((p) => {
-        if (active && current()) adopt(p);
-      })
-      .catch((e) => {
-        if (active) error = bridgeErrorText(e) || "Could not read the voice settings.";
-      })
-      .finally(() => {
-        if (active) loaded = true;
-      });
-    const offSettings = obs.on(EV.settingsVoiceChanged, (p) => {
-      // The host's own account of what it holds outranks every reply still in flight.
-      guard.supersede();
-      adopt(p);
-    });
-    const offModels = obs.on(EV.voiceModelStatus, (m) => {
-      models = models.map((cur) => (cur.id === m.id ? m : cur));
-    });
-    return () => {
-      active = false;
-      offSettings();
-      offModels();
-    };
+  const live = new LiveSettings<VoiceSettingsState, VoicePayload>({
+    read: () => obs.call("settings.getVoice"),
+    write: (patch) => obs.call("settings.setVoice", patch),
+    listen: (onPush) => obs.on(EV.settingsVoiceChanged, onPush),
+    settingsOf: (p) => p.settings,
+    adopted: (p) => {
+      models = p.models;
+      cpu = p.cpu;
+      cueWarning = p.cueWarning;
+      languages = p.languages;
+      wakeModel = p.wakeModel;
+    },
+    errorText: (e, fallback) => bridgeErrorText(e) || fallback,
   });
+  const s = $derived(live.settings);
+
+  $effect(() => live.start());
+  $effect(() =>
+    obs.on(EV.voiceModelStatus, (m) => {
+      models = models.map((cur) => (cur.id === m.id ? m : cur));
+    }),
+  );
 
   // The live state, for the status line under the switch (why voice is not ready).
   $effect(() => voiceStore.subscribe());
   const status = $derived(voiceIndicator(voiceStore.state));
 
-  async function apply(patch: Partial<VoiceSettingsState>): Promise<void> {
-    error = null;
-    const current = guard.claim();
-    s = { ...s, ...patch };
-    try {
-      const p = await obs.call("settings.setVoice", patch);
-      if (current()) adopt(p);
-    } catch (e) {
-      error = bridgeErrorText(e) || "The change was not applied.";
-      if (current()) s = { ...confirmed };
-    }
+  function apply(patch: Partial<VoiceSettingsState>): void {
+    void live.apply(patch);
+  }
+
+  // A download that would not start, or would not cancel, says so in its own row.
+  let modelErrors = $state<Record<string, string>>({});
+
+  function setModelError(id: string, message: string): void {
+    modelErrors = { ...modelErrors, [id]: message };
   }
 
   async function download(id: string): Promise<void> {
-    error = null;
+    setModelError(id, "");
     try {
       const r = await obs.call("voice.model.download", { id });
       models = r.models;
     } catch (e) {
-      error = bridgeErrorText(e) || "The download did not start.";
+      setModelError(id, bridgeErrorText(e) || "The download did not start.");
     }
   }
 
   async function cancelDownload(id: string): Promise<void> {
+    setModelError(id, "");
     try {
       const r = await obs.call("voice.model.cancel", { id });
       models = r.models;
     } catch (e) {
       // Usually the download finished as Cancel was pressed; the next status event says so.
-      error = bridgeErrorText(e) || "The download could not be cancelled.";
+      setModelError(id, bridgeErrorText(e) || "The download could not be cancelled.");
     }
   }
 
   const speechModels = $derived(models.filter((m) => m.selectable));
-  const wakeNote = $derived(wakeModelNote(s, models));
-  const selectedKnown = $derived(speechModels.some((m) => m.id === s.model));
-  const gate = $derived(voiceEnableGate(s, cpu, models));
 
   const ENABLE_HINT_ID = "voice-enable-hint";
   const MODEL_ID = "voice-model";
@@ -143,40 +115,21 @@
     { value: "wake", label: "Listen for a wake phrase" },
   ];
 
-  // Must match kLanguages in VoiceSettings.cpp: the host refuses anything else.
-  const LANGUAGES = [
-    { code: "en", label: "English" },
-    { code: "de", label: "Deutsch" },
-    { code: "es", label: "Espa\u00f1ol" },
-    { code: "fr", label: "Fran\u00e7ais" },
-    { code: "it", label: "Italiano" },
-    { code: "ja", label: "\u65e5\u672c\u8a9e" },
-    { code: "ko", label: "\ud55c\uad6d\uc5b4" },
-    { code: "nl", label: "Nederlands" },
-    { code: "pl", label: "Polski" },
-    { code: "pt", label: "Portugu\u00eas" },
-    { code: "ru", label: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439" },
-    { code: "sv", label: "Svenska" },
-    { code: "tr", label: "T\u00fcrk\u00e7e" },
-    { code: "uk", label: "\u0423\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430" },
-    { code: "zh", label: "\u4e2d\u6587" },
-  ];
-
   function applyTrigger(value: string): void {
     const trigger = TRIGGERS.find((m) => m.value === value);
     if (trigger) {
-      void apply({ triggerMode: trigger.value });
+      apply({ triggerMode: trigger.value });
     }
   }
 
   // An unchanged or blank phrase is not sent; the host refuses one with no word in it.
-  function applyWakePhrase(input: HTMLInputElement): void {
+  function applyWakePhrase(input: HTMLInputElement, current: string): void {
     const phrase = input.value.trim();
-    if (phrase === "" || phrase === s.wakePhrase) {
-      input.value = s.wakePhrase;
+    if (phrase === "" || phrase === current) {
+      input.value = current;
       return;
     }
-    void apply({ wakePhrase: phrase });
+    apply({ wakePhrase: phrase });
   }
 
   // How a dictated chat message goes out, safest first. The host refuses anything else.
@@ -189,24 +142,39 @@
   function applySendMode(value: string): void {
     const mode = SEND_MODES.find((m) => m.value === value);
     if (mode) {
-      void apply({ sendMode: mode.value });
+      apply({ sendMode: mode.value });
     }
   }
 
   // A cleared or non-numeric box keeps the last good value; the host clamps to 1-10.
-  function applyCountdown(input: HTMLInputElement): void {
+  function applyCountdown(input: HTMLInputElement, current: number): void {
     const seconds = input.valueAsNumber;
     if (Number.isFinite(seconds)) {
-      void apply({ countdownSec: seconds });
+      apply({ countdownSec: seconds });
     } else {
-      input.value = String(s.countdownSec);
+      input.value = String(current);
     }
   }
 </script>
 
-{#if !loaded}
+<!-- A change the host refused, said under the control it came from. -->
+{#snippet refused(keys: (keyof VoiceSettingsState & string)[])}
+  {@const why = live.errorFor(...keys)}
+  {#if why}<p class="error" role="alert">{why}</p>{/if}
+{/snippet}
+
+{#if live.readError}
+  <!-- Nothing is known, so nothing is shown as if it were the user's settings. -->
+  <div class="readfail" role="alert">
+    <p class="error">{live.readError}</p>
+    <Button size="sm" onclick={() => live.retry()}>Try again</Button>
+  </div>
+{:else if !s}
   <p class="dim">Loading settings…</p>
 {:else}
+  {@const gate = voiceEnableGate(s, cpu, models)}
+  {@const wakeNote = wakeModelNote(s, models, wakeModel)}
+  {@const selectedKnown = speechModels.some((m) => m.id === s.model)}
   <section class="group">
     <h4>Voice control</h4>
     {#if !cpu.supported}
@@ -218,10 +186,11 @@
         checked={s.enabled}
         disabled={gate.blocked}
         ariaDescribedBy={ENABLE_HINT_ID}
-        onchange={(v) => void apply({ enabled: v })}
+        onchange={(v) => apply({ enabled: v })}
       />
       Enable voice control
     </label>
+    {@render refused(["enabled"])}
     <p id={ENABLE_HINT_ID} class="dim note">
       {#if s.triggerMode === "wake"}
         Say the wake phrase, then a command. The push-to-talk key still works too.
@@ -243,6 +212,7 @@
           <option value={m.value}>{m.label}</option>
         {/each}
       </select>
+      {@render refused(["triggerMode"])}
     </div>
     {#if s.triggerMode === "wake"}
       <div class="field">
@@ -256,8 +226,9 @@
           autocomplete="off"
           value={s.wakePhrase}
           aria-describedby={WAKE_HINT_ID}
-          onchange={(e) => applyWakePhrase(e.currentTarget)}
+          onchange={(e) => applyWakePhrase(e.currentTarget, s.wakePhrase)}
         />
+        {@render refused(["wakePhrase"])}
       </div>
       <p id={WAKE_HINT_ID} class="dim note">
         While this is on, your microphone is transcribed on this computer the whole time, and nothing is acted on until
@@ -285,6 +256,7 @@
               {:else}
                 <Button size="xs" onclick={() => void download(m.id)}>{action}</Button>
               {/if}
+              {#if modelErrors[m.id]}<p class="error rowerror" role="alert">{modelErrors[m.id]}</p>{/if}
             </div>
           {/if}
         </div>
@@ -313,11 +285,13 @@
           step="0.05"
           value={s.cueVolume}
           aria-describedby={CUE_HINT_ID}
-          oninput={(e) => (s = { ...s, cueVolume: Number(e.currentTarget.value) })}
-          onchange={(e) => void apply({ cueVolume: Number(e.currentTarget.value) })}
+          aria-valuetext="{Math.round(s.cueVolume * 100)} percent"
+          oninput={(e) => live.show({ cueVolume: Number(e.currentTarget.value) })}
+          onchange={(e) => apply({ cueVolume: Number(e.currentTarget.value) })}
         />
-        <span class="pct">{Math.round(s.cueVolume * 100)}%</span>
+        <span class="pct" aria-hidden="true">{Math.round(s.cueVolume * 100)}%</span>
       </div>
+      {@render refused(["cueVolume"])}
     </div>
     <p id={CUE_HINT_ID} class="dim note">
       A short sound answers each command, so you can keep your eyes on the game. It plays on your monitoring device
@@ -328,10 +302,11 @@
         size="sm"
         checked={s.readBack}
         ariaDescribedBy={READBACK_HINT_ID}
-        onchange={(v) => void apply({ readBack: v })}
+        onchange={(v) => apply({ readBack: v })}
       />
       Speak confirmations
     </label>
+    {@render refused(["readBack"])}
     <p id={READBACK_HINT_ID} class="dim note">
       Says what happened out loud, so you can keep your eyes on the game; while a command waits, "read that back" says
       it again. Like the cues, only you hear it, at the cue volume.
@@ -355,6 +330,7 @@
           <option value={m.value}>{m.label}</option>
         {/each}
       </select>
+      {@render refused(["sendMode"])}
     </div>
     {#if s.sendMode === "countdown"}
       <div class="field">
@@ -367,8 +343,10 @@
           max="10"
           step="1"
           value={s.countdownSec}
-          onchange={(e) => applyCountdown(e.currentTarget)}
+          aria-describedby={SEND_HINT_ID}
+          onchange={(e) => applyCountdown(e.currentTarget, s.countdownSec)}
         />
+        {@render refused(["countdownSec"])}
       </div>
     {/if}
     <p id={SEND_HINT_ID} class="dim note">
@@ -390,12 +368,13 @@
         id={LANGUAGE_ID}
         value={s.language}
         aria-describedby={LANGUAGE_HINT_ID}
-        onchange={(e) => void apply({ language: e.currentTarget.value })}
+        onchange={(e) => apply({ language: e.currentTarget.value })}
       >
-        {#each LANGUAGES as language (language.code)}
-          <option value={language.code}>{language.label}</option>
+        {#each languages as code (code)}
+          <option value={code}>{languageLabel(code)}</option>
         {/each}
       </select>
+      {@render refused(["language"])}
     </div>
     <p id={LANGUAGE_HINT_ID} class="dim note">
       Any language other than English uses the multilingual model, which is a separate download. Spoken commands and
@@ -404,7 +383,7 @@
     </p>
     <div class="field">
       <label class="flabel" for={MODEL_ID}>Model</label>
-      <select id={MODEL_ID} value={s.model} onchange={(e) => void apply({ model: e.currentTarget.value })}>
+      <select id={MODEL_ID} value={s.model} onchange={(e) => apply({ model: e.currentTarget.value })}>
         {#if !selectedKnown}
           <!-- A model this build does not offer (a hand edit): shown, but not one to choose. -->
           <option value={s.model} disabled>Not recognized</option>
@@ -413,6 +392,7 @@
           <option value={m.id}>{m.label}</option>
         {/each}
       </select>
+      {@render refused(["model"])}
     </div>
 
     <ul class="models" aria-label="Speech models">
@@ -428,6 +408,7 @@
           {:else}
             <span></span>
           {/if}
+          {#if modelErrors[m.id]}<p class="error rowerror" role="alert">{modelErrors[m.id]}</p>{/if}
         </li>
       {/each}
     </ul>
@@ -444,17 +425,17 @@
         size="sm"
         checked={s.logTranscripts}
         ariaDescribedBy={LOG_HINT_ID}
-        onchange={(v) => void apply({ logTranscripts: v })}
+        onchange={(v) => apply({ logTranscripts: v })}
       />
       Write recognized speech to the log
     </label>
+    {@render refused(["logTranscripts"])}
     <p id={LOG_HINT_ID} class="dim note">
       Only while debug logging is on as well (Diagnostics). The session log may be shared when reporting a problem,
       so leave this off otherwise.
     </p>
   </section>
 
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
 {/if}
 
 <style>
@@ -586,5 +567,19 @@
     color: var(--color-live-text);
     margin: 6px 0 0;
     font-size: 12px;
+  }
+  /* A model row's own failure, under the whole row. */
+  .rowerror {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+  .readfail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .readfail .error {
+    margin: 0;
   }
 </style>

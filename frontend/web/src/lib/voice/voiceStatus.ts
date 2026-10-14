@@ -81,7 +81,15 @@ const DUE_DETAIL = "Draft waits for what you say: send or cancel";
 
 export function voiceIndicator(state: VoiceState): VoiceIndicator {
   if (!state.settings.enabled || state.state === "disabled") {
-    return { visible: false, tone: "idle", label: "", detail: "", confirmable: false, cancellable: false, pendingId: 0 };
+    return {
+      visible: false,
+      tone: "idle",
+      label: "",
+      detail: "",
+      confirmable: false,
+      cancellable: false,
+      pendingId: 0,
+    };
   }
   switch (state.state) {
     case "listening":
@@ -149,10 +157,6 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator {
   }
 }
 
-/** The host's wake model (VoiceModels.hpp kWakeModelId): always-listen checks each
- * utterance's opening with it. */
-export const WAKE_MODEL_ID = "tiny.en-q5_1";
-
 export interface WakeModelNote {
   text: string;
   /** The model to offer a download for here; null when the model list already offers it. */
@@ -160,19 +164,40 @@ export interface WakeModelNote {
 }
 
 /** In always-listen, what the tab says about the wake model while it is not on disk; null
- * in push-to-talk or once it is ready. In English the model list below offers it; for any
- * other language it is not a choice of speech model, so the note carries the download. */
-export function wakeModelNote(settings: VoiceSettingsState, models: VoiceModelStatus[]): WakeModelNote | null {
+ * in push-to-talk or once it is ready. `wakeModel` is the host's id for it (the payload's
+ * wakeModel). In English the model list below offers it; for any other language it is not
+ * a choice of speech model, so the note carries the download. */
+export function wakeModelNote(
+  settings: VoiceSettingsState,
+  models: VoiceModelStatus[],
+  wakeModel: string,
+): WakeModelNote | null {
   if (settings.triggerMode !== "wake") {
     return null;
   }
-  const tiny = models.find((m) => m.id === WAKE_MODEL_ID);
+  const tiny = models.find((m) => m.id === wakeModel);
   if (!tiny || tiny.state === "ready") {
     return null;
   }
   return tiny.selectable
     ? { text: `Always-listen also needs ${tiny.label} below, for the wake phrase.`, model: null }
     : { text: `Always-listen also needs ${tiny.label}, for the wake phrase.`, model: tiny };
+}
+
+/** A recognition language's name in that language ("Deutsch", "Español"), from its code;
+ * the code itself where the runtime knows no name. The codes come from the host (the
+ * payload's languages), so this is the only thing the page adds to them. */
+export function languageLabel(code: string): string {
+  let name = "";
+  try {
+    name = new Intl.DisplayNames([code], { type: "language" }).of(code) ?? "";
+  } catch {
+    name = "";
+  }
+  if (!name || name === code) {
+    return code;
+  }
+  return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
 }
 
 export function voiceModelLabel(model: VoiceModelStatus): string {
