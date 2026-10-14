@@ -2,6 +2,7 @@
 
 #include "log.hpp"
 #include "voice/VoiceResampler.hpp"
+#include "voice/WhisperLibrary.hpp"
 
 #include <whisper.h>
 
@@ -17,6 +18,9 @@ VadEndpointer::~VadEndpointer()
 bool VadEndpointer::Start(const std::string &modelPath, int threads, std::string &error)
 {
 	Stop();
+	if (!EnsureWhisperLoaded(error)) {
+		return false;
+	}
 	whisper_vad_context_params params = whisper_vad_default_context_params();
 	params.n_threads = threads;
 	params.use_gpu = false; // the CPU backend is the only one linked

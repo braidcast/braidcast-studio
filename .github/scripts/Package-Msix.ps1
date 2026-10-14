@@ -175,7 +175,18 @@ function Package {
     $verify = Join-Path ([System.IO.Path]::GetTempPath()) "braidcast-msix-verify-$([System.IO.Path]::GetRandomFileName())"
     & $makeappx unpack /o /d $verify /p $OutFile
     if ( $LASTEXITCODE -ne 0 ) { throw "makeappx unpack (validation) failed ($LASTEXITCODE)" }
-    foreach ( $rel in @('AppxManifest.xml', 'bin/64bit/braidcast.exe', 'Assets/StoreLogo.png') ) {
+    # The voice engine DLLs are delay-loaded, so the app would launch without them; they
+    # are checked by name (frontend/cmake/voice-engine.cmake has the list).
+    $required = @(
+        'AppxManifest.xml',
+        'bin/64bit/braidcast.exe',
+        'bin/64bit/ggml-base.dll',
+        'bin/64bit/ggml-cpu.dll',
+        'bin/64bit/ggml.dll',
+        'bin/64bit/whisper.dll',
+        'Assets/StoreLogo.png'
+    )
+    foreach ( $rel in $required ) {
         if ( -not ( Test-Path (Join-Path $verify $rel) ) ) {
             throw "Validation failed: $rel missing from packed MSIX"
         }

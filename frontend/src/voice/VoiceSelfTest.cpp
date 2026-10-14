@@ -36,6 +36,7 @@
 #include "voice/VoiceSettings.hpp"
 #include "voice/WakeGate.hpp"
 #include "voice/WavFile.hpp"
+#include "voice/WhisperLibrary.hpp"
 
 #include <obs.hpp>
 #include <whisper.h>
@@ -83,8 +84,88 @@ struct Tally {
 	}
 };
 
+// Every case that calls whisper asks this first. On a CPU without AVX2 (or with the
+// engine's DLLs missing) the case is skipped with the reason instead, and on such a CPU
+// nothing of whisper is ever mapped.
+bool WhisperAvailable(Tally &t, const char *area, const std::string &name)
+{
+	std::string reason;
+	if (Voice::EnsureWhisperLoaded(reason)) {
+		return true;
+	}
+	t.Skip(area, name, reason);
+	return false;
+}
+
+// The names of whisper's DLLs that are in the process right now, comma-separated.
+std::string MappedWhisperDlls()
+{
+	std::string mapped;
+	for (const char *dll : Voice::kWhisperDlls) {
+		if (GetModuleHandleA(dll)) {
+			mapped += std::string(mapped.empty() ? "" : ", ") + dll;
+		}
+	}
+	return mapped;
+}
+
+// S-C1: the speech engine is delay-loaded, so with voice off not one of its DLLs is in
+// the process once the app is up. This is the first case, before anything here loads
+// them; with voice on, the engine tried to load them at start and there is nothing to
+// see. A whisper DLL mapped here means an import of it is no longer delay-loaded, and the
+// app would not start on a CPU without AVX2.
+void TestWhisperNotMappedAtStart(Tally &t)
+{
+	if (Voice::Engine().Settings().enabled) {
+		t.Skip("whisper", "no DLL of it is mapped at start with voice off", "voice is on, so it was loaded");
+		return;
+	}
+	const std::string mapped = MappedWhisperDlls();
+	t.Check("whisper", "no DLL of it is mapped at start with voice off", mapped.empty());
+	if (!mapped.empty()) {
+		HostLog("[selftest] voice-whisper mapped at start: " + mapped);
+	}
+}
+
+// The CPU gate comes before the loader: on a CPU without AVX2 loading is refused with the
+// CPU's own reason and maps nothing; on one with it, every DLL loads from beside the exe.
+void TestWhisperLoads(Tally &t)
+{
+	std::string cpuReason;
+	const bool cpuOk = Voice::CpuSupportsVoice(cpuReason);
+	std::string reason;
+	const bool loaded = Voice::EnsureWhisperLoaded(reason);
+	if (!cpuOk) {
+		t.Check("whisper", "an unsupported CPU is refused with its own reason", !loaded && reason == cpuReason);
+		t.Check("whisper", "and nothing of whisper is mapped", MappedWhisperDlls().empty());
+		t.Skip("whisper", "every DLL loads from beside the exe", cpuReason);
+		return;
+	}
+	t.Skip("whisper", "an unsupported CPU is refused with its own reason", "this CPU supports voice");
+	t.Check("whisper", "the speech engine loads", loaded && reason.empty());
+	if (!loaded) {
+		HostLog("[selftest] voice-whisper load error: " + reason);
+	}
+	const std::filesystem::path exeDir(ExecutableDir());
+	bool beside = true;
+	for (const char *dll : Voice::kWhisperDlls) {
+		const HMODULE module = GetModuleHandleA(dll);
+		wchar_t path[MAX_PATH] = {};
+		std::error_code ec;
+		beside = beside && module && GetModuleFileNameW(module, path, MAX_PATH) > 0 &&
+			 std::filesystem::equivalent(std::filesystem::path(path).parent_path(), exeDir, ec);
+	}
+	t.Check("whisper", "every DLL loads from beside the exe", beside);
+	std::string again;
+	t.Check("whisper", "a second call keeps the outcome",
+		Voice::EnsureWhisperLoaded(again) == loaded && again == reason);
+}
+
 void TestWhisperLinked(Tally &t)
 {
+	if (!WhisperAvailable(t, "whisper", "version 1.9.4")) {
+		return;
+	}
 	t.Check("whisper", "version 1.9.4", std::string(whisper_version()) == "1.9.4");
 }
 
@@ -186,11 +267,14 @@ void TestVoiceSettingsTable(Tally &t)
 		!SettingsFields::ApplyPatch(table, nlohmann::json{{"wakePhrase", std::string(200, 'x')}}, listen,
 					    listenError));
 	// Every offered language is one whisper knows; whisper_lang_id is -1 otherwise.
-	bool whisperKnowsAll = true;
-	for (const std::string &language : VoiceLanguages()) {
-		whisperKnowsAll = whisperKnowsAll && whisper_lang_id(language.c_str()) >= 0;
+	if (WhisperAvailable(t, "settings", "whisper knows every offered language")) {
+		bool whisperKnowsAll = true;
+		for (const std::string &language : VoiceLanguages()) {
+			whisperKnowsAll = whisperKnowsAll && whisper_lang_id(language.c_str()) >= 0;
+		}
+		t.Check("settings", "whisper knows every offered language",
+			whisperKnowsAll && VoiceLanguages().size() == 15);
 	}
-	t.Check("settings", "whisper knows every offered language", whisperKnowsAll && VoiceLanguages().size() == 15);
 }
 
 void TestSha256(Tally &t)
@@ -1472,6 +1556,9 @@ void TestRecognizerWithoutModel(Tally &t)
 		Voice::WakeAudioCtx(wakeClip, 0) == 0);
 
 	// A model that is not there fails through the callback, and nothing else breaks.
+	if (!WhisperAvailable(t, "recognizer", "a missing model file fails with a reason")) {
+		return;
+	}
 	Voice::SpscRing ring(1024);
 	Voice::Recognizer rec(ring, [] { return false; });
 	std::mutex mutex;
@@ -1507,6 +1594,9 @@ void TestRecognizer(Tally &t)
 	const std::optional<std::string> modelDir = Env::Raw("BRAIDCAST_SELFTEST_VOICE_MODELS");
 	if (!modelDir || modelDir->empty()) {
 		t.Skip("recognizer", "transcribes the fixture", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
+		return;
+	}
+	if (!WhisperAvailable(t, "recognizer", "transcribes the fixture")) {
 		return;
 	}
 	const std::string modelPath = *modelDir + "/ggml-base.en-q5_1.bin";
@@ -1596,6 +1686,9 @@ void TestVadEndpointer(Tally &t)
 		t.Skip("vad", "finds speech in the fixture", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
 		return;
 	}
+	if (!WhisperAvailable(t, "vad", "finds speech in the fixture")) {
+		return;
+	}
 	using VadState = Voice::VadEndpointer::State;
 	Voice::VadEndpointer vad;
 	std::string error;
@@ -1670,6 +1763,9 @@ void TestContinuousRecognizer(Tally &t)
 	const std::optional<std::string> modelDir = Env::Raw("BRAIDCAST_SELFTEST_VOICE_MODELS");
 	if (!modelDir || modelDir->empty()) {
 		t.Skip("continuous", "wakes on the wake phrase", "set BRAIDCAST_SELFTEST_VOICE_MODELS to run");
+		return;
+	}
+	if (!WhisperAvailable(t, "continuous", "wakes on the wake phrase")) {
 		return;
 	}
 	// A second fixture beside the first, opened by the default wake phrase:
@@ -1943,10 +2039,12 @@ void TestVoiceEngine(Tally &t)
 		Voice::CancelKeyApplies(777, 4242));
 	t.Check("engine", "and when no window is in front", Voice::CancelKeyApplies(0, 4242));
 
-	// CanEnable explains itself rather than failing silently.
+	// CanEnable explains itself rather than failing silently, and voice.state says the same.
 	std::string reason;
 	const bool can = engine.CanEnable(reason);
 	t.Check("engine", "CanEnable gives a reason when it refuses", can == reason.empty());
+	t.Check("engine", "the state's ready.cpu is CanEnable's answer",
+		state["ready"]["cpu"] == can && state["ready"]["cpuReason"] == reason);
 
 	// Thread count comes from the P0 cap and the machine, and is at least 1.
 	t.Check("engine", "thread count is capped by the P0 measurement",
@@ -3067,8 +3165,10 @@ void TestLanguageSelection(Tally &t)
 using Case = void (*)(Tally &);
 
 const Case kCases[] = {
-	&TestWhisperLinked,
+	&TestWhisperNotMappedAtStart, // first: before anything here loads whisper
 	&TestCpuGate,
+	&TestWhisperLoads,
+	&TestWhisperLinked,
 	&TestLogCategory,
 	&TestVoiceSettingsTable,
 	&TestSha256,

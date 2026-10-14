@@ -4,6 +4,7 @@
 #include "util/string_util.hpp"
 #include "voice/VoiceResampler.hpp"
 #include "voice/WakeGate.hpp"
+#include "voice/WhisperLibrary.hpp"
 
 #include <whisper.h>
 
@@ -289,6 +290,11 @@ void Recognizer::EndSegment()
 
 bool Recognizer::LoadModel(const std::string &modelPath, std::string &error)
 {
+	// The first whisper call on every path through the recognizer, so the DLLs are loaded
+	// (or refused, with the reason) before it; the engine has normally done this already.
+	if (!EnsureWhisperLoaded(error)) {
+		return false;
+	}
 	whisper_log_set(&WhisperLog, nullptr);
 	whisper_context_params cparams = whisper_context_default_params();
 	cparams.use_gpu = false; // the CPU backend is the only one linked

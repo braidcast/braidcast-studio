@@ -47,7 +47,8 @@ using PromptSource = std::function<std::string()>;
 //   libobs audio thread   the capture callback only (VoiceCapture)
 //   recognizer worker     model load and whisper (Recognizer)
 //   CEF UI thread         everything else: the listener, every effect, every event
-//                         emission, start and stop.
+//                         emission, start and stop, and loading the speech engine's
+//                         DLLs when voice is first turned on (LoadEngine).
 //
 // The ring, the capture and the recognizer live together in one Runtime that exists
 // while voice is enabled. The hotkey thread takes a reference to it under
@@ -88,8 +89,13 @@ public:
 	void OnPtt(bool down);
 	void OnCancelKey();
 
-	// False, with a reason, when voice cannot run at all (no AVX2-class CPU).
+	// False, with a reason, when voice cannot run here at all: a CPU without AVX2 and the
+	// rest (CpuSupportsVoice), or a speech engine whose DLLs were tried and did not load.
+	// Loads nothing, so reporting voice's state never maps the engine.
 	bool CanEnable(std::string &reason) const;
+	// CanEnable, then the speech engine's DLLs loaded if they are not yet
+	// (EnsureWhisperLoaded): for turning voice on, the engine's first use. UI thread.
+	bool LoadEngine(std::string &reason);
 	int ThreadCount() const;
 	// The voice.state payload: the listener's status, the bound device, what is missing
 	// (`ready`), the settings, and for a pending action what is left of its window.

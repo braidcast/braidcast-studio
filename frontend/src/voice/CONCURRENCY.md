@@ -12,7 +12,7 @@ Threads, as the engine names them (`VoiceEngine.hpp`):
 
 | Thread | Runs |
 | --- | --- |
-| UI (CEF `TID_UI`) | the listener, every effect and event, `Start`/`Stop`, `ApplySettings`, `Persist` |
+| UI (CEF `TID_UI`) | the listener, every effect and event, `Start`/`Stop`, `ApplySettings`, `Persist`; loading the speech engine's DLLs the first time voice is on (`LoadEngine`; `EnsureWhisperLoaded` takes its own mutex, so the recognizer worker's check there only waits for it) |
 | libobs hotkey thread | `OnPtt`, `OnCancelKey`; a key-up can also run on the UI thread when a held key is rebound or unregistered there (libobs runs every hotkey callback under its hotkeys mutex) |
 | libobs audio thread | `VoiceCapture::OnAudio`, the ring's producer |
 | recognizer worker | model load, the detector, whisper; the ring's consumer |

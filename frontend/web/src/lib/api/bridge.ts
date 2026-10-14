@@ -499,9 +499,11 @@ export interface VoiceState {
   /** Which kept draft this is, never reused (0 with none): a composer takes each one over
    * once, even one with the same words as the last. */
   keptId: number;
-  /** What voice needs and has: an AVX2-class CPU, a loaded model, a bound mic; and in
-   * always-listen, whether it is running (`wake`) and, when it is not, why (`wakeReason`,
-   * "" otherwise). Push-to-talk works either way. */
+  /** What voice needs and has: a machine that can run it (`cpu`: an AVX2-class CPU, and
+   * the speech engine's DLLs once loading them has been tried; `cpuReason` says which
+   * failed), a loaded model, a bound mic; and in always-listen, whether it is running
+   * (`wake`) and, when it is not, why (`wakeReason`, "" otherwise). Push-to-talk works
+   * either way. */
   ready: {
     cpu: boolean;
     cpuReason: string;
@@ -518,6 +520,9 @@ export interface VoiceState {
 export interface VoicePayload {
   settings: VoiceSettingsState;
   models: VoiceModelStatus[];
+  /** Whether voice can run on this machine: the CPU, and the speech engine's DLLs once
+   * loading them has been tried (they load when voice is first turned on); `reason` says
+   * which failed. */
   cpu: { supported: boolean; reason: string };
   /** Why viewers would hear the command cues and what to change (the monitoring device
    * is one a Desktop Audio source captures); "" when they would not. */

@@ -13,7 +13,9 @@
         1. ~23 runtime/dependency DLLs missing (missing-DLL dialog cascade).
         2. CEF binaries/resources missing.
         3. The Svelte web bundle data/braidcast/web/ missing -> white window.
-    This gate fails the build for all three.
+    This gate fails the build for all three. It also asserts the voice engine's
+    DLLs (whisper.dll and the ggml DLLs): braidcast.exe delay-loads them, so a
+    package without them launches fine and voice control alone breaks.
 
     Two layers of checks:
       * File-manifest assertions (PRIMARY, deterministic) -- catch all three
@@ -121,6 +123,18 @@ $MinimalRequiredDlls = @(
     'swscale-9.dll',
     'swresample-6.dll',
     'libx264-164.dll'
+)
+
+# Voice control's speech engine: whisper.cpp and ggml, built as DLLs and delay-loaded by
+# braidcast.exe (frontend/cmake/voice-engine.cmake). Asserted by name rather than left to
+# the reference diff alone, because the diff passes when the rundir lacks them too. The
+# app still launches without them, which is exactly why a launch cannot catch their loss:
+# voice control would only say its engine is missing. Paths are relative to bin/64bit.
+$VoiceEngineDlls = @(
+    'ggml-base.dll',
+    'ggml-cpu.dll',
+    'ggml.dll',
+    'whisper.dll'
 )
 
 # Fatal/crash markers scanned for in the launched process' captured log. Kept
@@ -299,7 +313,15 @@ if ( $ReferenceRoot ) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Liveness (secondary): launch the packaged exe and watch it exit clean
+# 4. Voice engine DLLs (delay-loaded, so a launch does not miss them)
+# ---------------------------------------------------------------------------
+Write-Section 'Smoke: voice engine DLLs'
+foreach ( $rel in $VoiceEngineDlls ) {
+    Test-RequiredFile -Root $PackageRoot -RelativePath "bin/$BitDir/$rel" -NonEmpty
+}
+
+# ---------------------------------------------------------------------------
+# 5. Liveness (secondary): launch the packaged exe and watch it exit clean
 # ---------------------------------------------------------------------------
 if ( $SkipLiveness ) {
     Write-Host "==> Smoke: liveness SKIPPED (-SkipLiveness)" -ForegroundColor Yellow

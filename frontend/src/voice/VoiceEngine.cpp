@@ -15,6 +15,7 @@
 #include "voice/VoiceP0Defaults.hpp"
 #include "voice/VoiceResampler.hpp"
 #include "voice/VoiceRing.hpp"
+#include "voice/WhisperLibrary.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -216,8 +217,13 @@ int VoiceEngine::ThreadCount() const
 
 bool VoiceEngine::CanEnable(std::string &reason) const
 {
-	reason = cpuReason_;
-	return cpuReason_.empty();
+	reason = cpuReason_.empty() ? WhisperLoadFailure() : cpuReason_;
+	return reason.empty();
+}
+
+bool VoiceEngine::LoadEngine(std::string &reason)
+{
+	return CanEnable(reason) && EnsureWhisperLoaded(reason);
 }
 
 std::shared_ptr<VoiceEngine::Runtime> VoiceEngine::CurrentRuntime() const
@@ -235,10 +241,20 @@ void VoiceEngine::Start()
 	CpuSupportsVoice(cpuReason_);
 	settings_.Load();
 	Downloads().SetLanguage(settings_.language);
-	Chat::Chatters().SetEnabled(settings_.enabled && cpuReason_.empty());
+	// The speech engine's DLLs are loaded here only when voice is on; with it off, they
+	// stay unmapped until it is turned on (ApplySettings).
+	std::string unavailable;
+	const bool enable = settings_.enabled && LoadEngine(unavailable);
+	Chat::Chatters().SetEnabled(enable);
+	std::string why;
+	if (!cpuReason_.empty()) {
+		why = ", unsupported CPU";
+	} else if (settings_.enabled && !enable) {
+		why = ", speech engine unavailable"; // the loader logged its reason
+	}
 	HostLog(std::string("[voice] engine start: ") + (settings_.enabled ? "enabled" : "disabled") + ", model " +
-		settings_.model + (cpuReason_.empty() ? "" : ", unsupported CPU"));
-	if (settings_.enabled && cpuReason_.empty()) {
+		settings_.model + why);
+	if (enable) {
 		StartRuntime();
 	}
 	PublishState();
@@ -574,7 +590,9 @@ void VoiceEngine::ApplySettings(const VoiceSettings &next)
 		return;
 	}
 	const bool running = CurrentRuntime() != nullptr;
-	const bool enable = settings_.enabled && cpuReason_.empty();
+	// Turning voice on is the speech engine's first use, so this is where its DLLs load.
+	std::string unavailable;
+	const bool enable = settings_.enabled && LoadEngine(unavailable);
 	// Who spoke in chat is noted only while voice is on, and starts empty when it comes
 	// back on (RecentChatters::SetEnabled says why).
 	Chat::Chatters().SetEnabled(enable);
@@ -801,9 +819,13 @@ nlohmann::json VoiceEngine::StateJson() const
 	std::shared_ptr<Runtime> runtime = CurrentRuntime();
 	const bool micBound = runtime && runtime->capture.Bound();
 	state["device"] = micBound ? runtime->capture.DeviceName() : std::string();
+	// `cpu` is whether this machine can run voice at all: the CPU, and then the speech
+	// engine's DLLs once loading them has been tried.
+	std::string unavailable;
+	const bool runnable = CanEnable(unavailable);
 	state["ready"] = {
-		{"cpu", cpuReason_.empty()},
-		{"cpuReason", cpuReason_},
+		{"cpu", runnable},
+		{"cpuReason", unavailable},
 		{"model", modelState_ == ModelState::Ready},
 		{"mic", micBound},
 		// Always-listen: whether it is running, and why not when it was asked for and is

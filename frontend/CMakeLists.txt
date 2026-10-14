@@ -391,6 +391,8 @@ target_sources(
     src/voice/VoiceListener.hpp
     src/voice/WavFile.cpp
     src/voice/WavFile.hpp
+    src/voice/WhisperLibrary.cpp
+    src/voice/WhisperLibrary.hpp
     src/voice/Recognizer.cpp
     src/voice/Recognizer.hpp
     src/voice/VadEndpointer.cpp
@@ -704,7 +706,8 @@ target_link_libraries(
     dwrite
     # DetourAttach, for the DLL-blocklist hook on NtMapViewOfSection.
     Detours::Detours
-    # whisper.cpp (static, CPU backend) for voice control; see deps/whisper-build.
+    # whisper.cpp (DLLs, CPU backend) for voice control, delay-loaded: see
+    # deps/whisper-build and cmake/voice-engine.cmake.
     whisper
 )
 
@@ -856,6 +859,9 @@ if(WIN32)
     COMPONENT Runtime
   )
 endif()
+
+# Voice control's speech engine DLLs: delay-loaded, staged beside the exe and installed.
+include(cmake/voice-engine.cmake)
 
 # Copy the CEF runtime binaries + resources next to the exe in the rundir so it
 # launches in place. The dist only ships Release/Debug; the OBS build is

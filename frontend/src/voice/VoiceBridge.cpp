@@ -33,7 +33,9 @@ std::string CueWarning()
 // The settings block plus everything the Voice tab needs to render it, so the tab
 // makes one call rather than three. The language codes setVoice accepts and the wake
 // model's id come from the tables that decide them, so the tab holds no copy of either
-// to fall out of step.
+// to fall out of step. `cpu` is whether voice can run here at all: the CPU, and the
+// speech engine's DLLs once loading them has been tried (VoiceEngine::CanEnable, which
+// never loads them, so opening the Voice tab does not).
 json VoicePayload()
 {
 	std::string cpuReason;
@@ -90,8 +92,10 @@ bool SettingsSetVoice(const json &params, json &result, std::string &error)
 		return false;
 	}
 	// Turning voice on is refused when it could not run: on a CPU without AVX2, with the
-	// CPU's own reason, and before the chosen model is on disk, so the feature is never
-	// switched on into a state where nothing happens. Switching the model while voice is
+	// CPU's own reason; before the chosen model is on disk; and when the speech engine's
+	// DLLs do not load, with the loader's reason. So the feature is never switched on into
+	// a state where nothing happens. The DLLs are loaded last, only for a request that
+	// would otherwise succeed: this is their first use. Switching the model while voice is
 	// on is allowed; the engine reports not-ready until that model is downloaded.
 	if (next.enabled && !current.enabled) {
 		std::string cpuReason;
@@ -102,6 +106,9 @@ bool SettingsSetVoice(const json &params, json &result, std::string &error)
 		const ModelInfo *model = FindModel(next.model);
 		if (!model || !ModelFilePresent(*model)) {
 			error = "Download the speech model before turning voice control on.";
+			return false;
+		}
+		if (!Engine().LoadEngine(error)) {
 			return false;
 		}
 	}

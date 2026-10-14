@@ -59,8 +59,8 @@ function pendingDetail(pending: VoicePendingAction | null): string {
   return "Say yes to confirm";
 }
 
-// What is missing, most fundamental first: a CPU that cannot run voice outranks
-// everything, and a mic is named before the model because it is the user's to fix in
+// What is missing, most fundamental first: a machine that cannot run voice (its CPU, or
+// a speech engine that did not load) outranks everything, and a mic is named before the model because it is the user's to fix in
 // the mixer. A model failure keeps the host's own reason (not downloaded, could not
 // load) when it sent one.
 function readyDetail(state: VoiceState): string {
@@ -223,7 +223,8 @@ export interface VoiceEnableGate {
 }
 
 /** Whether the Settings switch may turn voice ON: the host refuses it on a CPU without
- * AVX2 and before the chosen model is on disk. Turning it OFF is never blocked, or a
+ * AVX2 (or once its speech engine has failed to load) and before the chosen model is on
+ * disk. Turning it OFF is never blocked, or a
  * model deleted (or a CPU swapped) under an enabled setting would lock voice on. */
 export function voiceEnableGate(
   settings: VoiceSettingsState,
