@@ -1,6 +1,7 @@
 #include "voice/VoiceEngine.hpp"
 
 #include "bridge.hpp"
+#include "chat/recent_chatters.hpp"
 #include "event_names.hpp"
 #include "log.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
@@ -234,6 +235,7 @@ void VoiceEngine::Start()
 	CpuSupportsVoice(cpuReason_);
 	settings_.Load();
 	Downloads().SetLanguage(settings_.language);
+	Chat::Chatters().SetEnabled(settings_.enabled && cpuReason_.empty());
 	HostLog(std::string("[voice] engine start: ") + (settings_.enabled ? "enabled" : "disabled") + ", model " +
 		settings_.model + (cpuReason_.empty() ? "" : ", unsupported CPU"));
 	if (settings_.enabled && cpuReason_.empty()) {
@@ -254,6 +256,7 @@ void VoiceEngine::Stop()
 	// the mic back here.
 	micGuard_.Release();
 	StopRuntime(true);
+	Chat::Chatters().SetEnabled(false);
 	// Blocking is acceptable here and only here: this is app shutdown, and whisper's
 	// threads must be gone before libobs and the process are. A runtime an earlier
 	// disable handed to a worker is waited for too; each wait is at most one model load
@@ -572,6 +575,9 @@ void VoiceEngine::ApplySettings(const VoiceSettings &next)
 	}
 	const bool running = CurrentRuntime() != nullptr;
 	const bool enable = settings_.enabled && cpuReason_.empty();
+	// Who spoke in chat is noted only while voice is on, and starts empty when it comes
+	// back on (RecentChatters::SetEnabled says why).
+	Chat::Chatters().SetEnabled(enable);
 	if (!enable) {
 		if (running) {
 			StopRuntime(false);

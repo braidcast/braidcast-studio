@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_CHAT_RECENT_CHATTERS_HPP_
 #define OBS_MULTISTREAM_FRONTEND_CHAT_RECENT_CHATTERS_HPP_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -38,10 +39,25 @@ struct Chatter {
 //
 // Thread safe: written from the chat transports' worker threads, read from the UI
 // thread.
+//
+// Only voice control reads it, so while voice is off it holds nothing and Note does
+// nothing (a relaxed atomic load per chat message, rather than a scan of up to 200 rows
+// and a key built per row). SetEnabled(false) empties it; SetEnabled(true) starts it
+// empty: voice turned (back) on knows only the people who have spoken since, never a row
+// kept from before with a destination that may have changed while nobody was noting.
+// "Reply to" someone who spoke only while voice was off finds nobody, which is a miss
+// with a reason, never a reply sent to a stale chat.
 class RecentChatters {
 public:
 	static constexpr size_t kCapacity = 200;
 	static constexpr int64_t kWindowMs = 30 * 60 * 1000;
+
+	explicit RecentChatters(bool enabled = true) : enabled_(enabled) {}
+
+	// The voice engine, as voice is enabled or disabled (UI thread). Disabling clears what
+	// is held, under the same lock Note takes, so no Note lands after it returns.
+	void SetEnabled(bool enabled);
+	bool Enabled() const { return enabled_.load(std::memory_order_relaxed); }
 
 	// A message arrived. Repeats move the speaker to the front rather than adding a row,
 	// and adopt the newest message's destination: the same person may speak on two of our
@@ -69,9 +85,12 @@ private:
 
 	mutable std::mutex mutex_;
 	std::deque<Chatter> entries_; // front = most recent
+	// Written under mutex_; read without it only to skip the work while disabled.
+	std::atomic<bool> enabled_;
 };
 
-// The process-wide ring, owned beside the chat hub.
+// The process-wide ring, owned beside the chat hub. Disabled until the voice engine
+// enables it (VoiceEngine::Start, ApplySettings).
 RecentChatters &Chatters();
 
 // The speakers in `recent` (most recent first) with one entry per display name, the most
@@ -82,7 +101,8 @@ std::vector<Chatter> DistinctByName(const std::vector<Chatter> &recent);
 // Feeds one chat.message body into Chatters(), as the hub's fan-out point admits it from
 // `dest`. `selfUserId` is the account's own user id, whose lines are skipped: the local
 // echo of an outbound message takes the same path as a real one, and "reply to me" is not
-// a thing. A body with no author object adds nothing. Called on a transport worker.
+// a thing. A body with no author object adds nothing, and nothing is read at all while
+// Chatters() is disabled. Called on a transport worker.
 void NoteChatMessage(const nlohmann::json &body, const std::string &selfUserId, const OAuth::DestinationId &dest,
 		     int64_t nowMs);
 

@@ -21,11 +21,14 @@ void RecentChatters::Note(const std::string &platform, const std::string &author
 {
 	// Nobody to reply to: a reply is addressed by name, and without an id there is
 	// nothing to key the row on either.
-	if (displayName.empty()) {
+	if (displayName.empty() || !Enabled()) {
 		return;
 	}
 	const std::string key = Key(platform, authorId, displayName);
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (!enabled_.load(std::memory_order_relaxed)) {
+		return; // disabled since the check above: SetEnabled(false) has cleared, keep it so
+	}
 	for (auto it = entries_.begin(); it != entries_.end(); ++it) {
 		if (Key(it->platform, it->authorId, it->displayName) == key) {
 			Chatter existing = *it;
@@ -89,10 +92,19 @@ void RecentChatters::Clear()
 	entries_.clear();
 }
 
+void RecentChatters::SetEnabled(bool enabled)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!enabled) {
+		entries_.clear();
+	}
+	enabled_.store(enabled, std::memory_order_relaxed);
+}
+
 void NoteChatMessage(const nlohmann::json &body, const std::string &selfUserId, const OAuth::DestinationId &dest,
 		     int64_t nowMs)
 {
-	if (!body.is_object()) {
+	if (!Chatters().Enabled() || !body.is_object()) {
 		return;
 	}
 	const auto author = body.find("author");
@@ -112,7 +124,7 @@ void NoteChatMessage(const nlohmann::json &body, const std::string &selfUserId, 
 
 RecentChatters &Chatters()
 {
-	static RecentChatters ring;
+	static RecentChatters ring(false);
 	return ring;
 }
 

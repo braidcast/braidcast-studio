@@ -2475,6 +2475,20 @@ void TestRecentChatters(Tally &t)
 	const std::optional<Chat::Chatter> kai = both.Resolve("kai", t0 + 200);
 	t.Check("chatters", "one name on two platforms resolves to the latest speaker",
 		kai && kai->platform == "youtube");
+
+	// Off while voice is off: nothing is noted, what was held is dropped, and turning it
+	// back on starts empty rather than with routes from before.
+	Chat::RecentChatters gated(false);
+	gated.Note("twitch", "u1", "Dave", twitch, t0);
+	t.Check("chatters", "a disabled ring notes nothing", !gated.Enabled() && gated.Recent(t0 + 1).empty());
+	gated.SetEnabled(true);
+	gated.Note("twitch", "u1", "Dave", twitch, t0);
+	gated.SetEnabled(true); // enabling again keeps what it has
+	t.Check("chatters", "an enabled one does", gated.Recent(t0 + 1).size() == 1);
+	gated.SetEnabled(false);
+	gated.SetEnabled(true);
+	t.Check("chatters", "disabling drops what it held, so re-enabling starts empty",
+		gated.Recent(t0 + 1).empty() && !gated.Resolve("Dave", t0 + 1));
 }
 
 void TestChatterFeed(Tally &t)
@@ -2483,9 +2497,13 @@ void TestChatterFeed(Tally &t)
 	// wiring rather than real traffic: a body shaped exactly like the one the hub's fan-out
 	// point admits is fed through the same helper the hub calls. Whatever the ring held is
 	// put back, so a run with chat live loses nobody.
+	// The ring is noted only while voice is on, so it is turned on for the run and put
+	// back as it was.
 	const int64_t now = TimeUtil::NowMs();
+	const bool wasEnabled = Chat::Chatters().Enabled();
 	const std::vector<Chat::Chatter> before = Chat::Chatters().Recent(now);
 	Chat::Chatters().Clear();
+	Chat::Chatters().SetEnabled(true);
 	const OAuth::DestinationId dest{"twitch:100", ""};
 
 	const nlohmann::json message = {
@@ -2516,11 +2534,19 @@ void TestChatterFeed(Tally &t)
 	Chat::NoteChatMessage(nlohmann::json{{"platform", "twitch"}, {"author", "Dave"}}, "self-id", dest, now);
 	t.Check("chatterfeed", "a message with no author is ignored", Chat::Chatters().Recent(now).size() == 2);
 
+	// With voice off the hub's feed does nothing at all.
+	Chat::Chatters().SetEnabled(false);
+	t.Check("chatterfeed", "turning voice off empties the ring", Chat::Chatters().Recent(now).empty());
+	Chat::NoteChatMessage(message, "self-id", dest, now);
+	t.Check("chatterfeed", "and a message while it is off adds nobody", Chat::Chatters().Recent(now).empty());
+
+	Chat::Chatters().SetEnabled(true);
 	Chat::Chatters().Clear();
 	for (auto it = before.rbegin(); it != before.rend(); ++it) {
 		Chat::Chatters().Note(it->platform, it->authorId, it->displayName, {it->accountId, it->profileUuid},
 				      it->lastSeenMs);
 	}
+	Chat::Chatters().SetEnabled(wasEnabled);
 }
 
 void TestChatLimits(Tally &t)
