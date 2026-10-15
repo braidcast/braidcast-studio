@@ -84,6 +84,8 @@ constexpr SelfTestStreamMode kSelfTestStreamModes[] = {
 	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
 	{"overlay-audio-monitor", ObsBootstrap::ArmOverlayAudioMonitorSelfTest,
 	 ObsBootstrap::RunOverlayAudioCaptureSelfTest, ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
+	{"overlay-voice", ObsBootstrap::ArmOverlayVoiceCaptureSelfTest, ObsBootstrap::RunOverlayAudioCaptureSelfTest,
+	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
 	{"capture-rate", ObsBootstrap::ArmCaptureRateSelfTest, ObsBootstrap::RunCaptureRateSelfTest,
 	 ObsBootstrap::CaptureRateSelfTestExitCode},
 };
@@ -384,6 +386,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunUserPluginsSelfTest();
 				ObsBootstrap::RunAudioMixerSelfTest();
 				ObsBootstrap::RunOverlayAudioSelfTest();
+				ObsBootstrap::RunOverlayVoiceSelfTest();
 				ObsBootstrap::RunHotkeysSelfTest();
 				ObsBootstrap::RunStatsSelfTest();
 				ObsBootstrap::RunYouTubeThumbnailSelfTest();

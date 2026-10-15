@@ -148,8 +148,14 @@
     return (b < 0.5 ? "L " : "R ") + pct;
   }
 
+  // A row folding several copies of one overlay stands for each of them, so opening the
+  // dialog on any copy highlights it.
   function isFocused(row: Row): boolean {
-    return source != null && (row.src.uuid === source || row.src.name === source);
+    if (source == null) {
+      return false;
+    }
+    const copies = row.src.members ?? [row.src];
+    return copies.some((c) => c.uuid === source || c.name === source);
   }
 
   const title = $derived(label ? `Advanced Audio Properties — ${label}` : "Advanced Audio Properties");
@@ -190,7 +196,9 @@
         <tbody>
           {#each visible as row (row.src.uuid)}
             <tr class:focus={isFocused(row)}>
-              <td class="name-col" title={row.src.name}>{row.src.name}</td>
+              <td class="name-col" title={row.src.members ? row.src.members.map((c) => c.name).join(", ") : row.src.name}>
+                {row.src.name}{#if row.src.members && row.src.members.length > 1}<em class="px">{row.src.members.length} copies</em>{/if}
+              </td>
               <td>
                 <input
                   type="number"

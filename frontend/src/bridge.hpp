@@ -325,6 +325,12 @@ void EmitAudioLevels();
 // changes. Safe to call off the UI thread (EmitEvent marshals to TID_UI).
 void EmitAudioChanged();
 
+// Persist a mutated source to whichever store owns it: the global audio channels for a
+// source bound to output channel 1..6, the active scene collection for anything else.
+// The single choke point every mutating handler (scene items, audio, source/filter
+// properties) calls exactly once after applying its change. UI thread only.
+void PersistSourceState(obs_source_t *source);
+
 // Switch the DEFAULT (global channel-0) program scene to the scene with source
 // uuid `sceneUuid`, running the SAME seam scenes.setCurrent uses: the program
 // transition (Transitions::SetProgramScene) + ApplyCanvasSceneLinks (so linked

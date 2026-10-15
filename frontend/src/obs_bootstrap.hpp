@@ -532,6 +532,15 @@ void RunAudioMixerSelfTest();
 // Each subject is shutdown-when-invisible and never shown, so no CEF browser is created
 // for it. Removes its sources; never Saves. Gated by the caller to the smoke path.
 void RunOverlayAudioSelfTest();
+// Headless proof of one voice per overlay (OverlayVoice + libobs audio groups): two copies of
+// a synthetic overlay, one on the main mix and one on a private canvas of its own, are held to
+// exactly one open gate through going off air, coming back, and hiding; the gate never reaches
+// obs_save_source; audio.list folds them into one row; a mute through the bridge and one made
+// directly on the voice both reach every copy; and a legacy auto-muted copy loaded in either
+// order comes out unmuted and saved. Runs as a chain of UI tasks after the battery, since
+// adoption and fan-out are queued onto the UI thread. Saves the active collection (adoption
+// saves by design) and saves it again once its subjects are removed. Smoke path only.
+void RunOverlayVoiceSelfTest();
 // Headless proof for native projectors: open a WINDOWED PROGRAM projector via the
 // manager directly (no monitor needed), confirm it got a live obs_display, then
 // close it, leaving no state behind. Also logs the monitor count. Gated by the

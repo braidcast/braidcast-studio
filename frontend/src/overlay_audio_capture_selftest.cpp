@@ -16,7 +16,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <obs.h>
@@ -28,6 +30,8 @@
 #include "obs_bootstrap.hpp"
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
+#include "overlay/overlay_voice_selftest.hpp"
+#include "scene/scene_persistence.hpp"
 #include "util/env_config.hpp"
 #include "util/selftest_paths.hpp"
 
@@ -167,6 +171,14 @@ struct MixScore {
 	double gain = 0.0;          // the path's level relative to the clip, over the blocks that arrived
 	double retained = 0.0;      // share of the clip's energy that arrived at that level
 	double onsetRetained = 0.0; // the same, over the clip's loudest stretch only
+	// The mix's energy around the clip over the clip's own: about 1 for one copy heard, about 2
+	// for two out of step and about 4 for two in step, where the correlated gain can read
+	// anything from 0 to 2.
+	double energyRatio = 0.0;
+	long long lag = 0; // where the clip sits in the alert's mix window, in samples
+	// The longest run of consecutive audio blocks, through the clip's audible stretch, in which
+	// the mix fell under half the clip's level: 0 for an alert that arrived whole.
+	int maxGapBlocks = 0;
 	// Per measured channel: the mix's level in the quiet stretch before the next alert, and the
 	// DC component of that level. A channel the mix does not carry stays at -200.
 	std::array<double, kMeasuredChannels> floorDbfs{-200.0, -200.0};
@@ -179,6 +191,24 @@ struct AlertResult {
 	std::shared_ptr<CallResult> call;
 	SourceStats source;
 	MixScore mix;
+	// Voice variant: which copy was heard when the alert fired ("A", "B", "both", "none"), and
+	// whether that was the copy expected; the gain, energy and gaps are then judged as well as
+	// reported.
+	std::string voice;
+	bool voiceOk = true;
+	bool voiceJudged = false;
+	// Voice variant: the alert during whose clip the first copy was taken off air, and where in
+	// the clip that landed. Its level is played by two pages out of step, so only its energy,
+	// gaps, latency and floor are judged.
+	bool handoff = false;
+	uint64_t handoffNs = 0;
+	double handoffAtMs = -1.0;
+	// Hand-off alert: the clip from just after the hand-off on, aligned and scored on its own, so
+	// the second copy is judged on waveform as the first is. tailShiftMs is how far its alignment
+	// sits from the first copy's: the two pages play out of step.
+	double tailRetained = 0.0;
+	double tailGain = 0.0;
+	double tailShiftMs = 0.0;
 };
 
 struct State {
@@ -187,6 +217,7 @@ struct State {
 	std::string reason;
 
 	bool monitorVariant = false;
+	bool voiceVariant = false;
 	int alertCount = 0;
 	uint32_t mixRateHz = 0;
 	std::string clipOrigin;
@@ -202,6 +233,14 @@ struct State {
 	// Every other source that fed the measured track, with the mixer mask it had, so the track
 	// carries the case and nothing else and every mask goes back afterwards.
 	std::vector<std::pair<OBSWeakSource, uint32_t>> maskedSources;
+
+	// Voice variant only: a second copy of the same overlay on a canvas of its own, and the
+	// alert during whose clip the first copy is taken off air.
+	obs_source_t *copy = nullptr;
+	obs_scene_t *copyScene = nullptr;
+	obs_canvas_t *canvas = nullptr;
+	int handoffAlert = 0; // 1-based
+	bool handedOff = false;
 
 	// Monitor variant only.
 	std::string endpoint;
@@ -280,6 +319,36 @@ constexpr double kOnsetToSec = 0.4;
 // capture and libobs's own buffering; far past any of those, it is an alert that arrived late.
 constexpr double kMaxLatencyMs = 1000.0;
 
+// Voice variant: the correlated gain a single copy's clip reaches the mix at. Two copies heard in
+// step read about 2.0; out of step, their sum decorrelates and the gain can read anything, so the
+// energy ratio below is what tells one voice from two.
+constexpr double kMinVoiceGain = 0.9;
+constexpr double kMaxVoiceGain = 1.1;
+// Voice variant: the mix's energy around the clip over the clip's own. One copy reads about 1.0;
+// two read about 4.0 in step and still about 2.0 at any other offset, since the synthesized clip
+// is broadband and so barely correlates with itself shifted.
+constexpr double kMinVoiceEnergy = 0.8;
+constexpr double kMaxVoiceEnergy = 1.25;
+// How far either side of the aligned clip the energy is summed, so a second page playing behind
+// or ahead of the first still counts.
+constexpr double kEnergyMarginSec = 0.25;
+// Voice variant: the hand-off from one copy to the other may lose at most one audio block --
+// libobs's own, AUDIO_OUTPUT_FRAMES -- of the clip's audible stretch.
+constexpr size_t kGapBlockFrames = 1024;
+constexpr int kMaxGapBlocks = 1;
+// A gap block is one where the mix's level is under this share of the clip's there; a block counts
+// only where the clip's level is at least kGapFloor of its loudest block's.
+constexpr double kGapLevel = 0.5;
+constexpr double kGapFloor = 0.01;
+// Voice variant: the first copy is taken off air this long after the hand-off alert fires, so it
+// lands in the clip's loud stretch (fire to first sample in the mix is about 120 ms here).
+constexpr int kHandoffAfterFireMs = 350;
+// Where in the clip the hand-off must land for the alert to prove anything.
+constexpr double kHandoffWithinMs = 1000.0;
+// The second copy's part of the hand-off alert is scored from this long after the hand-off, past
+// the one-block crossfade and a page that plays somewhat ahead of the first.
+constexpr double kTailAfterHandoffSec = 0.15;
+
 // The keepalive plays a -66 dBFS DC level and obs-browser subtracts that same level from what it
 // captures, so the quiet stretch between alerts should be digital silence. This bounds what is
 // left: -90 dBFS is 24 dB under the keepalive itself, so a floor above it means the subtraction
@@ -289,8 +358,8 @@ constexpr double kMaxFloorDbfs = -90.0;
 // The quiet stretch the floor is read over starts this long after a fire, well past the clip.
 constexpr double kFloorAfterSec = 3.0;
 
-// Scoring granularity. 10 ms holds three cycles of the synthesized clip's lowest tone, so a
-// block's mean is its DC and nothing else.
+// Scoring granularity. 10 ms holds at least two whole cycles of either synthesized clip's lowest
+// tone, so a block's mean is its DC and nothing else.
 constexpr double kBlockSec = 0.01;
 
 // A block counts as arrived when the mix matches the clip's waveform this closely there. Lost
@@ -310,6 +379,9 @@ constexpr int kMaxAlerts = kMaxCapturedSec * 1000 / (kMinSpacingMs + 100);
 constexpr const char *kSourceName = "selftest-overlay-audio-capture";
 constexpr const char *kLoopbackName = "selftest-overlay-audio-loopback";
 constexpr const char *kSceneName = "selftest-overlay-audio-scene";
+constexpr const char *kCopyName = "selftest-overlay-audio-copy";
+constexpr const char *kCopySceneName = "selftest-overlay-audio-copy-scene";
+constexpr const char *kCopyCanvasName = "selftest-overlay-audio-copy-canvas";
 constexpr const char *kWidgetName = "selftest-overlay-audio-capture";
 constexpr const char *kClipAssetKey = "selftest-alert.wav";
 // Every line this mode logs, verdict included, in the shape loopback-silence uses. Distinct from
@@ -382,23 +454,73 @@ void PutLe(std::vector<unsigned char> &out, uint32_t value, int bytes)
 	}
 }
 
+constexpr double kPi = 3.14159265358979323846;
+
+// The synthesized clip's two carriers, unit-ish level, at time `t` of a `durationSec` clip.
+// The chirp sweeps 300-900 Hz: a sweep makes the correlation peak unique, and staying low keeps a
+// sub-sample misalignment from a resampler from reading as lost audio.
+double Chirp(double t, double durationSec)
+{
+	constexpr double kStartHz = 300.0;
+	constexpr double kEndHz = 900.0;
+	constexpr double kPeak = 0.7;
+	return kPeak * std::sin(2.0 * kPi * (kStartHz * t + (kEndHz - kStartHz) * t * t / (2.0 * durationSec)));
+}
+
+// 64 tones at fixed pseudo-random frequencies in 200-2000 Hz and phases: noise-like, so the clip
+// barely correlates with itself shifted by more than a millisecond, and two copies of it heard
+// at any such offset sum to about twice its energy. Still low enough for a resampler's
+// sub-sample misalignment to cost under 1% of a block's correlation.
+class Broadband {
+public:
+	Broadband()
+	{
+		std::mt19937 rng(0x0B5A0D10u); // fixed: every run plays the same clip
+		const auto unit = [&rng] {
+			return double(rng()) / 4294967296.0;
+		};
+		for (Tone &tone : tones_) {
+			tone.hz = kLowHz + (kHighHz - kLowHz) * unit();
+			tone.phase = 2.0 * kPi * unit();
+		}
+	}
+
+	double operator()(double t) const
+	{
+		// Per-tone amplitude: the sum's level is about 0.25 RMS, and its rare peaks stay near
+		// full scale; the rarer still are clamped by the caller.
+		const double amplitude = 0.35 / std::sqrt(double(kTones));
+		double sum = 0.0;
+		for (const Tone &tone : tones_) {
+			sum += amplitude * std::sin(2.0 * kPi * tone.hz * t + tone.phase);
+		}
+		return sum;
+	}
+
+private:
+	static constexpr size_t kTones = 64;
+	static constexpr double kLowHz = 200.0;
+	static constexpr double kHighHz = 2000.0;
+	struct Tone {
+		double hz;
+		double phase;
+	};
+	std::array<Tone, kTones> tones_{};
+};
+
 // A 1.85 s mono notification-shaped clip at `rate`, written as 16-bit PCM WAV. The envelope
 // follows a real alert sound -- attack over 0.2 s, then an exponential decay that leaves almost
 // nothing after a second -- so most of its energy sits in exactly the stretch the defect drops.
-// The carrier sweeps 300-900 Hz: a sweep makes the correlation peak unique, and staying low keeps
-// a sub-sample misalignment from a resampler from reading as lost audio.
+// The voice variant uses the broadband carrier, every other variant the chirp.
 // `reference` receives the samples as the WAV holds them, quantization included.
-std::vector<unsigned char> SynthesizeClip(uint32_t rate, std::vector<float> &reference)
+std::vector<unsigned char> SynthesizeClip(uint32_t rate, bool broadband, std::vector<float> &reference)
 {
 	constexpr double kDurationSec = 1.85;
 	constexpr double kAttackSec = 0.2;
 	constexpr double kDecaySec = 0.22;
 	constexpr double kFadeSec = 0.02;
-	constexpr double kStartHz = 300.0;
-	constexpr double kEndHz = 900.0;
-	constexpr double kPeak = 0.7;
-	constexpr double kPi = 3.14159265358979323846;
 
+	const Broadband noise;
 	const size_t count = size_t(kDurationSec * rate);
 	std::vector<int16_t> pcm(count);
 	reference.assign(count, 0.0f);
@@ -406,8 +528,8 @@ std::vector<unsigned char> SynthesizeClip(uint32_t rate, std::vector<float> &ref
 		const double t = double(n) / rate;
 		double env = t < kAttackSec ? t / kAttackSec : std::exp(-(t - kAttackSec) / kDecaySec);
 		env *= std::min(1.0, (kDurationSec - t) / kFadeSec);
-		const double phase = 2.0 * kPi * (kStartHz * t + (kEndHz - kStartHz) * t * t / (2.0 * kDurationSec));
-		pcm[n] = int16_t(std::lround(kPeak * env * std::sin(phase) * 32767.0));
+		const double carrier = broadband ? noise(t) : Chirp(t, kDurationSec);
+		pcm[n] = int16_t(std::lround(std::clamp(env * carrier, -1.0, 1.0) * 32767.0));
 		reference[n] = float(pcm[n]) / 32768.0f;
 	}
 
@@ -570,8 +692,50 @@ struct Alignment {
 	double gain = 0.0;
 	double retained = 0.0;
 	double onsetRetained = 0.0;
+	double energyRatio = 0.0;
+	int maxGapBlocks = 0;
 	std::string missing;
 };
+
+// MixScore::energyRatio and maxGapBlocks for the clip aligned at `lag` in `captured`.
+void ScoreLevel(const std::vector<float> &captured, const std::vector<float> &reference, long long lag, uint32_t rate,
+		Alignment &out)
+{
+	const auto sampleAt = [&](long long k) {
+		const long long i = lag + k;
+		return (i >= 0 && i < (long long)captured.size()) ? double(captured[size_t(i)]) : 0.0;
+	};
+
+	const long long margin = (long long)(kEnergyMarginSec * rate);
+	double clipEnergy = 0.0, mixEnergy = 0.0;
+	for (const float s : reference) {
+		clipEnergy += double(s) * s;
+	}
+	for (long long k = -margin; k < (long long)reference.size() + margin; ++k) {
+		mixEnergy += sampleAt(k) * sampleAt(k);
+	}
+	out.energyRatio = clipEnergy > 0.0 ? mixEnergy / clipEnergy : 0.0;
+
+	std::vector<std::pair<double, double>> levels; // {clip, mix} mean square per block
+	double loudest = 0.0;
+	for (size_t start = 0; start < reference.size(); start += kGapBlockFrames) {
+		const size_t end = std::min(reference.size(), start + kGapBlockFrames);
+		double clip = 0.0, mix = 0.0;
+		for (size_t k = start; k < end; ++k) {
+			clip += double(reference[k]) * reference[k];
+			mix += sampleAt((long long)k) * sampleAt((long long)k);
+		}
+		levels.emplace_back(clip / double(end - start), mix / double(end - start));
+		loudest = std::max(loudest, levels.back().first);
+	}
+	int run = 0;
+	for (const auto &[clip, mix] : levels) {
+		// Mean squares, so the level bounds are squared.
+		const bool audible = clip >= loudest * kGapFloor * kGapFloor;
+		run = audible && mix < clip * kGapLevel * kGapLevel ? run + 1 : 0;
+		out.maxGapBlocks = std::max(out.maxGapBlocks, run);
+	}
+}
 
 // Score the clip against `captured` at alignment `lag`, block by block. A block arrived when its
 // waveform matches the clip's there, and is credited with its share of the clip's energy; a block
@@ -652,6 +816,7 @@ Alignment Score(const std::vector<float> &captured, const std::vector<float> &re
 	}
 	out.retained = total > 0.0 ? credited / total : 0.0;
 	out.onsetRetained = onsetTotal > 0.0 ? onsetCredited / onsetTotal : 0.0;
+	ScoreLevel(captured, reference, lag, rate, out);
 
 	// Where the loss is, so a failure says which part of the clip went: runs of blocks that did
 	// not arrive, listed when they held at least half a percent of the clip's energy.
@@ -708,24 +873,47 @@ SourceStats MeasureSource(const Snapshot &snap, uint64_t fromNs, uint64_t toNs, 
 	return stats;
 }
 
+// The mix's recorded samples for one alert: the packets in [fromNs, toNs), cut at the recording
+// window, and the first measured channel's samples over them. Empty when none were recorded.
+struct MixWindow {
+	size_t first = 0, last = 0; // packet index bounds
+	size_t begin = 0, end = 0;  // sample index bounds
+	std::vector<float> samples;
+};
+
+MixWindow TakeWindow(const Snapshot &snap, uint64_t fromNs, uint64_t toNs)
+{
+	MixWindow w;
+	std::tie(w.first, w.last) = Window(snap, fromNs, std::min(toNs, fromNs + kRecordNs));
+	if (w.first == w.last || snap.packets[w.first].offset == kNoSamples ||
+	    snap.packets[w.last - 1].offset == kNoSamples) {
+		return w;
+	}
+	w.begin = snap.packets[w.first].offset;
+	w.end = snap.packets[w.last - 1].offset + snap.packets[w.last - 1].frames;
+	w.samples.assign(snap.samples[0].begin() + w.begin, snap.samples[0].begin() + w.end);
+	return w;
+}
+
 MixScore MeasureMix(const Snapshot &snap, uint64_t fromNs, uint64_t toNs, const std::vector<float> &reference,
 		    uint32_t rate)
 {
 	MixScore score;
-	const auto [first, last] = Window(snap, fromNs, std::min(toNs, fromNs + kRecordNs));
-	if (first == last || snap.packets[first].offset == kNoSamples || snap.packets[last - 1].offset == kNoSamples) {
+	const MixWindow w = TakeWindow(snap, fromNs, toNs);
+	if (w.samples.empty()) {
 		return score;
 	}
-	const size_t begin = snap.packets[first].offset;
-	const size_t end = snap.packets[last - 1].offset + snap.packets[last - 1].frames;
-	const std::vector<float> &scored = snap.samples[0];
-	const std::vector<float> window(scored.begin() + begin, scored.begin() + end);
+	const size_t first = w.first, last = w.last, begin = w.begin, end = w.end;
+	const std::vector<float> &window = w.samples;
 
 	const long long lag = BestLag(window, reference);
+	score.lag = lag;
 	const Alignment a = Score(window, reference, lag, rate);
 	score.gain = a.gain;
 	score.retained = a.retained;
 	score.onsetRetained = a.onsetRetained;
+	score.energyRatio = a.energyRatio;
+	score.maxGapBlocks = a.maxGapBlocks;
 	score.missing = a.missing;
 
 	// The mix block that holds the clip's first sample, by when it left the mixer.
@@ -782,10 +970,47 @@ std::string PerChannel(const std::array<double, kMeasuredChannels> &values)
 	return out;
 }
 
+// The hand-off alert's clip from kTailAfterHandoffSec past the hand-off on, aligned and scored
+// against the mix on its own: what the second copy played.
+void ScoreTail(const Snapshot &snap, uint64_t toNs, const std::vector<float> &reference, uint32_t rate, AlertResult &a)
+{
+	const MixWindow w = TakeWindow(snap, a.fireNs, toNs);
+	const size_t from = size_t(std::max(0.0, a.handoffAtMs / 1000.0 + kTailAfterHandoffSec) * rate);
+	if (w.samples.empty() || from >= reference.size()) {
+		return;
+	}
+	const std::vector<float> tail(reference.begin() + from, reference.end());
+	const long long lag = BestLag(w.samples, tail);
+	const Alignment t = Score(w.samples, tail, lag, rate);
+	a.tailRetained = t.retained;
+	a.tailGain = t.gain;
+	a.tailShiftMs = double(lag - (long long)from - a.mix.lag) * 1000.0 / rate;
+}
+
 bool AlertPasses(const AlertResult &a)
 {
-	return a.mix.retained >= kMinRetained && a.mix.onsetRetained >= kMinRetained && a.mix.latencyMs >= 0.0 &&
-	       a.mix.latencyMs <= kMaxLatencyMs && WorstFloorDbfs(a.mix) <= kMaxFloorDbfs;
+	const bool gainOk = !a.voiceJudged || (a.mix.gain >= kMinVoiceGain && a.mix.gain <= kMaxVoiceGain);
+	const bool levelOk = a.handoff ||
+			     (a.mix.retained >= kMinRetained && a.mix.onsetRetained >= kMinRetained && gainOk);
+	const bool oneVoice = !a.voiceJudged ||
+			      (a.mix.energyRatio >= kMinVoiceEnergy && a.mix.energyRatio <= kMaxVoiceEnergy &&
+			       a.mix.maxGapBlocks <= kMaxGapBlocks);
+	const bool handoffOk = !a.handoff || (a.handoffAtMs >= 0.0 && a.handoffAtMs <= kHandoffWithinMs &&
+					      a.tailRetained >= kMinRetained && a.tailGain >= kMinVoiceGain &&
+					      a.tailGain <= kMaxVoiceGain);
+	return levelOk && oneVoice && handoffOk && a.mix.latencyMs >= 0.0 && a.mix.latencyMs <= kMaxLatencyMs &&
+	       WorstFloorDbfs(a.mix) <= kMaxFloorDbfs && a.voiceOk;
+}
+
+const char *VariantName(const State &st)
+{
+	return st.voiceVariant ? "voice" : st.monitorVariant ? "monitor" : "output";
+}
+
+// Which copy the audio thread lets be heard.
+std::string HeardCopy(const State &st)
+{
+	return OverlayVoiceSelfTest::HeardOf(st.source, st.copy);
 }
 
 void WriteSummary(const State &st)
@@ -800,11 +1025,19 @@ void WriteSummary(const State &st)
 			{"sourceMaxHoleMs", a.source.maxHoleMs},
 			{"latencyMs", a.mix.latencyMs},
 			{"gain", a.mix.gain},
+			{"energyRatio", a.mix.energyRatio},
+			{"maxGapBlocks", a.mix.maxGapBlocks},
+			{"handoff", a.handoff},
+			{"handoffAtMs", a.handoffAtMs},
+			{"tailRetained", a.tailRetained},
+			{"tailGain", a.tailGain},
+			{"tailShiftMs", a.tailShiftMs},
 			{"retained", a.mix.retained},
 			{"onsetRetained", a.mix.onsetRetained},
 			{"floorDbfsByChannel", a.mix.floorDbfs},
 			{"floorDcDbfsByChannel", a.mix.floorDcDbfs},
 			{"missing", a.mix.missing},
+			{"voice", a.voice},
 			{"pass", AlertPasses(a)},
 		});
 	}
@@ -812,7 +1045,7 @@ void WriteSummary(const State &st)
 		{"result", SelfTest::ResultName(exitCode)},
 		{"exitCode", exitCode},
 		{"reason", st.reason},
-		{"variant", st.monitorVariant ? "monitor" : "output"},
+		{"variant", VariantName(st)},
 		{"endpoint", st.endpoint},
 		{"clip", st.clipOrigin},
 		{"clipSamples", st.reference.size()},
@@ -855,6 +1088,23 @@ void Teardown(State &st)
 		obs_scene_release(st.scene);
 		st.scene = nullptr;
 	}
+	if (st.canvas) {
+		obs_canvas_set_channel(st.canvas, 0, nullptr);
+	}
+	if (st.copyScene) {
+		obs_scene_release(st.copyScene);
+		st.copyScene = nullptr;
+	}
+	if (st.canvas) {
+		obs_canvas_remove(st.canvas);
+		obs_canvas_release(st.canvas);
+		st.canvas = nullptr;
+	}
+	if (st.copy) {
+		obs_source_remove(st.copy);
+		obs_source_release(st.copy);
+		st.copy = nullptr;
+	}
 	if (st.priorChannelSource) {
 		obs_source_release(st.priorChannelSource);
 		st.priorChannelSource = nullptr;
@@ -865,8 +1115,15 @@ void Teardown(State &st)
 	}
 	if (st.source) {
 		obs_source_set_monitoring_type(st.source, OBS_MONITORING_TYPE_NONE);
+		if (st.voiceVariant) {
+			obs_source_remove(st.source);
+		}
 		obs_source_release(st.source);
 		st.source = nullptr;
+		if (st.voiceVariant) {
+			// The copies' adoption saved them into the collection; this saves them back out.
+			SceneCollection::Save();
+		}
 	}
 	if (st.monitorDeviceSwapped) {
 		obs_set_audio_monitoring_device(st.priorMonitorName.c_str(), st.priorMonitorId.c_str());
@@ -897,7 +1154,7 @@ bool LoadClip(State &st)
 {
 	const std::string clipPath = Env::Value("BRAIDCAST_SELFTEST_CLIP");
 	if (clipPath.empty()) {
-		st.clipFile = SynthesizeClip(st.mixRateHz, st.reference);
+		st.clipFile = SynthesizeClip(st.mixRateHz, st.voiceVariant, st.reference);
 		st.clipOrigin = "synthesized";
 		return true;
 	}
@@ -1018,7 +1275,10 @@ bool SetUp(State &st)
 	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, Overlay::kOverlayIdKey, st.widgetId.c_str());
 	obs_data_set_bool(settings, Overlay::kRerouteAudioKey, true);
-	st.source = obs_source_create_private(Overlay::kOverlaySourceId, kSourceName, settings);
+	// The voice variant's copies are public: an overlay's voice group is built from the
+	// source_create signal, which a private source never sends.
+	st.source = st.voiceVariant ? obs_source_create(Overlay::kOverlaySourceId, kSourceName, settings, nullptr)
+				    : obs_source_create_private(Overlay::kOverlaySourceId, kSourceName, settings);
 	if (!st.source) {
 		Bail(st, 3, std::string(Overlay::kOverlaySourceId) + " create failed (obs-browser not loaded?)");
 		return false;
@@ -1040,11 +1300,29 @@ bool SetUp(State &st)
 	st.priorChannelSource = obs_get_output_source(ObsBootstrap::kSelfTestOutputChannel);
 	obs_set_output_source(ObsBootstrap::kSelfTestOutputChannel, obs_scene_get_source(st.scene));
 
-	HostLog(std::string(kLogTag) +
-		" up: variant=" + std::string(st.monitorVariant ? "monitor endpoint=" + st.endpoint : "output") +
-		" clip=" + st.clipOrigin + " samples=" + std::to_string(st.reference.size()) +
-		" mixRateHz=" + std::to_string(st.mixRateHz) + " track=" + std::to_string(kTrack + 1) +
-		" masked=" + std::to_string(st.maskedSources.size()));
+	// Voice variant: a second copy of the same overlay, on the same track, on air on a canvas of
+	// its own -- the shape a scene duplicated to another canvas leaves. Both pages play every
+	// alert; the mix must carry one.
+	if (st.voiceVariant) {
+		st.copy = obs_source_create(Overlay::kOverlaySourceId, kCopyName, settings, nullptr);
+		struct obs_video_info ovi = {};
+		obs_get_video_info(&ovi);
+		st.canvas = obs_canvas_create_private(kCopyCanvasName, &ovi, PROGRAM);
+		if (!st.copy || !st.canvas) {
+			Bail(st, 3, "could not create the overlay's second copy or its canvas");
+			return false;
+		}
+		obs_source_set_audio_mixers(st.copy, kTrackBit);
+		st.copyScene = obs_scene_create_private(kCopySceneName);
+		obs_scene_add(st.copyScene, st.copy);
+		obs_canvas_set_channel(st.canvas, 0, obs_scene_get_source(st.copyScene));
+		st.handoffAlert = st.alertCount / 2 + 1;
+	}
+
+	HostLog(std::string(kLogTag) + " up: variant=" + std::string(VariantName(st)) +
+		(st.monitorVariant ? " endpoint=" + st.endpoint : std::string()) + " clip=" + st.clipOrigin +
+		" samples=" + std::to_string(st.reference.size()) + " mixRateHz=" + std::to_string(st.mixRateHz) +
+		" track=" + std::to_string(kTrack + 1) + " masked=" + std::to_string(st.maskedSources.size()));
 	return true;
 }
 
@@ -1077,16 +1355,28 @@ void Judge(State &st)
 		const uint64_t until = i + 1 < st.alerts.size() ? st.alerts[i + 1].fireNs : now;
 		a.source = MeasureSource(output, a.fireNs, until, st.mixRateHz);
 		a.mix = MeasureMix(mix, a.fireNs, until, st.reference, st.mixRateHz);
+		if (a.handoff && a.mix.latencyMs >= 0.0) {
+			a.handoffAtMs = double(a.handoffNs - a.fireNs) / 1e6 - a.mix.latencyMs;
+			ScoreTail(mix, until, st.reference, st.mixRateHz, a);
+		}
 		const bool pass = AlertPasses(a);
 		alertsPass = alertsPass && pass;
 		st.maxFloorDbfs = std::max(st.maxFloorDbfs, WorstFloorDbfs(a.mix));
 		HostLog(std::string(kLogTag) + " alert " + std::to_string(i + 1) + ": retained=" +
 			Fixed(a.mix.retained * 100.0, 2) + "% onsetRetained=" + Fixed(a.mix.onsetRetained * 100.0, 2) +
-			"% gain=" + Fixed(a.mix.gain, 3) + " latencyMs=" + Fixed(a.mix.latencyMs, 1) +
-			" floorDbfs=" + PerChannel(a.mix.floorDbfs) + " floorDcDbfs=" + PerChannel(a.mix.floorDcDbfs) +
+			"% gain=" + Fixed(a.mix.gain, 3) + " energyRatio=" + Fixed(a.mix.energyRatio, 3) +
+			" maxGapBlocks=" + std::to_string(a.mix.maxGapBlocks) +
+			(a.handoff ? " handoffAtMs=" + Fixed(a.handoffAtMs, 1) + " tailRetained=" +
+					     Fixed(a.tailRetained * 100.0, 2) + "% tailGain=" + Fixed(a.tailGain, 3) +
+					     " tailShiftMs=" + Fixed(a.tailShiftMs, 1)
+				   : std::string()) +
+			" latencyMs=" + Fixed(a.mix.latencyMs, 1) + " floorDbfs=" + PerChannel(a.mix.floorDbfs) +
+			" floorDcDbfs=" + PerChannel(a.mix.floorDcDbfs) +
 			" missing=" + (a.mix.missing.empty() ? "none" : a.mix.missing) + " sourcePackets=" +
 			std::to_string(a.source.packets) + " sourceFirstPacketMs=" + Fixed(a.source.firstPacketMs, 1) +
-			" sourceMaxHoleMs=" + Fixed(a.source.maxHoleMs, 1) + " " + SelfTest::ResultName(pass ? 0 : 1));
+			" sourceMaxHoleMs=" + Fixed(a.source.maxHoleMs, 1) +
+			(a.voice.empty() ? "" : " voice=" + a.voice + (a.voiceOk ? "" : "(unexpected)")) + " " +
+			SelfTest::ResultName(pass ? 0 : 1));
 	}
 
 	// The source's own packets since firing began, held against wall clock: an unfixed capture is
@@ -1118,23 +1408,23 @@ void Judge(State &st)
 														   : 1;
 	}
 
-	HostLog(std::string(kLogTag) + " " + SelfTest::ResultName(st.exitCode) + " variant=" +
-		(st.monitorVariant ? "monitor" : "output") + " alerts=" + std::to_string(st.alerts.size()) +
-		" tsJumps=" + std::to_string(st.tsJumps) + " (before firing " + std::to_string(st.jumpsBeforeFiring) +
-		") smoothingMisses=" + std::to_string(st.smoothingMisses) +
-		" maxFloorDbfs=" + Fixed(st.maxFloorDbfs, 1) + " elapsedSec=" + Fixed(st.elapsedSec, 2) +
-		" sourceFrames=" + std::to_string(st.sourceFrames) + " impliedRateHz=" + Fixed(st.impliedRateHz, 1) +
-		" mixRateHz=" + std::to_string(st.mixRateHz) + " mixChannels=" + std::to_string(st.mixChannels) +
-		" rateDeficitPct=" + Fixed(st.rateDeficitPct, 3) + " clip=" + st.clipOrigin +
-		(st.reason.empty() ? "" : " reason=" + st.reason));
+	HostLog(std::string(kLogTag) + " " + SelfTest::ResultName(st.exitCode) + " variant=" + VariantName(st) +
+		" alerts=" + std::to_string(st.alerts.size()) + " tsJumps=" + std::to_string(st.tsJumps) +
+		" (before firing " + std::to_string(st.jumpsBeforeFiring) + ") smoothingMisses=" +
+		std::to_string(st.smoothingMisses) + " maxFloorDbfs=" + Fixed(st.maxFloorDbfs, 1) +
+		" elapsedSec=" + Fixed(st.elapsedSec, 2) + " sourceFrames=" + std::to_string(st.sourceFrames) +
+		" impliedRateHz=" + Fixed(st.impliedRateHz, 1) + " mixRateHz=" + std::to_string(st.mixRateHz) +
+		" mixChannels=" + std::to_string(st.mixChannels) + " rateDeficitPct=" + Fixed(st.rateDeficitPct, 3) +
+		" clip=" + st.clipOrigin + (st.reason.empty() ? "" : " reason=" + st.reason));
 }
 
-void Arm(bool monitorVariant)
+void Arm(bool monitorVariant, bool voiceVariant)
 {
 	g_state = State{};
 	g_output.Reset();
 	g_mix.Reset();
 	g_state.monitorVariant = monitorVariant;
+	g_state.voiceVariant = voiceVariant;
 	const long requestedAlerts = Env::Number("BRAIDCAST_SELFTEST_ALERTS", kMinAlerts);
 	g_state.alertCount = int(std::clamp<long>(requestedAlerts, kMinAlerts, kMaxAlerts));
 	if (requestedAlerts > kMaxAlerts) {
@@ -1147,7 +1437,7 @@ void Arm(bool monitorVariant)
 	g_state.uiStallMs = std::max<int>(0, int(Env::Number("BRAIDCAST_SELFTEST_UI_STALL_MS", kDefaultUiStallMs)));
 	g_state.phase = Phase::BootSettle;
 	g_state.phaseStart = std::chrono::steady_clock::now();
-	HostLog(std::string(kLogTag) + " armed: variant=" + (monitorVariant ? "monitor" : "output") +
+	HostLog(std::string(kLogTag) + " armed: variant=" + VariantName(g_state) +
 		" alerts=" + std::to_string(g_state.alertCount) +
 		" spacingMs=" + (g_state.spacingOverrideMs > 0 ? std::to_string(g_state.spacingOverrideMs) : "varied") +
 		" uiStallMs=" + std::to_string(g_state.uiStallMs));
@@ -1157,12 +1447,17 @@ void Arm(bool monitorVariant)
 
 void ObsBootstrap::ArmOverlayAudioCaptureSelfTest(HWND)
 {
-	Arm(false);
+	Arm(false, false);
 }
 
 void ObsBootstrap::ArmOverlayAudioMonitorSelfTest(HWND)
 {
-	Arm(true);
+	Arm(true, false);
+}
+
+void ObsBootstrap::ArmOverlayVoiceCaptureSelfTest(HWND)
+{
+	Arm(false, true);
 }
 
 bool ObsBootstrap::RunOverlayAudioCaptureSelfTest()
@@ -1233,11 +1528,32 @@ bool ObsBootstrap::RunOverlayAudioCaptureSelfTest()
 				g_output.recordUntilNs = alert.fireNs + kRecordNs;
 				g_mix.recordUntilNs = alert.fireNs + kRecordNs;
 				alert.call = CallAsync("overlays.test", json{{"id", st.widgetId}, {"type", "follow"}});
+				if (st.voiceVariant) {
+					alert.voice = HeardCopy(st);
+					alert.voiceOk = alert.voice == (st.handedOff ? "B" : "A");
+					alert.voiceJudged = true;
+					alert.handoff = st.fired + 1 == st.handoffAlert;
+				}
 				st.alerts.push_back(std::move(alert));
 				++st.fired;
-				HostLog(std::string(kLogTag) + " alert " + std::to_string(st.fired) + " fired");
-				if (st.uiStallMs > 0) {
-					Sleep(DWORD(st.uiStallMs));
+				HostLog(std::string(kLogTag) + " alert " + std::to_string(st.fired) + " fired" +
+					(st.voiceVariant ? " voice=" + st.alerts.back().voice : std::string()));
+				int stallMs = st.uiStallMs;
+				// Voice variant: take the first copy off air while this alert's clip is playing,
+				// so the second must take over mid-sound, and the alerts after it can only be
+				// heard through the second.
+				if (st.alerts.back().handoff) {
+					Sleep(DWORD(kHandoffAfterFireMs));
+					stallMs = std::max(0, stallMs - kHandoffAfterFireMs);
+					st.alerts.back().handoffNs = os_gettime_ns();
+					obs_set_output_source(ObsBootstrap::kSelfTestOutputChannel,
+							      st.priorChannelSource);
+					st.handedOff = true;
+					HostLog(std::string(kLogTag) + " first copy off air during alert " +
+						std::to_string(st.fired) + ", voice=" + HeardCopy(st));
+				}
+				if (stallMs > 0) {
+					Sleep(DWORD(stallMs));
 				}
 			}
 			if (st.fired == st.alertCount && GapElapsed(st)) {

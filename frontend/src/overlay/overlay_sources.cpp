@@ -13,6 +13,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Overlay {
 
@@ -159,22 +160,21 @@ void PrepareSettingsPatch(obs_source_t *source, obs_data_t *patch)
 
 struct UsageScan {
 	const std::string *overlayId;
-	int count;
+	std::vector<OBSSource> *found;
 };
 
-bool CountOne(void *param, obs_source_t *source)
+bool CollectOne(void *param, obs_source_t *source)
 {
 	if (!IsOverlaySource(source)) {
 		return true;
 	}
 	UsageScan *scan = static_cast<UsageScan *>(param);
-	obs_data_t *settings = obs_source_get_settings(source);
-	if (settings != nullptr) {
+	OBSDataAutoRelease settings = obs_source_get_settings(source);
+	if (settings) {
 		const char *bound = obs_data_get_string(settings, kOverlayIdKey);
 		if (bound != nullptr && *scan->overlayId == bound) {
-			++scan->count;
+			scan->found->emplace_back(source);
 		}
-		obs_data_release(settings);
 	}
 	return true;
 }
@@ -303,11 +303,17 @@ void ApplySettingsPatch(obs_source_t *source, obs_data_t *patch)
 	obs_source_update(source, patch);
 }
 
+std::vector<OBSSource> SourcesUsing(const std::string &overlayId)
+{
+	std::vector<OBSSource> found;
+	UsageScan scan{&overlayId, &found};
+	obs_enum_sources(&CollectOne, &scan);
+	return found;
+}
+
 int CountSourcesUsing(const std::string &overlayId)
 {
-	UsageScan scan{&overlayId, 0};
-	obs_enum_sources(&CountOne, &scan);
-	return scan.count;
+	return int(SourcesUsing(overlayId).size());
 }
 
 } // namespace Overlay

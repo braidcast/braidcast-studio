@@ -29,7 +29,7 @@
 // proof the capture stayed up between alerts), and the source's own sample count tracking wall
 // clock at the mix rate.
 //
-// Two variants, one state machine:
+// Three variants, one state machine:
 //   overlay-audio          the overlay's output alone on the track (monitoring off).
 //   overlay-audio-monitor  the overlay set to monitor-and-output with its monitor on a named
 //                          endpoint, and a Desktop Audio capture of that same endpoint on the
@@ -39,6 +39,19 @@
 //                          captures. BRAIDCAST_SELFTEST_ENDPOINT is required and must name a
 //                          quiet endpoint, for the reasons loopback-silence gives; the clips
 //                          are audible on it while the case runs.
+//   overlay-voice          one voice per overlay (OverlayVoice): a second, public copy of the
+//                          same overlay on the same track, on air on a private canvas of its own,
+//                          so both pages play every alert. Its clip is broadband rather than a
+//                          chirp, so two copies heard sum to about twice its energy or more at
+//                          any offset. Each alert must also reach the mix through the copy
+//                          expected to be the voice at a correlated gain of 0.9-1.1 and an energy
+//                          ratio of 0.8-1.25 (two copies read 2-4), losing no more than one
+//                          1024-frame audio block anywhere in its audible stretch. The first copy
+//                          is taken off air 350 ms into the alert after the middle one, while
+//                          it plays: that alert is judged on energy, gaps, latency and floor (its
+//                          level comes from two pages out of step), and the clip from 150 ms
+//                          after the hand-off on is aligned on its own and must arrive whole
+//                          through the second copy, as must the alerts after it.
 //
 // The clip defaults to a synthesized one shaped like a notification sound (fast attack, decay
 // over about a second, 1.85 s long). BRAIDCAST_SELFTEST_CLIP names a WAV file to use instead,
@@ -47,7 +60,7 @@
 // RUN, because the clip is compared sample for sample against what reaches the mix.
 // A clip whose onset is lost is aligned by cross-correlation on what survives, so a tonal or
 // periodic clip can lock onto the wrong cycle and misreport where the loss fell; the verdict
-// still fails, but the per-alert ranges are only trustworthy for the synthesized chirp.
+// still fails, but the per-alert ranges are only trustworthy for the synthesized clips.
 // BRAIDCAST_SELFTEST_ALERTS sets the alert count (default and minimum 5, at most kMaxAlerts, what the
 // capture buffers hold -- a larger value is clamped, and the clamp is logged).
 // BRAIDCAST_SELFTEST_SPACING_MS replaces the built-in varied gaps with one fixed gap (minimum
@@ -66,6 +79,7 @@ namespace ObsBootstrap {
 // signature.
 void ArmOverlayAudioCaptureSelfTest(HWND host);
 void ArmOverlayAudioMonitorSelfTest(HWND host);
+void ArmOverlayVoiceCaptureSelfTest(HWND host);
 
 // Advance the state machine by one step. Call on every fire of the self-test stream WM_TIMER
 // once armed. A no-op returning true if never armed. Returns true once the flow has terminated

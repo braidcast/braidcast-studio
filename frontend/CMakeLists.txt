@@ -148,6 +148,7 @@ target_sources(
     src/windowing/filter_preview.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
+    src/audio/mixer_flags.hpp
     src/scene/main_channel.cpp
     src/scene/main_channel.hpp
     src/scene/scene_collections.cpp
@@ -368,6 +369,13 @@ target_sources(
     # in the /wd4201 set below).
     src/overlay/overlay_sources.cpp
     src/overlay/overlay_sources.hpp
+    # One voice per overlay: publishes each copy's libobs audio group and keeps the copies'
+    # audio settings identical, plus its self-test (both include obs.h -> in the /wd4201 set
+    # below).
+    src/overlay/overlay_voice.cpp
+    src/overlay/overlay_voice.hpp
+    src/overlay/overlay_voice_selftest.cpp
+    src/overlay/overlay_voice_selftest.hpp
     # Viewport auto-follow: makes a braidcast_overlay source's PAGE size track the scene
     # item box the user drags, instead of magnifying a fixed-size bitmap (includes obs.h
     # -> in the /wd4201 set below).
@@ -716,6 +724,8 @@ set_source_files_properties(
   src/events/event_store.cpp
   src/overlay/overlay_store.cpp
   src/overlay/overlay_sources.cpp
+  src/overlay/overlay_voice.cpp
+  src/overlay/overlay_voice_selftest.cpp
   src/overlay/overlay_viewport.cpp
   src/overlay/overlay_selftest.cpp
   src/multistream/CanvasStore.cpp

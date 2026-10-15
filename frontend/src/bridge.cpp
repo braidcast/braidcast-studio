@@ -38,6 +38,7 @@
 
 #include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
+#include "audio/mixer_flags.hpp"
 #include "chat/chat_archive.hpp"
 #include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp"
@@ -62,6 +63,7 @@
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
 #include "overlay/overlay_template.hpp"
+#include "overlay/overlay_voice.hpp"
 #include "mcp/McpServer.hpp"
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
@@ -2252,8 +2254,11 @@ obs_source_t *CopyInputForScene(const SceneCopyContext &c, obs_source_t *src)
 	}
 	obs_source_t *copy = DuplicateSourceObject(src, name); // create-ref
 	// Every canvas feeds the one shared audio mix, so a second audible instance on
-	// another canvas plays the same sound twice. The copy starts muted there.
-	if (copy && !c.sameCanvas && (obs_source_get_output_flags(copy) & OBS_SOURCE_AUDIO) != 0) {
+	// another canvas plays the same sound twice. The copy starts muted there. An overlay
+	// copy is exempt: its voice group already lets only one copy be heard, and a muted
+	// copy would take the mute to every copy once the group adopts it.
+	if (copy && !c.sameCanvas && (obs_source_get_output_flags(copy) & OBS_SOURCE_AUDIO) != 0 &&
+	    !Overlay::IsOverlaySource(copy)) {
 		obs_source_set_muted(copy, true);
 	}
 	return copy;
@@ -2901,15 +2906,14 @@ std::vector<obs_sceneitem_t *> WithGroupClosure(obs_sceneitem_t *const *items, s
 	return out;
 }
 
-// Persist a mutated source to whichever store owns it. A source bound to a
-// global output channel (1..6) is excluded from the scene-collection save (see
-// SaveFilter in scene_persistence.cpp) and must persist via GlobalAudioChannels
+} // namespace
+
+// A source bound to a global output channel (1..6) is excluded from the scene-collection
+// save (see SaveFilter in scene_persistence.cpp) and persists via GlobalAudioChannels
 // instead; every other source -- including additional-canvas scene items, since
-// SceneCollection::Save() already covers every canvas's scenes in the one
-// collection file (SaveFilter keeps both main- and additional-canvas scoped
-// sources) -- persists via SceneCollection::Save(). The single choke point every
-// mutating handler (scene items, audio, source/filter properties) should call
-// exactly once after applying its change.
+// SceneCollection::Save() already covers every canvas's scenes in the one collection
+// file (SaveFilter keeps both main- and additional-canvas scoped sources) -- persists via
+// SceneCollection::Save().
 void PersistSourceState(obs_source_t *source)
 {
 	// A filter isn't itself bound to an output channel; resolve to its parent so a
@@ -2930,6 +2934,8 @@ void PersistSourceState(obs_source_t *source)
 	}
 	SceneCollection::Save();
 }
+
+namespace {
 
 // Emit sceneItems.changed for a change to the items of `owner`, a scene or a group. A
 // group's own item list is not what any surface lists: a dock lists the scene holding the
@@ -9618,25 +9624,15 @@ obs_source_t *ResolveAudioSource(const json &params);
 // Three booleans stored in each audio source's private settings (persist with the
 // scene collection via PersistSourceState), surfaced on every audio.list row and
 // mutated by audio.set{Hidden,VolumeLocked,Pinned}/audio.unhideAll. Reuses
-// ResolveAudioSource + the private-settings idiom; each mutation emits audio.changed.
-namespace {
-constexpr const char *kMixerHiddenKey = "mixer_hidden";
-constexpr const char *kVolumeLockedKey = "volume_locked";
-constexpr const char *kMixerPinnedKey = "mixer_pinned";
-} // namespace
-
-// Read one mixer flag from a source's private settings (false when absent/null).
-bool GetSourceMixerFlag(obs_source_t *s, const char *key)
-{
-	OBSDataAutoRelease priv = obs_source_get_private_settings(s);
-	return priv ? obs_data_get_bool(priv, key) : false;
-}
+// ResolveAudioSource + MixerFlags; each mutation emits audio.changed.
 
 // Shared setter for the three mixer flags: validate the boolean field, resolve the
-// source (uuid|name), write the private-settings key, persist, echo, emit changed.
-// setHidden/setVolumeLocked/setPinned differ only by (key, field), so they share this.
-bool SetSourceMixerFlag(const json &params, const char *method, const char *key, const char *field, json &result,
-			std::string &error)
+// source (uuid|name), write the private-settings key, copy it to the source's other
+// overlay copies (OverlayVoice), persist, echo, emit changed.
+// setHidden/setVolumeLocked/setPinned differ only by (key, voiceField, field), so they
+// share this.
+bool SetSourceMixerFlag(const json &params, const char *method, const char *key, OverlayVoice::Field voiceField,
+			const char *field, json &result, std::string &error)
 {
 	bool value = false;
 	if (!RequireBool(params, method, field, value, error)) {
@@ -9647,10 +9643,8 @@ bool SetSourceMixerFlag(const json &params, const char *method, const char *key,
 		error = std::string(method) + ": no source for the given 'uuid'/'source'";
 		return false;
 	}
-	{
-		OBSDataAutoRelease priv = obs_source_get_private_settings(s);
-		obs_data_set_bool(priv, key, value);
-	}
+	MixerFlags::Set(s, key, value);
+	OverlayVoice::FanOut(s, voiceField);
 	PersistSourceState(s);
 	result = json{{"uuid", obs_source_get_uuid(s)}, {field, value}};
 	EmitEvent(EventNames::kAudioChanged, json::object());
@@ -9659,21 +9653,25 @@ bool SetSourceMixerFlag(const json &params, const char *method, const char *key,
 
 bool MethodAudioSetHidden(const json &params, json &result, std::string &error)
 {
-	return SetSourceMixerFlag(params, "audio.setHidden", kMixerHiddenKey, "hidden", result, error);
+	return SetSourceMixerFlag(params, "audio.setHidden", MixerFlags::kHidden, OverlayVoice::Field::MixerHidden,
+				  "hidden", result, error);
 }
 
 bool MethodAudioSetVolumeLocked(const json &params, json &result, std::string &error)
 {
-	return SetSourceMixerFlag(params, "audio.setVolumeLocked", kVolumeLockedKey, "locked", result, error);
+	return SetSourceMixerFlag(params, "audio.setVolumeLocked", MixerFlags::kVolumeLocked,
+				  OverlayVoice::Field::VolumeLocked, "locked", result, error);
 }
 
 bool MethodAudioSetPinned(const json &params, json &result, std::string &error)
 {
-	return SetSourceMixerFlag(params, "audio.setPinned", kMixerPinnedKey, "pinned", result, error);
+	return SetSourceMixerFlag(params, "audio.setPinned", MixerFlags::kPinned, OverlayVoice::Field::MixerPinned,
+				  "pinned", result, error);
 }
 
-// Clear mixer_hidden on every active audio source (the "Unhide All" action). Persists
-// per cleared source; one audio.changed afterward refreshes the mixer.
+// Clear mixer_hidden on every active audio source (the "Unhide All" action), and on every
+// other copy of an overlay among them, listed or not. Persists per cleared source; one
+// audio.changed afterward refreshes the mixer.
 bool MethodAudioUnhideAll(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	int cleared = 0;
@@ -9682,9 +9680,9 @@ bool MethodAudioUnhideAll(const json & /*params*/, json &result, std::string & /
 		if (!src) {
 			continue;
 		}
-		OBSDataAutoRelease priv = obs_source_get_private_settings(src);
-		if (priv && obs_data_get_bool(priv, kMixerHiddenKey)) {
-			obs_data_set_bool(priv, kMixerHiddenKey, false);
+		if (MixerFlags::Get(src, MixerFlags::kHidden)) {
+			MixerFlags::Set(src, MixerFlags::kHidden, false);
+			OverlayVoice::FanOut(src, OverlayVoice::Field::MixerHidden);
 			PersistSourceState(src);
 			cleared++;
 		}
@@ -9694,19 +9692,56 @@ bool MethodAudioUnhideAll(const json & /*params*/, json &result, std::string & /
 	return true;
 }
 
+// The uuids the mixer has an entry for.
+std::unordered_set<std::string> ListedAudioUuids(const std::vector<AudioMonitor::SourceInfo> &list)
+{
+	std::unordered_set<std::string> listed;
+	for (const AudioMonitor::SourceInfo &s : list) {
+		listed.insert(s.uuid);
+	}
+	return listed;
+}
+
+// The overlay voice group whose one mixer strip `uuid` belongs to, or nullptr when it is
+// in no group.
+const OverlayVoice::Group *VoiceGroupOf(const std::string &uuid)
+{
+	return OverlayVoice::GroupRepresentedBy(OverlayVoice::RepresentativeOf(uuid));
+}
+
+// The uuid of the strip that stands for `uuid`: every copy of one overlay shares one
+// strip, kept by the first copy (by rank) the mixer lists -- the group's representative
+// unless the mixer has no entry for it. A source in no group is its own strip.
+std::string MixerStripOf(const std::string &uuid, const std::unordered_set<std::string> &listed)
+{
+	if (const OverlayVoice::Group *group = VoiceGroupOf(uuid)) {
+		for (const std::string &member : group->members) {
+			if (listed.count(member)) {
+				return member;
+			}
+		}
+	}
+	return uuid;
+}
+
 bool MethodAudioList(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	std::vector<json> rows;
-	for (const AudioMonitor::SourceInfo &s : ObsBootstrap::AudioMonitor().List()) {
+	const std::vector<AudioMonitor::SourceInfo> list = ObsBootstrap::AudioMonitor().List();
+	const std::unordered_set<std::string> listed = ListedAudioUuids(list);
+	for (const AudioMonitor::SourceInfo &s : list) {
+		if (MixerStripOf(s.uuid, listed) != s.uuid) {
+			continue; // another copy of the same overlay carries the strip
+		}
 		// The mixer flags live in the source's private settings, not on the
 		// AudioMonitor entry -- read them from the resolved source per row.
 		bool hidden = false;
 		bool volumeLocked = false;
 		bool pinned = false;
 		if (OBSSourceAutoRelease src = obs_get_source_by_uuid(s.uuid.c_str())) {
-			hidden = GetSourceMixerFlag(src, kMixerHiddenKey);
-			volumeLocked = GetSourceMixerFlag(src, kVolumeLockedKey);
-			pinned = GetSourceMixerFlag(src, kMixerPinnedKey);
+			hidden = MixerFlags::Get(src, MixerFlags::kHidden);
+			volumeLocked = MixerFlags::Get(src, MixerFlags::kVolumeLocked);
+			pinned = MixerFlags::Get(src, MixerFlags::kPinned);
 		}
 		rows.push_back(json{
 			{"uuid", s.uuid},
@@ -9718,6 +9753,16 @@ bool MethodAudioList(const json & /*params*/, json &result, std::string & /*erro
 			{"volumeLocked", volumeLocked},
 			{"pinned", pinned},
 		});
+		if (const OverlayVoice::Group *group = VoiceGroupOf(s.uuid)) {
+			json members = json::array();
+			for (const std::string &member : group->members) {
+				OBSSourceAutoRelease src = obs_get_source_by_uuid(member.c_str());
+				members.push_back(
+					json{{"uuid", member}, {"name", src ? obs_source_get_name(src) : ""}});
+			}
+			rows.back()["overlayId"] = group->overlayId;
+			rows.back()["members"] = std::move(members);
+		}
 	}
 	// Pinned sources sort first; stable_partition keeps each group's existing relative
 	// order (a pinned-FLAG sort, not arbitrary drag-ordering).
@@ -9743,7 +9788,7 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 	// A volume-locked source refuses fader moves (audio.setVolumeLocked): no-op with a
 	// clean success echoing the current position so an optimistic UI drag reverts.
 	if (OBSSourceAutoRelease locked = obs_get_source_by_uuid(uuid.c_str())) {
-		if (GetSourceMixerFlag(locked, kVolumeLockedKey)) {
+		if (MixerFlags::Get(locked, MixerFlags::kVolumeLocked)) {
 			float curDef = 0.0f;
 			float curDb = 0.0f;
 			for (const AudioMonitor::SourceInfo &si : ObsBootstrap::AudioMonitor().List()) {
@@ -9765,6 +9810,7 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 		return false;
 	}
 	if (OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str())) {
+		OverlayVoice::FanOut(source, OverlayVoice::Field::Volume);
 		PersistSourceState(source);
 	}
 	result = json{{"uuid", uuid}, {"deflection", appliedDef}, {"volumeDb", appliedDb}};
@@ -9785,6 +9831,7 @@ bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 		return false;
 	}
 	obs_source_set_muted(source, muted);
+	OverlayVoice::FanOut(source, OverlayVoice::Field::Muted);
 	PersistSourceState(source);
 	result = json{{"uuid", obs_source_get_uuid(source)}, {"muted", muted}};
 	return true;
@@ -9854,7 +9901,7 @@ json BuildAdvancedAudio(obs_source_t *s)
 	}
 	return json{
 		{"volumeDb", std::isfinite(db) ? json(db) : json(nullptr)},
-		{"forceMono", (obs_source_get_flags(s) & OBS_SOURCE_FLAG_FORCE_MONO) != 0},
+		{"forceMono", MixerFlags::ForceMono(s)},
 		{"balance", obs_source_get_balance_value(s)},
 		{"syncOffsetMs", int(obs_source_get_sync_offset(s) / 1000000)},
 		{"tracks", std::move(tracks)},
@@ -9908,26 +9955,27 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 		}
 	}
 
+	// The fields written, so an overlay's other copies get exactly those (OverlayVoice).
+	std::vector<OverlayVoice::Field> written;
+
 	if (auto it = params.find("volumeDb"); it != params.end() && it->is_number()) {
 		obs_source_set_volume(s, obs_db_to_mul(it->get<float>()));
+		written.push_back(OverlayVoice::Field::Volume);
 	}
 
 	if (auto it = params.find("forceMono"); it != params.end() && it->is_boolean()) {
-		uint32_t flags = obs_source_get_flags(s);
-		if (it->get<bool>()) {
-			flags |= OBS_SOURCE_FLAG_FORCE_MONO;
-		} else {
-			flags &= ~uint32_t(OBS_SOURCE_FLAG_FORCE_MONO);
-		}
-		obs_source_set_flags(s, flags);
+		MixerFlags::SetForceMono(s, it->get<bool>());
+		written.push_back(OverlayVoice::Field::ForceMono);
 	}
 
 	if (auto it = params.find("balance"); it != params.end() && it->is_number()) {
 		obs_source_set_balance_value(s, std::clamp(it->get<float>(), 0.0f, 1.0f));
+		written.push_back(OverlayVoice::Field::Balance);
 	}
 
 	if (auto it = params.find("syncOffsetMs"); it != params.end() && it->is_number()) {
 		obs_source_set_sync_offset(s, it->get<int64_t>() * 1000000);
+		written.push_back(OverlayVoice::Field::SyncOffset);
 	}
 
 	if (auto it = params.find("tracks"); it != params.end()) {
@@ -9939,12 +9987,17 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 			}
 		}
 		obs_source_set_audio_mixers(s, mask);
+		written.push_back(OverlayVoice::Field::Mixers);
 	}
 
 	if (setMonitoring) {
 		obs_source_set_monitoring_type(s, monitoringType);
+		written.push_back(OverlayVoice::Field::Monitoring);
 	}
 
+	for (OverlayVoice::Field field : written) {
+		OverlayVoice::FanOut(s, field);
+	}
 	PersistSourceState(s);
 	result = BuildAdvancedAudio(s);
 	EmitEvent(EventNames::kAudioChanged, json::object());
@@ -16273,8 +16326,19 @@ void EmitAudioLevels()
 	// Drain the coalesced levels (clears emitPending so the next callback re-arms)
 	// and build the dB payload here on the UI thread.
 	std::map<std::string, AudioMonitor::Levels> snapshot = ObsBootstrap::AudioMonitor().SnapshotLevels();
-	json arr = json::array();
+	// Copies of one overlay share one strip; it shows the loudest copy, which is the one
+	// heard (the gated copies meter silent).
+	const std::unordered_set<std::string> listed = ListedAudioUuids(ObsBootstrap::AudioMonitor().List());
+	std::map<std::string, AudioMonitor::Levels> strips;
 	for (const auto &[uuid, level] : snapshot) {
+		auto [it, inserted] = strips.try_emplace(MixerStripOf(uuid, listed), level);
+		if (!inserted) {
+			it->second.magnitude = std::max(it->second.magnitude, level.magnitude);
+			it->second.peak = std::max(it->second.peak, level.peak);
+		}
+	}
+	json arr = json::array();
+	for (const auto &[uuid, level] : strips) {
 		arr.push_back(json{{"uuid", uuid}, {"magnitude", level.magnitude}, {"peak", level.peak}});
 	}
 	lastEmitNs = now;

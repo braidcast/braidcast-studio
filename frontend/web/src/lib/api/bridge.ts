@@ -983,6 +983,19 @@ export interface AudioSource {
   volumeLocked: boolean;
   /** Pinned to the top of the mixer (audio.setPinned); audio.list sorts pinned first. */
   pinned: boolean;
+  /**
+   * Set when this row stands for every copy of one overlay (one voice per overlay): the
+   * overlay's id. The copies share these audio settings and only one of them is heard.
+   */
+  overlayId?: string;
+  /** With `overlayId`: every copy the row stands for, oldest first. */
+  members?: AudioSourceCopy[];
+}
+
+/** One copy of an overlay folded into a single audio.list row. */
+export interface AudioSourceCopy {
+  uuid: string;
+  name: string;
 }
 
 /** One source's coalesced levels (dB) in an audio.levels push. */

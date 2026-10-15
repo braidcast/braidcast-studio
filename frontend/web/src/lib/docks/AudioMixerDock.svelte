@@ -451,6 +451,12 @@ import { EV } from "$lib/utils/eventNames";
             {:else}
               <span class="name" title={src.name}>{src.name}</span>
             {/if}
+            {#if src.members && src.members.length > 1}
+              <!-- Every copy of one overlay shares this strip; only one copy is heard. -->
+              <span class="copies" title={"One strip for every copy of this overlay: " + src.members.map((c) => c.name).join(", ")}
+                >{src.members.length} copies</span
+              >
+            {/if}
             <span class="db">{fmtDb(src.volumeDb)} dB</span>
           </div>
           <div class="meter" style:--lit={m ? m.mag : 0} style:--peak={m ? m.peak : 0} aria-hidden="true">
@@ -577,6 +583,14 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 11px;
     padding: 3px 5px;
   }
+  .copies {
+    flex-shrink: 0;
+    margin-right: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
   .db {
     flex-shrink: 0;
     font-family: var(--font-mono);
@@ -701,7 +715,11 @@ import { EV } from "$lib/utils/eventNames";
   }
   .row.vertical .top {
     justify-content: center;
+    flex-wrap: wrap;
     gap: 6px;
+  }
+  .row.vertical .copies {
+    margin-right: 0;
   }
   .row.vertical .name {
     min-width: 0;

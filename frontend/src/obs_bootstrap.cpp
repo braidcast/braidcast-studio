@@ -101,6 +101,7 @@
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
+#include "overlay/overlay_voice.hpp"
 #include "settings/AdvancedSettings.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "util/paths.hpp"
@@ -1627,6 +1628,10 @@ bool ObsBootstrap::Start()
 				    overlayUp ? "" : Overlay::Server().LastError());
 
 	LoadCuratedModules();
+
+	// Before the scene collection loads, so every overlay copy it creates joins its voice
+	// group as it is created.
+	OverlayVoice::Start();
 
 	obs_post_load_modules();
 	HostLog("[obs] core up (curated full-set load)");
@@ -10739,7 +10744,7 @@ void ObsBootstrap::RunOverlayAudioSelfTest()
 		// Never shown and shutdown-when-invisible, so obs-browser leaves create_browser
 		// false and no CEF browser is spun up for a settings-only subject. Load-bearing
 		// for the fence below rather than merely economical -- see there.
-		obs_data_set_bool(settings, "shutdown", true);
+		obs_data_set_bool(settings, Overlay::kShutdownWhenHiddenKey, true);
 		std::string widgetId;
 		if (c.bind == Bind::Stock || c.bind == Bind::Forked) {
 			widgetId = inject(c.type, c.bind == Bind::Forked);
@@ -13276,6 +13281,7 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	// before the destroy-queue drains + obs_shutdown so every fader/volmeter is
 	// released within the leak measurement.
 	DisconnectAudioSourceSignals();
+	OverlayVoice::Stop();
 	if (g_audioMonitor) {
 		g_audioMonitor->ClearAll();
 		g_audioMonitor.reset();

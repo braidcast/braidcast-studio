@@ -2,6 +2,9 @@
 #define OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_SOURCES_HPP_
 
 #include <string>
+#include <vector>
+
+#include <obs.hpp>
 
 struct obs_source;
 typedef struct obs_source obs_source_t;
@@ -38,6 +41,10 @@ inline constexpr char kRerouteMigratedKey[] = "braidcast_reroute_migrated";
 inline constexpr char kRerouteOwnerKey[] = "braidcast_reroute_owner";
 inline constexpr char kRerouteOwnerTemplate[] = "template";
 inline constexpr char kRerouteOwnerUser[] = "user";
+// obs-browser's "Shutdown source when not visible": while hidden, the page -- and with it
+// the overlay's audio -- is torn down. Read by the overlay voice pick, which prefers a copy
+// that keeps playing.
+inline constexpr char kShutdownWhenHiddenKey[] = "shutdown";
 
 // Is `source` one of this fork's overlay widget sources? The single spelling of the
 // type test: the viewport follow, the properties form and the refresh/count sweeps all
@@ -153,11 +160,16 @@ void SyncSavedSource(obs_data_t *sourceData);
 // Any other source is updated with the patch as given. UI thread.
 void ApplySettingsPatch(obs_source_t *source, obs_data_t *patch);
 
-// How many live braidcast_overlay sources are bound to `overlayId`. The delete
-// confirmation quotes it, so removing a widget scenes are still using is something the
-// user decides rather than discovers: a source whose overlay is gone renders a blank
-// page, which looks the same as a widget that draws nothing yet. Counts what
-// obs_enum_sources enumerates -- the same set RefreshOne sweeps. UI thread only.
+// Every live braidcast_overlay source bound to `overlayId`, as references collected
+// during obs_enum_sources so the caller acts on them after the enumeration has released
+// libobs's source list -- the same set RefreshOne sweeps. Never call it from inside a
+// libobs signal or enum callback. UI thread only.
+std::vector<OBSSource> SourcesUsing(const std::string &overlayId);
+
+// How many sources SourcesUsing finds. The delete confirmation quotes it, so removing a
+// widget scenes are still using is something the user decides rather than discovers: a
+// source whose overlay is gone renders a blank page, which looks the same as a widget
+// that draws nothing yet. UI thread only.
 int CountSourcesUsing(const std::string &overlayId);
 
 } // namespace Overlay
