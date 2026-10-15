@@ -1847,21 +1847,37 @@ static inline void source_output_audio_push_back(obs_source_t *source, audio_t *
 	source->last_audio_input_buf_size = 0;
 }
 
+/* The group push-to state share_push_to left on `source` counts only while the pick still writes
+ * it: a member that leaves the render order is no longer stamped, so a key held on a peer cannot
+ * stick to it. The tick before counts too, for a reader on another thread between a tick starting
+ * and its pick. */
+static inline bool group_push_to_current(const obs_source_t *source)
+{
+	return obs->audio.tick_seq - source->audio_group_push_seq <= 1;
+}
+
 static inline bool source_muted(obs_source_t *source, uint64_t os_time)
 {
-	if (source->push_to_mute_enabled && source->user_push_to_mute_pressed) {
+	/* In an audio group, a push-to key held on any copy holds for every copy. */
+	const bool group = group_push_to_current(source);
+	const bool push_to_mute_pressed = source->user_push_to_mute_pressed || (group && source->audio_group_user_ptm);
+	const bool push_to_talk_pressed = source->user_push_to_talk_pressed || (group && source->audio_group_user_ptt);
+
+	if (source->push_to_mute_enabled && push_to_mute_pressed) {
 		source->push_to_mute_stop_time = os_time + source->push_to_mute_delay * 1000000;
 	}
 
-	if (source->push_to_talk_enabled && source->user_push_to_talk_pressed) {
+	if (source->push_to_talk_enabled && push_to_talk_pressed) {
 		source->push_to_talk_stop_time = os_time + source->push_to_talk_delay * 1000000;
 	}
 
-	bool push_to_mute_active = source->user_push_to_mute_pressed || os_time < source->push_to_mute_stop_time;
-	bool push_to_talk_active = source->user_push_to_talk_pressed || os_time < source->push_to_talk_stop_time;
+	bool push_to_mute_active = push_to_mute_pressed || os_time < source->push_to_mute_stop_time;
+	bool push_to_talk_active = push_to_talk_pressed || os_time < source->push_to_talk_stop_time;
 
+	/* The audio-group gate reads as a mute here, so the monitor plays silence and the meter
+	 * reads flat. It steps where the mix ramps: a voice handoff can click on the monitor. */
 	return !source->enabled || source->user_muted || (source->push_to_mute_enabled && push_to_mute_active) ||
-	       (source->push_to_talk_enabled && !push_to_talk_active);
+	       (source->push_to_talk_enabled && !push_to_talk_active) || os_atomic_load_long(&source->audio_gated);
 }
 
 static void source_output_audio_data(obs_source_t *source, audio_t *audio, const struct audio_data *data)
@@ -5258,6 +5274,36 @@ bool obs_source_video_gated(const obs_source_t *source)
 								  : false;
 }
 
+void obs_source_set_audio_group(obs_source_t *source, uint16_t group, uint32_t rank, bool shutdown_when_hidden)
+{
+	if (!obs_source_valid(source, "obs_source_set_audio_group")) {
+		return;
+	}
+	const uint32_t packed = (uint32_t)group | (shutdown_when_hidden ? AUDIO_GROUP_SHUTDOWN_BIT : 0);
+	/* The rank first, so a pick that sees the new group sees its rank. */
+	os_atomic_set_long(&source->audio_rank, (long)rank);
+	os_atomic_set_long(&source->audio_group, (long)packed);
+}
+
+uint16_t obs_source_get_audio_group(const obs_source_t *source, uint32_t *rank, bool *shutdown_when_hidden)
+{
+	const bool valid = obs_source_valid(source, "obs_source_get_audio_group");
+	const uint32_t packed = valid ? (uint32_t)os_atomic_load_long(&source->audio_group) : 0;
+	if (rank) {
+		*rank = valid ? (uint32_t)os_atomic_load_long(&source->audio_rank) : 0;
+	}
+	if (shutdown_when_hidden) {
+		*shutdown_when_hidden = (packed & AUDIO_GROUP_SHUTDOWN_BIT) != 0;
+	}
+	return (uint16_t)(packed & AUDIO_GROUP_ID_MASK);
+}
+
+bool obs_source_audio_gated(const obs_source_t *source)
+{
+	return obs_source_valid(source, "obs_source_audio_gated") ? os_atomic_load_long(&source->audio_gated) != 0
+								  : false;
+}
+
 void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame_count_kind kind)
 {
 	if (!obs_source_valid(source, "obs_source_set_frame_count_kind")) {
@@ -5761,16 +5807,22 @@ void *obs_source_get_type_data(obs_source_t *source)
 
 static float get_source_volume(obs_source_t *source, uint64_t os_time)
 {
-	if (source->push_to_mute_enabled && source->push_to_mute_pressed) {
+	/* In an audio group, a push-to key held on any copy holds for every copy: the group's
+	 * state as the tick began, beside this source's own as its actions apply. */
+	const bool group = group_push_to_current(source);
+	const bool push_to_mute_pressed = source->push_to_mute_pressed || (group && source->audio_group_ptm);
+	const bool push_to_talk_pressed = source->push_to_talk_pressed || (group && source->audio_group_ptt);
+
+	if (source->push_to_mute_enabled && push_to_mute_pressed) {
 		source->push_to_mute_stop_time = os_time + source->push_to_mute_delay * 1000000;
 	}
 
-	if (source->push_to_talk_enabled && source->push_to_talk_pressed) {
+	if (source->push_to_talk_enabled && push_to_talk_pressed) {
 		source->push_to_talk_stop_time = os_time + source->push_to_talk_delay * 1000000;
 	}
 
-	bool push_to_mute_active = source->push_to_mute_pressed || os_time < source->push_to_mute_stop_time;
-	bool push_to_talk_active = source->push_to_talk_pressed || os_time < source->push_to_talk_stop_time;
+	bool push_to_mute_active = push_to_mute_pressed || os_time < source->push_to_mute_stop_time;
+	bool push_to_talk_active = push_to_talk_pressed || os_time < source->push_to_talk_stop_time;
 
 	bool muted = !source->enabled || source->muted || (source->push_to_mute_enabled && push_to_mute_active) ||
 		     (source->push_to_talk_enabled && !push_to_talk_active);
@@ -5826,6 +5878,37 @@ static inline void apply_audio_action(obs_source_t *source, const struct audio_a
 	}
 }
 
+/* The audio-group gate is a factor of its own on top of the user's volume, held per tick by the
+ * pick (audio_gate_was_closed for the tick before, audio_gate_closed for this one), so every path
+ * below applies it and a second render in the same tick repeats the same ramp. */
+static inline bool gate_steady_open(const obs_source_t *source)
+{
+	return !source->audio_gate_was_closed && !source->audio_gate_closed;
+}
+
+static inline bool gate_steady_closed(const obs_source_t *source)
+{
+	return source->audio_gate_was_closed && source->audio_gate_closed;
+}
+
+static inline void clear_audio_output(obs_source_t *source)
+{
+	memset(source->audio_output_buf[0][0], 0,
+	       AUDIO_OUTPUT_FRAMES * sizeof(float) * MAX_AUDIO_CHANNELS * MAX_AUDIO_MIXES);
+}
+
+/* A gate that moved this tick ramps linearly across the block, so a voice handoff is a crossfade
+ * one block long: the closing member's ramp and the opening member's sum to one at every frame. */
+static void multiply_gate_ramp(const obs_source_t *source, float *vol_data)
+{
+	const float from = source->audio_gate_was_closed ? 0.0f : 1.0f;
+	const float to = source->audio_gate_closed ? 0.0f : 1.0f;
+
+	for (size_t frame = 0; frame < AUDIO_OUTPUT_FRAMES; frame++) {
+		vol_data[frame] *= from + (to - from) * ((float)frame / (float)AUDIO_OUTPUT_FRAMES);
+	}
+}
+
 static void apply_audio_actions(obs_source_t *source, size_t channels, size_t sample_rate)
 {
 	float vol_data[AUDIO_OUTPUT_FRAMES];
@@ -5868,6 +5951,14 @@ static void apply_audio_actions(obs_source_t *source, size_t channels, size_t sa
 
 	pthread_mutex_unlock(&source->audio_actions_mutex);
 
+	if (gate_steady_closed(source)) {
+		clear_audio_output(source);
+		return;
+	}
+	if (!gate_steady_open(source)) {
+		multiply_gate_ramp(source, vol_data);
+	}
+
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
 		if ((source->audio_mixers & (1 << mix)) != 0) {
 			multiply_vol_data(source, mix, channels, vol_data);
@@ -5899,21 +5990,40 @@ static void apply_audio_volume(obs_source_t *source, uint32_t mixers, size_t cha
 		}
 	}
 
+	if (gate_steady_closed(source)) {
+		clear_audio_output(source);
+		return;
+	}
+
 	vol = get_source_volume(source, source->audio_ts);
-	if (vol == 1.0f) {
+	if (vol == 1.0f && gate_steady_open(source)) {
 		return;
 	}
 
 	if (vol == 0.0f || mixers == 0) {
-		memset(source->audio_output_buf[0][0], 0,
-		       AUDIO_OUTPUT_FRAMES * sizeof(float) * MAX_AUDIO_CHANNELS * MAX_AUDIO_MIXES);
+		clear_audio_output(source);
 		return;
 	}
 
+	if (gate_steady_open(source)) {
+		for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
+			uint32_t mix_and_val = (1 << mix);
+			if ((source->audio_mixers & mix_and_val) != 0 && (mixers & mix_and_val) != 0) {
+				multiply_output_audio(source, mix, channels, vol);
+			}
+		}
+		return;
+	}
+
+	float vol_data[AUDIO_OUTPUT_FRAMES];
+	for (size_t frame = 0; frame < AUDIO_OUTPUT_FRAMES; frame++) {
+		vol_data[frame] = vol;
+	}
+	multiply_gate_ramp(source, vol_data);
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
 		uint32_t mix_and_val = (1 << mix);
 		if ((source->audio_mixers & mix_and_val) != 0 && (mixers & mix_and_val) != 0) {
-			multiply_output_audio(source, mix, channels, vol);
+			multiply_vol_data(source, mix, channels, vol_data);
 		}
 	}
 }

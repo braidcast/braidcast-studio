@@ -1299,8 +1299,10 @@ General Source Functions
    their capture, but every code path bound to the reference counter
    keeps seeing the count the holders actually took.
 
-   Audio is not affected.  Mixing is gated by the "active" reference
-   counter, so a gated source keeps producing audio.
+   A gated source keeps producing audio: mixing is gated by the "active"
+   reference counter, not by this.  In an audio group, though, it counts
+   as not showing, so its showing copies rank ahead of it when the
+   group's voice is picked (see :c:func:`obs_source_set_audio_group()`).
 
    :param gated: *true* to suppress showing, *false* to restore it
 
@@ -1310,6 +1312,68 @@ General Source Functions
 
    :return: *true* if the source's showing state is currently
             suppressed by :c:func:`obs_source_set_video_gated()`
+
+---------------------
+
+.. function:: void obs_source_set_audio_group(obs_source_t *source, uint16_t group, uint32_t rank, bool shutdown_when_hidden)
+
+   Puts the source in an audio group: copies of one sound, of which
+   exactly one, the group's voice, is heard.  Group 0 takes the source
+   out of every group.
+
+   Every audio tick, before anything renders, the audio thread picks each
+   group's voice.  The candidates are the enabled members in the active
+   tree of a mix whose audio is mixed; with none, the enabled active
+   members, so the monitor still hears exactly one; with neither, the
+   gates stay as they are.  The current voice is kept while it is
+   showing, or while no candidate is showing.  Otherwise a showing member
+   wins, then one without *shutdown_when_hidden*, then the lowest *rank*.
+
+   While a transition mixes audio across both of its sides, a voice
+   under its outgoing side hands off at once to a candidate at full
+   gain if there is one.  Otherwise it hands off to a candidate under
+   the incoming side and stays open beside it until the transition ends,
+   so the two path gains still sum to one.  With neither, the voice fades
+   with the transition.  A member under some other transition never
+   opens.
+
+   Every member that is not open is gated.  The gate is applied like a
+   mute, after the source's filters, as a factor of its own on top of
+   the volume, and it is never saved.  When it moves, it ramps linearly
+   over one audio block, so a handoff is a crossfade of about 21 ms.
+   The monitor and the volume meter see the gate as a mute without the
+   ramp, so the monitor can click on a handoff.  Each change of voice is
+   logged with the source's uuid.
+
+   Push-to-mute and push-to-talk keys are bound per source, but in a
+   group a key held on any member acts on every member: each tick, every
+   member's push-to state is the OR over the group as the tick began.  A
+   member's own key also applies within the tick, as it always has, so
+   the copies agree to within one audio block.  A member that stops being
+   rendered stops sharing its group's keys a tick later.
+
+   :param group:                The group id, or 0 for none
+   :param rank:                 The source's order in the pick; should be
+                                unique among the group's members, and
+                                equal ranks fall back to a fixed
+                                per-source order
+   :param shutdown_when_hidden: Whether the source stops producing audio
+                                while hidden
+
+---------------------
+
+.. function:: uint16_t obs_source_get_audio_group(const obs_source_t *source, uint32_t *rank, bool *shutdown_when_hidden)
+
+   :param rank:                 Optional; receives the rank last set
+   :param shutdown_when_hidden: Optional; receives the flag last set
+   :return:                     The source's audio group, or 0 when
+                                ungrouped
+
+---------------------
+
+.. function:: bool obs_source_audio_gated(const obs_source_t *source)
+
+   :return: *true* while the source's audio group has gated it
 
 ---------------------
 

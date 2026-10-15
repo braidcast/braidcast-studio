@@ -38,6 +38,7 @@
 #include "media-io/audio-io.h"
 
 #include "obs.h"
+#include "obs-audio-voice.h"
 
 #include <obsversion.h>
 #include <caption/caption.h>
@@ -593,7 +594,18 @@ struct obs_core_audio {
 	/* The audio thread's copy of obs_core_dedup.owner: seeded from it when audio is initialized,
 	 * then written only by the task each deduplication decision queues. */
 	obs_weak_source_t *monitoring_duplicating_source;
+
+	/* The audio-group voice pick (obs_source_set_audio_group). tick_seq numbers the ticks;
+	 * marking is set while the render order is built from a mix whose audio is mixed, so the
+	 * sources visited then are stamped as in-tree; voice_scratch is the pick's reused array. */
+	uint64_t tick_seq;
+	bool marking;
+	DARRAY(struct audio_voice_member) voice_scratch;
 };
+
+/* obs_source.audio_group: the group id and the shutdown-when-hidden flag. */
+#define AUDIO_GROUP_ID_MASK 0xFFFFu
+#define AUDIO_GROUP_SHUTDOWN_BIT (1u << 16)
 
 /* Which Audio Output Capture source monitoring deduplication is applied for. Kept apart from
  * obs_core_audio, which a runtime audio reset tears down and rebuilds, because capture threads
@@ -1039,6 +1051,32 @@ struct obs_source {
 	 * every show_refs-bound loop and tree walk stays correct while gated */
 	volatile long video_gated;
 
+	/* One voice per audio group (obs_source_set_audio_group). audio_group
+	 * (packed by AUDIO_GROUP_* below) and audio_rank are published by the
+	 * frontend. audio_gated is written only by the audio thread's pick. The
+	 * rest is the audio thread's own: the voice flag, the gate over the
+	 * previous and the current tick (the ramp runs between them, and a second
+	 * render in one tick repeats it), the tick stamps that place the source in
+	 * a mixed tree or on one side of a transition, and the group's push-to-mute
+	 * and push-to-talk pressed state as the tick began (the OR over its
+	 * members, so a key bound to one copy acts on every copy), stamped with the
+	 * tick that computed it. None of it is saved. */
+	volatile long audio_group;
+	volatile long audio_rank;
+	volatile long audio_gated;
+	bool audio_voice;
+	bool audio_gate_was_closed;
+	bool audio_gate_closed;
+	uint64_t audio_mixed_seq;
+	uint64_t audio_side_seq;
+	enum audio_voice_side audio_side;
+	const struct obs_source *audio_side_transition;
+	bool audio_group_user_ptm;
+	bool audio_group_user_ptt;
+	bool audio_group_ptm;
+	bool audio_group_ptt;
+	uint64_t audio_group_push_seq;
+
 	/* always-on capture-rate counters (obs_source_get_frame_counts).
 	 * source_profiler also counts async frames, but only under render
 	 * debug and with an rwlock per frame; these are the cheap truth.
@@ -1245,6 +1283,9 @@ extern bool obs_transition_init(obs_source_t *transition);
 extern void obs_transition_free(obs_source_t *transition);
 extern void obs_transition_tick(obs_source_t *transition, float t);
 extern void obs_transition_enum_sources(obs_source_t *transition, obs_source_enum_proc_t enum_callback, void *param);
+/* While `transition` is mixing audio across both sides, stores a reference to each side
+ * (either may be NULL) and returns true; otherwise stores NULL in both. */
+extern bool obs_transition_audio_sides(obs_source_t *transition, obs_source_t **side_a, obs_source_t **side_b);
 extern void obs_transition_save(obs_source_t *source, obs_data_t *data);
 extern void obs_transition_load(obs_source_t *source, obs_data_t *data);
 

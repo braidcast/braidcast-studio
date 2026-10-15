@@ -297,6 +297,16 @@ obs_source_t *obs_transition_get_source(obs_source_t *transition, enum obs_trans
 	return ret;
 }
 
+bool obs_transition_audio_sides(obs_source_t *transition, obs_source_t **side_a, obs_source_t **side_b)
+{
+	lock_transition(transition);
+	const bool mixing = transition->transitioning_audio;
+	*side_a = mixing ? obs_source_get_ref(transition->transition_sources[0]) : NULL;
+	*side_b = mixing ? obs_source_get_ref(transition->transition_sources[1]) : NULL;
+	unlock_transition(transition);
+	return mixing;
+}
+
 obs_source_t *obs_transition_get_active_source(obs_source_t *transition)
 {
 	obs_source_t *ret;

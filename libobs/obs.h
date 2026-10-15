@@ -1244,13 +1244,39 @@ EXPORT bool obs_source_showing(const obs_source_t *source);
  * Suppresses the source's showing state while leaving its 'showing' reference
  * counter untouched.  A gated source reports as not showing and receives its
  * 'hide' callback on the next video tick, so video capture can stop, while
- * every show_refs-bound loop and tree walk keeps its original bounds.  Audio is
- * unaffected: mixing is gated by the 'active' reference counter, not this.
+ * every show_refs-bound loop and tree walk keeps its original bounds.  The
+ * source keeps producing audio, since mixing is gated by the 'active' reference
+ * counter; but in an audio group (obs_source_set_audio_group) it counts as not
+ * showing, which ranks it below its showing copies when the group's voice is
+ * picked.
  */
 EXPORT void obs_source_set_video_gated(obs_source_t *source, bool gated);
 
 /** Returns true if the source's showing state is currently gated */
 EXPORT bool obs_source_video_gated(const obs_source_t *source);
+
+/**
+ * Puts the source in an audio group: copies of one sound, of which exactly one
+ * -- the group's voice -- is heard.  Each tick the audio thread picks the voice
+ * among the members in the tree of a mix whose audio is mixed (or, with none,
+ * among the active ones), keeping the current voice while it is showing, else
+ * preferring a showing member, then one without @p shutdown_when_hidden, then
+ * the lowest @p rank; every other member is gated, as if muted, and never saved
+ * as such.  A handoff crossfades over one audio block.  A push-to-mute or
+ * push-to-talk key held on any member acts on every member.  Group 0 takes the
+ * source out of every group.  Ranks should be unique; equal ranks fall back to
+ * a fixed per-source order.
+ */
+EXPORT void obs_source_set_audio_group(obs_source_t *source, uint16_t group, uint32_t rank, bool shutdown_when_hidden);
+
+/**
+ * Returns the source's audio group (0 when ungrouped), and through the optional
+ * out-parameters the rank and flag last set with it.
+ */
+EXPORT uint16_t obs_source_get_audio_group(const obs_source_t *source, uint32_t *rank, bool *shutdown_when_hidden);
+
+/** Returns true while the source's audio group has gated it */
+EXPORT bool obs_source_audio_gated(const obs_source_t *source);
 
 /** What a source's frame counters measure.  NONE also means "not live now". */
 enum obs_frame_count_kind {

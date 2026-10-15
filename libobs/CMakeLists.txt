@@ -30,6 +30,8 @@ target_sources(
     $<$<BOOL:${ENABLE_HEVC}>:obs-hevc.h>
     obs-audio-controls.c
     obs-audio-controls.h
+    obs-audio-voice.c
+    obs-audio-voice.h
     obs-audio.c
     obs-av1.c
     obs-av1.h

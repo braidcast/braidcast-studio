@@ -1115,6 +1115,10 @@ static bool obs_init_audio(struct audio_output_info *ai)
 	audio->monitoring_device_name = bstrdup("Default");
 	audio->monitoring_device_id = bstrdup("default");
 
+	/* Sources outlive an audio reset and keep the tick stamps of the core before it. Starting
+	 * from the clock rather than from zero means no new tick can ever match an old stamp. */
+	audio->tick_seq = os_gettime_ns();
+
 	/* Deduplication outlives a reset, so the new audio thread starts from the current owner. */
 	obs_audio_monitoring_dedup_set_monitor(audio->monitoring_device_id);
 	pthread_mutex_lock(&obs->dedup.mutex);
@@ -1167,6 +1171,7 @@ static void obs_free_audio(void)
 	deque_free(&audio->buffered_timestamps);
 	da_free(audio->render_order);
 	da_free(audio->root_nodes);
+	da_free(audio->voice_scratch);
 
 	da_free(audio->monitors);
 	bfree(audio->monitoring_device_name);

@@ -27,9 +27,21 @@ struct ts_info {
 #define DEBUG_AUDIO 0
 #define DEBUG_LAGGED_AUDIO 0
 
+/* Stamps `source` as in a mixed tree this tick while the render order is built from a mix whose
+ * audio is mixed. Stamped on every visit, so a source first reached through another mix still
+ * counts. */
+static inline void stamp_mixed(struct obs_core_audio *audio, obs_source_t *source)
+{
+	if (audio->marking) {
+		source->audio_mixed_seq = audio->tick_seq;
+	}
+}
+
 static void push_audio_tree(obs_source_t *parent, obs_source_t *source, void *p)
 {
 	struct obs_core_audio *audio = p;
+
+	stamp_mixed(audio, source);
 
 	if (da_find(audio->render_order, &source, 0) == DARRAY_INVALID) {
 		obs_source_t *s = obs_source_get_ref(source);
@@ -63,6 +75,8 @@ static void push_audio_tree2(obs_source_t *parent, obs_source_t *source, void *p
 	}
 
 	struct obs_core_audio *audio = p;
+	stamp_mixed(audio, source);
+
 	size_t idx = da_find(audio->render_order, &source, 0);
 
 	if (idx == DARRAY_INVALID) {
@@ -562,6 +576,152 @@ static inline void clear_audio_output_buf(obs_source_t *source, obs_source_t *du
 	}
 }
 
+struct side_stamp {
+	uint64_t tick_seq;
+	const obs_source_t *transition;
+	enum audio_voice_side side;
+};
+
+static void stamp_side(obs_source_t *source, const struct side_stamp *stamp)
+{
+	if (source->audio_side_seq != stamp->tick_seq) {
+		source->audio_side_seq = stamp->tick_seq;
+		source->audio_side = stamp->side;
+		source->audio_side_transition = stamp->transition;
+	} else if (source->audio_side != stamp->side || source->audio_side_transition != stamp->transition) {
+		/* Reached under two sides: mixed once, at full gain, as a duplicated root. */
+		source->audio_side = AUDIO_VOICE_UNSIDED;
+	}
+}
+
+static void stamp_side_tree(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	stamp_side(child, param);
+	UNUSED_PARAMETER(parent);
+}
+
+/* Marks the sources under each side of every mix root that is a transition mixing audio, so the
+ * voice pick knows whose path gain falls and whose rises. The sides are referenced under the
+ * transition's lock and walked after it is released: transition, then scene, as everywhere else. */
+static void stamp_transition_sides(struct obs_core_audio *audio)
+{
+	for (size_t i = 0; i < audio->root_nodes.num; i++) {
+		obs_source_t *root = audio->root_nodes.array[i];
+		obs_source_t *sides[2];
+
+		if (root->info.type != OBS_SOURCE_TYPE_TRANSITION ||
+		    !obs_transition_audio_sides(root, &sides[0], &sides[1])) {
+			continue;
+		}
+		for (size_t side = 0; side < 2; side++) {
+			if (!sides[side]) {
+				continue;
+			}
+			struct side_stamp stamp = {audio->tick_seq, root,
+						   side == 0 ? AUDIO_VOICE_SIDE_A : AUDIO_VOICE_SIDE_B};
+			stamp_side(sides[side], &stamp);
+			obs_source_enum_active_tree(sides[side], stamp_side_tree, &stamp);
+			obs_source_release(sides[side]);
+		}
+	}
+}
+
+static void apply_voice(const struct audio_voice_member *member)
+{
+	obs_source_t *source = member->source;
+	const bool closed = !member->open;
+
+	/* By uuid: a rename frees the name with no lock this thread could take. */
+	if (member->voice && !source->audio_voice) {
+		blog(LOG_INFO, "audio group %u: voice is now %s", (unsigned)member->group, obs_source_get_uuid(source));
+	}
+	source->audio_voice = member->voice;
+
+	source->audio_gate_was_closed = source->audio_gate_closed;
+	source->audio_gate_closed = closed;
+	if ((os_atomic_load_long(&source->audio_gated) != 0) != closed) {
+		os_atomic_set_long(&source->audio_gated, closed);
+	}
+}
+
+static inline void set_group_push_to(obs_source_t *source, bool user_ptm, bool user_ptt, bool ptm, bool ptt)
+{
+	source->audio_group_user_ptm = user_ptm;
+	source->audio_group_user_ptt = user_ptt;
+	source->audio_group_ptm = ptm;
+	source->audio_group_ptt = ptt;
+	source->audio_group_push_seq = obs->audio.tick_seq;
+}
+
+/* Push-to-mute and push-to-talk keys are bound per source, but a group is one sound: every
+ * member's push-to evaluation this tick sees the OR over the group's members, so the copy that is
+ * heard obeys a key bound to any of them. `members` is sorted by group (audio_voice_pick). */
+static void share_push_to(const struct audio_voice_member *members, size_t count)
+{
+	for (size_t start = 0; start < count;) {
+		bool user_ptm = false, user_ptt = false, ptm = false, ptt = false;
+		size_t end = start;
+		for (; end < count && members[end].group == members[start].group; end++) {
+			const obs_source_t *source = members[end].source;
+			user_ptm = user_ptm || source->user_push_to_mute_pressed;
+			user_ptt = user_ptt || source->user_push_to_talk_pressed;
+			ptm = ptm || source->push_to_mute_pressed;
+			ptt = ptt || source->push_to_talk_pressed;
+		}
+		for (size_t i = start; i < end; i++) {
+			set_group_push_to(members[i].source, user_ptm, user_ptt, ptm, ptt);
+		}
+		start = end;
+	}
+}
+
+/* One voice per audio group: every source in the render order is either ungrouped, and open, or
+ * goes through the pick with the rest of its group. Runs before anything renders this tick, so
+ * every render of a source this tick applies the same gate. */
+static void pick_audio_voices(struct obs_core_audio *audio)
+{
+	stamp_transition_sides(audio);
+
+	da_resize(audio->voice_scratch, 0);
+
+	for (size_t i = 0; i < audio->render_order.num; i++) {
+		obs_source_t *source = audio->render_order.array[i];
+		const uint32_t packed = (uint32_t)os_atomic_load_long(&source->audio_group);
+		struct audio_voice_member member = {
+			.group = (uint16_t)(packed & AUDIO_GROUP_ID_MASK),
+			.voice = source->audio_voice,
+			.open = !source->audio_gate_closed,
+			.source = source,
+		};
+
+		if (!member.group) {
+			audio_voice_ungrouped(&member);
+			apply_voice(&member);
+			set_group_push_to(source, false, false, false, false);
+			continue;
+		}
+
+		const bool sided = source->audio_side_seq == audio->tick_seq && !source->audio_is_duplicated;
+		member.rank = (uint32_t)os_atomic_load_long(&source->audio_rank);
+		member.shutdown_when_hidden = (packed & AUDIO_GROUP_SHUTDOWN_BIT) != 0;
+		member.enabled = source->enabled;
+		member.showing = obs_source_showing(source);
+		member.presence = source->audio_mixed_seq == audio->tick_seq        ? AUDIO_VOICE_IN_TREE
+				  : os_atomic_load_long(&source->activate_refs) > 0 ? AUDIO_VOICE_ACTIVE
+										    : AUDIO_VOICE_ABSENT;
+		member.side = sided ? source->audio_side : AUDIO_VOICE_UNSIDED;
+		member.transition = sided ? source->audio_side_transition : NULL;
+		da_push_back(audio->voice_scratch, &member);
+	}
+
+	audio_voice_pick(audio->voice_scratch.array, audio->voice_scratch.num);
+
+	for (size_t i = 0; i < audio->voice_scratch.num; i++) {
+		apply_voice(&audio->voice_scratch.array[i]);
+	}
+	share_push_to(audio->voice_scratch.array, audio->voice_scratch.num);
+}
+
 bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint64_t *out_ts, uint32_t mixers,
 		    struct audio_output_data *mixes)
 {
@@ -588,6 +748,7 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 
 	da_resize(audio->render_order, 0);
 	da_resize(audio->root_nodes, 0);
+	audio->tick_seq++;
 
 	deque_push_back(&audio->buffered_timestamps, &ts, sizeof(ts));
 	deque_peek_front(&audio->buffered_timestamps, &ts, sizeof(ts));
@@ -610,6 +771,7 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 		}
 
 		pthread_mutex_lock(&view->channels_mutex);
+		audio->marking = obs->video.mixes.array[j]->mix_audio;
 
 		/* NOTE: these are source channels, not audio channels */
 		for (uint32_t i = 0; i < MAX_CHANNELS; i++) {
@@ -637,6 +799,7 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 		}
 		pthread_mutex_unlock(&view->channels_mutex);
 	}
+	audio->marking = false;
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 
 	pthread_mutex_lock(&data->audio_sources_mutex);
@@ -650,6 +813,8 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	}
 
 	pthread_mutex_unlock(&data->audio_sources_mutex);
+
+	pick_audio_voices(audio);
 
 	/* ------------------------------------------------ */
 	/* render audio data */

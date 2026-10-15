@@ -28,3 +28,10 @@ target_include_directories(test_os_path PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_os_path PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 
 add_test(test_os_path ${CMAKE_CURRENT_BINARY_DIR}/test_os_path)
+
+# Audio-group voice pick test. The pick is internal to libobs, so its source is compiled in.
+add_executable(test_audio_voice test_audio_voice.c ${CMAKE_SOURCE_DIR}/libobs/obs-audio-voice.c)
+target_include_directories(test_audio_voice PRIVATE ${CMOCKA_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/libobs)
+target_link_libraries(test_audio_voice PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_test(test_audio_voice ${CMAKE_CURRENT_BINARY_DIR}/test_audio_voice)
