@@ -220,9 +220,7 @@ int WindowManager::Detach(const std::string &dockId)
 	CefBrowserSettings browser_settings;
 	browser_settings.background_color = kAppBackgroundColor;
 	CefWindowInfo window_info;
-	RECT client_rc;
-	GetClientRect(hwnd, &client_rc);
-	window_info.SetAsChild(hwnd, CefRect(0, 0, client_rc.right - client_rc.left, client_rc.bottom - client_rc.top));
+	InitChildBrowserWindowInfo(window_info, hwnd);
 
 	CefRefPtr<CefBrowser> browser =
 		CefBrowserHost::CreateBrowserSync(window_info, client, url, browser_settings, nullptr, nullptr);

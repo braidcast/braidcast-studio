@@ -36,7 +36,33 @@ constexpr int kMaxRendererReloads = 3;
 // A browser that survived this long since its last crash counts as recovered, so an
 // unrelated crash later in the session still gets the full retry budget.
 constexpr std::chrono::seconds kRendererCrashWindow{60};
+
+// The permission bits OnShowPermissionPrompt grants. CEF_API_ADDED arrived with CEF's
+// versioned API, which predates the loopback type, so a build without the macro has
+// nothing to grant either. Two #ifs, not one &&: an undefined function-like macro is a
+// preprocessor syntax error even behind a false defined().
+#if defined(CEF_API_ADDED)
+#if CEF_API_ADDED(14500)
+#define BRAIDCAST_CEF_HAS_LOOPBACK_PERMISSION 1
+#endif
+#endif
+#if defined(BRAIDCAST_CEF_HAS_LOOPBACK_PERMISSION)
+constexpr uint32_t kGrantedPermissions = CEF_PERMISSION_TYPE_LOOPBACK_NETWORK;
+#else
+constexpr uint32_t kGrantedPermissions = 0;
+#endif
 } // namespace
+
+void InitChildBrowserWindowInfo(CefWindowInfo &info, CefWindowHandle parent)
+{
+	RECT rc;
+	GetClientRect(parent, &rc);
+	info.SetAsChild(parent, CefRect(0, 0, rc.right - rc.left, rc.bottom - rc.top));
+	// The host's child-window embedding (layout, draggable-region subclassing, key
+	// handling) was built against Alloy style. It is the only style the Alloy bootstrap
+	// offers; from CEF 6613 a windowed browser defaults to Chrome style instead.
+	info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+}
 
 CefRefPtr<Client> Client::Shared()
 {
@@ -49,6 +75,9 @@ void Client::SetShared(CefRefPtr<Client> client)
 }
 
 bool Client::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/,
+#if CHROME_VERSION_BUILD >= 6834
+			   int /*popup_id*/,
+#endif
 			   const CefString &target_url, const CefString & /*target_frame_name*/,
 			   CefLifeSpanHandler::WindowOpenDisposition /*target_disposition*/, bool /*user_gesture*/,
 			   const CefPopupFeatures & /*popupFeatures*/, CefWindowInfo & /*windowInfo*/,
@@ -222,6 +251,23 @@ void Client::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> fram
 	}
 	HostLog("[cef] load error " + std::to_string(error_code) + " (" + error_text.ToString() + ") for " +
 		StringUtil::WithoutQuery(failed_url.ToString()));
+}
+
+bool Client::OnShowPermissionPrompt(CefRefPtr<CefBrowser> /*browser*/, uint64_t /*prompt_id*/,
+				    const CefString &requesting_origin, uint32_t requested_permissions,
+				    CefRefPtr<CefPermissionPromptCallback> callback)
+{
+	CEF_REQUIRE_UI_THREAD();
+	// Only a request made up entirely of granted bits: accepting a mixed one would grant
+	// its other permissions too.
+	if (kGrantedPermissions != 0 && requested_permissions != 0 &&
+	    (requested_permissions & ~kGrantedPermissions) == 0) {
+		callback->Continue(CEF_PERMISSION_RESULT_ACCEPT);
+		return true;
+	}
+	blog(LOG_INFO, "[cef] permission prompt from %s (0x%x) left to default handling",
+	     requesting_origin.ToString().c_str(), requested_permissions);
+	return false;
 }
 
 bool Client::OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> /*request*/,

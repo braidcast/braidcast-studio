@@ -1394,11 +1394,11 @@ bool ObsBootstrap::Start()
 	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x gpudiag=%d)", (unsigned)Log::DebugMask(),
 	    dbg.gpuDiag ? 1 : 0);
 
-	// Every decision about the remote-debugging port was taken before CefInitialize,
-	// back in main.cpp, and this is the first point in the boot where a blog() reaches
-	// the session log -- so the findings queued along the way are flushed here, ahead
-	// of the state summary they explain.
-	DevToolsPort::FlushPendingWarnings();
+	// The remote-debugging decisions (main.cpp) and App's command-line and preference
+	// setup all ran before CefInitialize returned, and this is the first point in the
+	// boot where a blog() reaches the session log -- so the findings queued along the
+	// way are flushed here, ahead of the state summary they explain.
+	Log::FlushBootWarnings();
 	// Same ordering constraint: main.cpp took the GPU decision before CefInitialize.
 	GpuSafeMode::LogBootDecision();
 

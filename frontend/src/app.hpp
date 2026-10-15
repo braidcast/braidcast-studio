@@ -5,6 +5,7 @@
 #include <string>
 
 #include "include/cef_app.h"
+#include "include/cef_client.h"
 #include "include/cef_render_process_handler.h"
 #include "include/cef_scheme.h"
 #include "include/wrapper/cef_message_router.h"
@@ -39,7 +40,11 @@ public:
 					   CefRefPtr<CefCommandLine> command_line) override;
 
 	// CefBrowserProcessHandler methods:
+	// Registers the app:// handler factory, creates the default client and, under the
+	// Chrome bootstrap, locks down the global profile's Chrome preferences.
 	void OnContextInitialized() override;
+	// The client for browsers Chrome's own UI opens; see UnmanagedBrowserClient in app.cpp.
+	CefRefPtr<CefClient> GetDefaultClient() override { return default_client_; }
 
 	// CefRenderProcessHandler methods:
 	void OnWebKitInitialized() override;
@@ -52,6 +57,10 @@ public:
 
 private:
 	const std::string startup_url_;
+
+	// Handed to every browser Chrome's UI creates. Created in OnContextInitialized();
+	// browser-process UI thread only.
+	CefRefPtr<CefClient> default_client_;
 
 	// Renderer-side message router for the window.cefQuery() bridge. Created in
 	// OnWebKitInitialized(); only touched on the render-process main thread.

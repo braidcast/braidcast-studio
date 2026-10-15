@@ -1,8 +1,10 @@
 #include "log.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <vector>
 
 #include "util/string_util.hpp"
 
@@ -17,6 +19,17 @@ namespace {
 // gated DBG() calls cost one relaxed atomic read plus a bit test until the boot
 // seed or diagnostics.setDebug sets it.
 std::atomic<Log::CatMask> g_debugMask{Log::kNoCats};
+
+// Every message BootWarn() has raised this process, in order, and never emptied: the
+// vector doubles as the "already said this" record. That is what keeps a path that runs
+// twice (the devtools self-test resolves the port a second time, after the flush) from
+// landing its warning twice. Main thread only.
+std::vector<std::string> g_bootWarnings;
+// Index of the first message FlushBootWarnings() has not put on the session log, and
+// whether that flush has happened at all -- BootWarn() needs the second to know whether
+// its own immediate blog() already landed there.
+size_t g_bootWarningsFlushed = 0;
+bool g_bootWarningsFlushDone = false;
 
 std::string LowerTrim(const std::string &s)
 {
@@ -149,6 +162,28 @@ void Debug(LogCat cat, const char *fmt, ...)
 	line += "] ";
 	line += body;
 	blog(LOG_DEBUG, "%s", line.c_str());
+}
+
+void BootWarn(const std::string &message)
+{
+	if (std::find(g_bootWarnings.begin(), g_bootWarnings.end(), message) != g_bootWarnings.end()) {
+		return;
+	}
+	blog(LOG_WARNING, "%s", message.c_str());
+	g_bootWarnings.push_back(message);
+	// Past the flush, the blog() above already reaches the session log, so this message
+	// is done -- leaving it behind the cursor would let a second flush repeat it.
+	if (g_bootWarningsFlushDone) {
+		g_bootWarningsFlushed = g_bootWarnings.size();
+	}
+}
+
+void FlushBootWarnings()
+{
+	for (; g_bootWarningsFlushed < g_bootWarnings.size(); ++g_bootWarningsFlushed) {
+		blog(LOG_WARNING, "%s", g_bootWarnings[g_bootWarningsFlushed].c_str());
+	}
+	g_bootWarningsFlushDone = true;
 }
 
 } // namespace Log

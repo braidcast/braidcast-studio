@@ -10,7 +10,9 @@
 #include "include/cef_drag_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_permission_handler.h"
 #include "include/cef_request_handler.h"
+#include "include/cef_version.h"
 #include "include/wrapper/cef_message_router.h"
 
 // The app's dark base background (#0a0a0b, mirrors --color-base in app.css). Set as every
@@ -18,6 +20,9 @@
 // instead of flashing the CEF default white before the Svelte UI paints. Keep in sync with
 // --color-base if the base theme changes.
 constexpr cef_color_t kAppBackgroundColor = 0xFF0A0A0Bu;
+
+// Set `info` up for a UI browser embedded as a child filling `parent`'s client area.
+void InitChildBrowserWindowInfo(CefWindowInfo &info, CefWindowHandle parent);
 
 class ObsQueryHandler;
 
@@ -31,6 +36,7 @@ class Client : public CefClient,
 	       public CefDisplayHandler,
 	       public CefDragHandler,
 	       public CefLoadHandler,
+	       public CefPermissionHandler,
 	       public CefRequestHandler,
 	       public CefContextMenuHandler,
 	       public CefKeyboardHandler {
@@ -50,6 +56,7 @@ public:
 	CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
 	CefRefPtr<CefDragHandler> GetDragHandler() override { return this; }
 	CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+	CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
 	CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
 	CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
 	CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
@@ -59,8 +66,11 @@ public:
 	// CefLifeSpanHandler methods:
 	// Cancel every page-initiated popup (window.open / target=_blank): all real
 	// windows are host-driven, so the page must never spawn an unmanaged CEF popup.
-	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString &target_url,
-			   const CefString &target_frame_name,
+	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+#if CHROME_VERSION_BUILD >= 6834
+			   int popup_id,
+#endif
+			   const CefString &target_url, const CefString &target_frame_name,
 			   CefLifeSpanHandler::WindowOpenDisposition target_disposition, bool user_gesture,
 			   const CefPopupFeatures &popupFeatures, CefWindowInfo &windowInfo,
 			   CefRefPtr<CefClient> &client, CefBrowserSettings &settings,
@@ -84,6 +94,14 @@ public:
 	void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int http_status_code) override;
 	void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode error_code,
 			 const CefString &error_text, const CefString &failed_url) override;
+
+	// CefPermissionHandler methods:
+	// Grant Local Network Access to loopback: the app:// UI embeds 127.0.0.1 pages
+	// (overlay previews, browser docks), and an Alloy-style browser ignores the prompt
+	// by default, which would block them. Any other request keeps the default handling.
+	bool OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser, uint64_t prompt_id,
+				    const CefString &requesting_origin, uint32_t requested_permissions,
+				    CefRefPtr<CefPermissionPromptCallback> callback) override;
 
 	// CefRequestHandler methods:
 	bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request,

@@ -171,6 +171,18 @@ DebugComponents ParseComponents(const std::string &spec);
 // evaluated when the gate is off.
 void Debug(LogCat cat, const char *fmt, ...) BRAIDCAST_PRINTF_ATTR(2, 3);
 
+// Raise a warning that has to survive the boot ordering. Emitted at once (for whoever
+// is watching stderr) AND queued for FlushBootWarnings(): the decisions taken before and
+// during CefInitialize run before ObsBootstrap::Start() installs the session-log handler,
+// so an immediate blog() alone reaches a console and never a file -- and a finding that
+// never lands on disk is not a finding. A message already raised this process is
+// dropped, so a path that runs twice cannot double-log it. Main thread only.
+void BootWarn(const std::string &message);
+
+// Emit every message BootWarn() has raised that has not been emitted here yet. Call
+// once, immediately after SessionLog::Init().
+void FlushBootWarnings();
+
 } // namespace Log
 
 // Gated DEBUG log. Evaluates its arguments ONLY when that category is on, so

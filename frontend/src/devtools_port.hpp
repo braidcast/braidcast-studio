@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 
 // CEF's built-in remote-debugging (Chrome DevTools Protocol) listener, gated
 // behind an opt-in named in the environment.
@@ -42,18 +41,5 @@ uint16_t DecideAtBoot();
 // question about the gate, not about a socket -- nothing observed at runtime is
 // allowed to lower it.
 uint16_t Active();
-
-// Raise a debug-port warning that has to survive the boot ordering. Emitted at once
-// (for whoever is watching stderr) AND queued for FlushPendingWarnings(): every
-// decision about this port is taken before ObsBootstrap::Start() installs the
-// session-log handler, so an immediate blog() alone reaches a console and never a
-// file -- and a finding that never lands on disk is not a finding. A message already
-// raised this process is dropped, so a path that runs twice (the self-test resolves the
-// port a second time, after the flush) cannot double-log it.
-void Warn(const std::string &message);
-
-// Emit every message Warn() has raised that has not been emitted here yet. Call once,
-// immediately after SessionLog::Init().
-void FlushPendingWarnings();
 
 } // namespace DevToolsPort

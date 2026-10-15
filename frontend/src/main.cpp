@@ -16,6 +16,7 @@
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
+#include "include/cef_version.h"
 #include "include/wrapper/cef_closure_task.h"
 
 #include "app.hpp"
@@ -791,6 +792,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		os_mkdirs(cefCache.c_str());
 		CefString(&settings.root_cache_path).FromString(cefCache);
 	}
+#if CHROME_VERSION_MAJOR >= 136
+	else if (devToolsPort != 0) {
+		// Chromium 136 and later refuse remote debugging on the default user-data
+		// directory, which is where an empty root_cache_path leaves the profile.
+		Log::BootWarn("[devtools] no CEF cache root could be resolved, so the profile is on Chromium's "
+			      "default user-data directory, where Chromium 136 and later refuse remote "
+			      "debugging; port " +
+			      std::to_string(devToolsPort) + " may not open");
+	}
+#endif
 
 	// Pin CEF's own debug.log to a known, findable path under the config base
 	// instead of the default (cwd/"debug.log" in the rundir). This is where the CEF
@@ -941,9 +952,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	CefBrowserSettings browser_settings;
 	browser_settings.background_color = kAppBackgroundColor;
 	CefWindowInfo window_info;
-	RECT host_rc;
-	GetClientRect(host, &host_rc);
-	window_info.SetAsChild(host, CefRect(0, 0, host_rc.right - host_rc.left, host_rc.bottom - host_rc.top));
+	InitChildBrowserWindowInfo(window_info, host);
 
 	g_browser = CefBrowserHost::CreateBrowserSync(window_info, client, app->startup_url(), browser_settings,
 						      nullptr, nullptr);

@@ -52,17 +52,18 @@ bool ReadBundleFile(const std::string &url_path, std::vector<char> &out, std::st
 // Serves a single in-memory file (or a 404) for one app:// request.
 class AppResourceHandler : public CefResourceHandler {
 public:
-	bool Open(CefRefPtr<CefRequest> request, bool &handle_request, CefRefPtr<CefCallback> callback) override
+	bool Open(CefRefPtr<CefRequest> request, bool &handle_request, CefRefPtr<CefCallback> /*callback*/) override
 	{
 		CEF_REQUIRE_IO_THREAD();
-		handle_request = true; // resolve synchronously below
+		// Resolved synchronously: with handle_request set, CEF proceeds on the return
+		// value alone, and the callback is only for the asynchronous path.
+		handle_request = true;
 
 		CefURLParts parts;
 		CefParseURL(request->GetURL(), parts);
 		const std::string path = CefString(&parts.path).ToString();
 
 		found_ = ReadBundleFile(path, data_, content_type_);
-		callback->Continue();
 		return true;
 	}
 

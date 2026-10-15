@@ -1,12 +1,8 @@
 #include "devtools_port.hpp"
 
-#include <util/base.h>
-
-#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "log.hpp"
 #include "util/env_config.hpp"
@@ -33,18 +29,6 @@ constexpr const char *kPortVar = "BRAIDCAST_DEVTOOLS_PORT";
 
 uint16_t g_activePort = 0;
 
-// Every message Warn() has raised this process, in order, and never emptied: the vector
-// doubles as the "already said this" record. That is what keeps Resolve()'s
-// misconfiguration warning from landing twice, since the self-test resolves a second
-// time after the flush, when an immediate blog() would reach the session log directly.
-// Main thread only.
-std::vector<std::string> g_warnings;
-// Index of the first message FlushPendingWarnings() has not put on the session log, and
-// whether that flush has happened at all -- Warn() needs the second to know whether its
-// own immediate blog() already landed there.
-size_t g_flushed = 0;
-bool g_flushDone = false;
-
 } // namespace
 
 uint16_t DevToolsPort::Resolve()
@@ -69,9 +53,9 @@ uint16_t DevToolsPort::Resolve()
 		const long requested = std::strtol(value.c_str(), &end, 10);
 		const bool wellFormed = !value.empty() && *end == '\0';
 		if (!wellFormed || requested < kMinPort || requested > kMaxPort) {
-			Warn("[devtools] " + std::string(kPortVar) + "='" + *raw + "' is not a port in [" +
-			     std::to_string(kMinPort) + ", " + std::to_string(kMaxPort) + "] -- using " +
-			     std::to_string(kDefaultPort) + " instead");
+			Log::BootWarn("[devtools] " + std::string(kPortVar) + "='" + *raw + "' is not a port in [" +
+				      std::to_string(kMinPort) + ", " + std::to_string(kMaxPort) + "] -- using " +
+				      std::to_string(kDefaultPort) + " instead");
 		} else {
 			return static_cast<uint16_t>(requested);
 		}
@@ -88,26 +72,4 @@ uint16_t DevToolsPort::DecideAtBoot()
 uint16_t DevToolsPort::Active()
 {
 	return g_activePort;
-}
-
-void DevToolsPort::Warn(const std::string &message)
-{
-	if (std::find(g_warnings.begin(), g_warnings.end(), message) != g_warnings.end()) {
-		return;
-	}
-	blog(LOG_WARNING, "%s", message.c_str());
-	g_warnings.push_back(message);
-	// Past the flush, the blog() above already reaches the session log, so this message
-	// is done -- leaving it behind the cursor would let a second flush repeat it.
-	if (g_flushDone) {
-		g_flushed = g_warnings.size();
-	}
-}
-
-void DevToolsPort::FlushPendingWarnings()
-{
-	for (; g_flushed < g_warnings.size(); ++g_flushed) {
-		blog(LOG_WARNING, "%s", g_warnings[g_flushed].c_str());
-	}
-	g_flushDone = true;
 }
