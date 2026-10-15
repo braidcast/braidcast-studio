@@ -35,7 +35,14 @@ set(CEF_RUNTIME_LIBRARY_FLAG "/MD" CACHE STRING "" FORCE)
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
 include("${CEF_ROOT}/cmake/FindCEF.cmake")
 
+# The frontend and its wrapper build as C++20, which newer CEF headers require. The
+# distribution pins its own /std: flag in CEF_CXX_COMPILER_FLAGS, which the CEF macros
+# pass as a compile option that would override the CXX_STANDARD property, so drop it
+# and let the property be the one source of the language standard.
+list(FILTER CEF_CXX_COMPILER_FLAGS EXCLUDE REGEX "^/std:")
+
 add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}" libcef_dll_wrapper)
+set_target_properties(libcef_dll_wrapper PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
 # Logical target for libcef.lib (the import library) per the CEF macro contract.
 add_logical_target("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
@@ -521,6 +528,11 @@ endif()
 
 # CEF's required compiler/linker flags, defines, and include paths.
 set_executable_target_properties(${_target})
+
+# C++20 (see the wrapper above). /Zc:char8_t- keeps std::filesystem::path::u8string()
+# returning std::string, as the rest of the OBS tree does under C++20.
+set_target_properties(${_target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(${_target} PRIVATE /Zc:char8_t-)
 
 target_include_directories(
   ${_target}
