@@ -50,7 +50,7 @@ struct Counters {
 
 struct State {
 	Phase phase = Phase::Idle;
-	int exitCode = -1; // -1 = not yet decided; see LoopbackSilenceSelfTestExitCode()
+	int exitCode = SelfTest::kUndecided; // see LoopbackSilenceSelfTestExitCode()
 	std::string skipReason;
 
 	obs_source_t *capture = nullptr;
@@ -484,6 +484,24 @@ bool ObsBootstrap::RunLoopbackSilenceSelfTest()
 			return true;
 		}
 	}
+}
+
+void ObsBootstrap::CancelLoopbackSilenceSelfTest()
+{
+	State &st = g_state;
+	if (st.phase == Phase::Idle || st.phase == Phase::Finished) {
+		return;
+	}
+	// The window is judged only once it has run its length, so a cut-short run judged nothing.
+	const auto measured = st.phase == Phase::Measuring ? std::chrono::steady_clock::now() - st.phaseStart
+							   : std::chrono::steady_clock::duration::zero();
+	HostLog("[selftest-stream] loopback-silence " +
+		SelfTest::SettleCancelled(st.exitCode, &st.skipReason,
+					  size_t(std::chrono::duration_cast<std::chrono::seconds>(measured).count()),
+					  size_t(st.durationSec), "seconds measured", -1));
+	Teardown(st);
+	WriteSummary(st);
+	st.phase = Phase::Finished;
 }
 
 int ObsBootstrap::LoopbackSilenceSelfTestExitCode()

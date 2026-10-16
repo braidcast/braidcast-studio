@@ -7,6 +7,7 @@
 #include "scene_items.hpp"
 #include "transitions.hpp"
 
+#include "diag/gpu_diag.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/StorePaths.hpp"
@@ -308,6 +309,13 @@ void Save(const std::string &path)
 		return;
 	}
 	ReportSaveResult(SaveJsonAtomic(root, path), path);
+}
+
+void SaveUnlessBrowserSourcesDisabled()
+{
+	if (!GpuDiag::BrowserSourcesDisabled()) {
+		Save();
+	}
 }
 
 void HoldFallback()

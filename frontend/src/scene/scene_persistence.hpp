@@ -54,6 +54,10 @@ bool MoveSceneToIndex(const std::string &canvasUuid, const std::string &sceneUui
 void Save();
 // Persist to an explicit file path.
 void Save(const std::string &path);
+// Save(), skipped while the browser-source kill switch is armed (GpuDiag::BrowserSourcesDisabled):
+// that run blanks every browser source's URL in memory, so a save would persist about:blank over
+// the user's real URLs. For the saves no user action asked for -- shutdown's and the self-tests'.
+void SaveUnlessBrowserSourcesDisabled();
 
 // Restore the active collection and bind channel 0 to the saved current scene
 // (falling back to the first loaded scene). Returns true when a collection was

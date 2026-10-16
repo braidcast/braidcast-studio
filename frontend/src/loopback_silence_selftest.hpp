@@ -62,6 +62,12 @@ bool RunLoopbackSilenceSelfTest();
 // 3 is deliberately not 0: a run that could not judge itself must never read as a pass.
 int LoopbackSilenceSelfTestExitCode();
 
+// Shutdown's cancel for a run quit mid-flow: removes the audio callback, restores the output
+// channel, releases the capture and writes the summary, keeping a verdict already reached and
+// otherwise reporting NOT RUN (SelfTest::SettleCancelled). A no-op if never armed or already
+// finished.
+void CancelLoopbackSilenceSelfTest();
+
 } // namespace ObsBootstrap
 
 #endif // OBS_MULTISTREAM_FRONTEND_LOOPBACK_SILENCE_SELFTEST_HPP_

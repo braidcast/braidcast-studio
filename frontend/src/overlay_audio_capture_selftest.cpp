@@ -213,7 +213,7 @@ struct AlertResult {
 
 struct State {
 	Phase phase = Phase::Idle;
-	int exitCode = -1; // -1 = not yet decided; see OverlayAudioCaptureSelfTestExitCode()
+	int exitCode = SelfTest::kUndecided; // see OverlayAudioCaptureSelfTestExitCode()
 	std::string reason;
 
 	bool monitorVariant = false;
@@ -336,8 +336,12 @@ constexpr double kEnergyMarginSec = 0.25;
 // libobs's own, AUDIO_OUTPUT_FRAMES -- of the clip's audible stretch.
 constexpr size_t kGapBlockFrames = 1024;
 constexpr int kMaxGapBlocks = 1;
-// A gap block is one where the mix's level is under this share of the clip's there; a block counts
-// only where the clip's level is at least kGapFloor of its loudest block's.
+// Gaps are measured in bins this much finer than a block, so a loss counts the same wherever it
+// falls against the clip: N lost blocks cover at least 8N-1 whole bins and at most 8N, both of
+// which round up to N blocks.
+constexpr size_t kGapBinFrames = kGapBlockFrames / 8;
+// A gap bin is one where the mix's level is under this share of the clip's there; a bin counts
+// only where the clip's level is at least kGapFloor of its loudest bin's.
 constexpr double kGapLevel = 0.5;
 constexpr double kGapFloor = 0.01;
 // Voice variant: the first copy is taken off air this long after the hand-off alert fires, so it
@@ -366,6 +370,10 @@ constexpr double kBlockSec = 0.01;
 // audio is silence (or the keepalive's DC, which the per-block mean removes), whose correlation
 // with the clip is near zero; an intact block is above 0.99.
 constexpr double kMinBlockCorrelation = 0.9;
+
+// How far a block may sit from the last arrived block's lag. Chromium's loopback capture varies its
+// resampling ratio to correct drift (services/audio/snooper_node.cc); observed: ~1 frame per 20 ms.
+constexpr long long kMaxWarpFrames = 16;
 
 // Bounds what each capture records: this long per channel at the mix rate.
 constexpr int kMaxCapturedSec = 120;
@@ -716,10 +724,10 @@ void ScoreLevel(const std::vector<float> &captured, const std::vector<float> &re
 	}
 	out.energyRatio = clipEnergy > 0.0 ? mixEnergy / clipEnergy : 0.0;
 
-	std::vector<std::pair<double, double>> levels; // {clip, mix} mean square per block
+	std::vector<std::pair<double, double>> levels; // {clip, mix} mean square per bin
 	double loudest = 0.0;
-	for (size_t start = 0; start < reference.size(); start += kGapBlockFrames) {
-		const size_t end = std::min(reference.size(), start + kGapBlockFrames);
+	for (size_t start = 0; start < reference.size(); start += kGapBinFrames) {
+		const size_t end = std::min(reference.size(), start + kGapBinFrames);
 		double clip = 0.0, mix = 0.0;
 		for (size_t k = start; k < end; ++k) {
 			clip += double(reference[k]) * reference[k];
@@ -728,22 +736,23 @@ void ScoreLevel(const std::vector<float> &captured, const std::vector<float> &re
 		levels.emplace_back(clip / double(end - start), mix / double(end - start));
 		loudest = std::max(loudest, levels.back().first);
 	}
-	int run = 0;
+	size_t run = 0;
 	for (const auto &[clip, mix] : levels) {
 		// Mean squares, so the level bounds are squared.
 		const bool audible = clip >= loudest * kGapFloor * kGapFloor;
 		run = audible && mix < clip * kGapLevel * kGapLevel ? run + 1 : 0;
-		out.maxGapBlocks = std::max(out.maxGapBlocks, run);
+		const size_t blocks = (run * kGapBinFrames + kGapBlockFrames - 1) / kGapBlockFrames;
+		out.maxGapBlocks = std::max(out.maxGapBlocks, int(blocks));
 	}
 }
 
 // Score the clip against `captured` at alignment `lag`, block by block. A block arrived when its
-// waveform matches the clip's there, and is credited with its share of the clip's energy; a block
-// that did not -- silence where the clip had sound -- is credited nothing. Arrival is judged on
-// waveform, not level, because the monitor path runs through the endpoint's own processing: on the
-// development machine's speakers that compresses the onset and lifts the tail by a fixed curve
-// (identical on every alert), which a level test would misread as loss. The path's gain is
-// reported, not judged.
+// waveform matches the clip's within kMaxWarpFrames of the lag the last arrived block matched at
+// (`lag` until one has), and is credited with its share of the clip's energy; a block that did not
+// -- silence where the clip had sound -- is credited nothing. Arrival is judged on waveform, not
+// level, because the monitor path runs through the endpoint's own processing: on the development
+// machine's speakers that compresses the onset and lifts the tail by a fixed curve (identical on
+// every alert), which a level test would misread as loss. The path's gain is reported, not judged.
 Alignment Score(const std::vector<float> &captured, const std::vector<float> &reference, long long lag, uint32_t rate)
 {
 	struct Block {
@@ -754,30 +763,57 @@ Alignment Score(const std::vector<float> &captured, const std::vector<float> &re
 	};
 	std::vector<Block> blocks;
 	const size_t blockLen = std::max<size_t>(1, size_t(kBlockSec * rate));
-	const auto sampleAt = [&](size_t k) {
-		const long long i = lag + (long long)k;
-		return (i >= 0 && i < (long long)captured.size()) ? double(captured[size_t(i)]) : 0.0;
+	struct Match {
+		double correlation = 0.0;
+		double gain = 0.0;
 	};
-	for (size_t start = 0; start < reference.size(); start += blockLen) {
-		const size_t end = std::min(reference.size(), start + blockLen);
+	// The block [start, end) of the clip, whose energy is refEnergy, against `captured` at `at`, its
+	// DC removed.
+	const auto matchAt = [&](size_t start, size_t end, double refEnergy, long long at) {
+		const auto sampleAt = [&](size_t k) {
+			const long long i = at + (long long)k;
+			return (i >= 0 && i < (long long)captured.size()) ? double(captured[size_t(i)]) : 0.0;
+		};
 		double mean = 0.0;
 		for (size_t k = start; k < end; ++k) {
 			mean += sampleAt(k);
 		}
 		mean /= double(end - start);
 
-		double refEnergy = 0.0, capEnergy = 0.0, cross = 0.0;
+		double capEnergy = 0.0, cross = 0.0;
 		for (size_t k = start; k < end; ++k) {
 			const double c = sampleAt(k) - mean;
-			refEnergy += double(reference[k]) * reference[k];
 			capEnergy += c * c;
 			cross += c * reference[k];
 		}
-		const double correlation = refEnergy > 0.0 && capEnergy > 0.0 ? cross / std::sqrt(refEnergy * capEnergy)
-									      : 0.0;
+		Match m;
+		m.correlation = refEnergy > 0.0 && capEnergy > 0.0 ? cross / std::sqrt(refEnergy * capEnergy) : 0.0;
+		m.gain = refEnergy > 0.0 ? cross / refEnergy : 0.0;
+		return m;
+	};
+	long long warp = 0; // the last arrived block's lag, from `lag`
+	for (size_t start = 0; start < reference.size(); start += blockLen) {
+		const size_t end = std::min(reference.size(), start + blockLen);
+		double refEnergy = 0.0;
+		for (size_t k = start; k < end; ++k) {
+			refEnergy += double(reference[k]) * reference[k];
+		}
+		Match best;
+		long long bestWarp = warp;
+		for (long long w = warp - kMaxWarpFrames; w <= warp + kMaxWarpFrames; ++w) {
+			const Match m = matchAt(start, end, refEnergy, lag + w);
+			if (m.correlation > best.correlation) {
+				best = m;
+				bestWarp = w;
+			}
+		}
+		const bool arrived = best.correlation >= kMinBlockCorrelation;
+		// Only an arrived block moves the search: a silent or lost one has no lag to follow.
+		if (arrived) {
+			warp = bestWarp;
+		}
 		const double t = double(start) / rate;
-		blocks.push_back(Block{refEnergy, refEnergy > 0.0 ? cross / refEnergy : 0.0,
-				       correlation >= kMinBlockCorrelation, t >= kOnsetFromSec && t < kOnsetToSec});
+		blocks.push_back(Block{refEnergy, best.gain, arrived, t >= kOnsetFromSec && t < kOnsetToSec});
 	}
 
 	// Weighted by the clip's energy, so the loud blocks set the reported level rather than a
@@ -1122,7 +1158,7 @@ void Teardown(State &st)
 		st.source = nullptr;
 		if (st.voiceVariant) {
 			// The copies' adoption saved them into the collection; this saves them back out.
-			SceneCollection::Save();
+			SceneCollection::SaveUnlessBrowserSourcesDisabled();
 		}
 	}
 	if (st.monitorDeviceSwapped) {
@@ -1596,6 +1632,21 @@ bool ObsBootstrap::RunOverlayAudioCaptureSelfTest()
 			return true;
 		}
 	}
+}
+
+void ObsBootstrap::CancelOverlayAudioCaptureSelfTest()
+{
+	State &st = g_state;
+	if (st.phase == Phase::Idle || st.phase == Phase::Finished) {
+		return;
+	}
+	// Alerts are judged only once all have fired, so a cut-short run has judged none of them.
+	HostLog(std::string(kLogTag) + " " +
+		SelfTest::SettleCancelled(st.exitCode, &st.reason, size_t(st.fired), size_t(st.alertCount), "alerts",
+					  -1));
+	Teardown(st);
+	WriteSummary(st);
+	st.phase = Phase::Finished;
 }
 
 int ObsBootstrap::OverlayAudioCaptureSelfTestExitCode()

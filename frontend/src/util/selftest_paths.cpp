@@ -54,6 +54,21 @@ const char *ResultName(int exitCode)
 	return exitCode == 0 ? "PASS" : exitCode == 1 ? "FAIL" : exitCode == 2 ? "SKIP" : "NOT RUN";
 }
 
+std::string SettleCancelled(int &exitCode, std::string *reason, size_t done, size_t total, const char *unit, int failed)
+{
+	const bool decided = exitCode >= 0;
+	if (!decided) {
+		exitCode = failed > 0 ? 1 : 3;
+	}
+	const std::string judged = failed < 0 ? "none judged" : std::to_string(failed) + " failed";
+	const std::string note = std::string(ResultName(exitCode)) + " shutdown after " + std::to_string(done) + "/" +
+				 std::to_string(total) + " " + unit + ", " + judged + " (skipped)";
+	if (!decided && reason) {
+		*reason = note;
+	}
+	return note;
+}
+
 int CountSessionLogLines(const std::string &needle)
 {
 	std::ifstream in(SessionLog::CurrentPath());

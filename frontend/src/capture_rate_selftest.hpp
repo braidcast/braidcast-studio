@@ -42,6 +42,12 @@ bool RunCaptureRateSelfTest();
 // inconclusive), 3 infra error. 0 before the flow finishes.
 int CaptureRateSelfTestExitCode();
 
+// Shutdown's cancel for a run quit mid-flow: tears down what the flow holds across ticks (the
+// items it placed in Main's scene, its test canvas, its producer and cursor threads) and writes
+// the summary, keeping a verdict already reached and otherwise reporting FAIL if a finished phase
+// failed, else NOT RUN (SelfTest::SettleCancelled). A no-op if never armed or already finished.
+void CancelCaptureRateSelfTest();
+
 } // namespace ObsBootstrap
 
 #endif // OBS_MULTISTREAM_FRONTEND_CAPTURE_RATE_SELFTEST_HPP_

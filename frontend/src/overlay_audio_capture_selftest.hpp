@@ -94,6 +94,12 @@ bool RunOverlayAudioCaptureSelfTest();
 // as a pass.
 int OverlayAudioCaptureSelfTestExitCode();
 
+// Shutdown's cancel for a run quit mid-flow: tears down whatever the flow holds (its private
+// scenes, canvas, audio taps and the copies it adopted) and writes the summary, keeping a verdict
+// already reached and otherwise reporting NOT RUN (SelfTest::SettleCancelled). A no-op if never
+// armed or already finished.
+void CancelOverlayAudioCaptureSelfTest();
+
 } // namespace ObsBootstrap
 
 #endif // OBS_MULTISTREAM_FRONTEND_OVERLAY_AUDIO_CAPTURE_SELFTEST_HPP_

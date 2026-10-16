@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_UTIL_SELFTEST_PATHS_HPP_
 
 #include <chrono>
+#include <cstddef>
 #include <string>
 
 // Where a BRAIDCAST_SELFTEST_STREAM mode leaves its machine-readable summary, and how that
@@ -30,6 +31,18 @@ std::string WriteSummaryFile(const std::string &prefix, const std::string &body)
 // 1 FAIL, 2 SKIP, anything else NOT RUN. One mapping, so two modes cannot disagree about what a
 // number means.
 const char *ResultName(int exitCode);
+
+// A self-test's exit code before it has reached a verdict; any code below 0 means the same.
+constexpr int kUndecided = -1;
+
+// Settles a self-test that shutdown cancels mid-run, and returns the line it logs. A verdict the
+// run already reached (`exitCode` >= 0) stands, and so does `reason`: the cancel only
+// finishes the teardown that verdict was waiting on. Otherwise the run is FAIL if any of the steps
+// it finished failed, and NOT RUN if none did, since the rest were never judged; `reason`, when
+// given, becomes the returned line. `failed` < 0 for a test that judges nothing until its end. The
+// line leads with the verdict word, e.g. "FAIL shutdown after 3/7 steps, 1 failed (skipped)".
+std::string SettleCancelled(int &exitCode, std::string *reason, size_t done, size_t total, const char *unit,
+			    int failed);
 
 // How many lines of this session's log contain `needle`, or -1 if the log cannot be read. The
 // session log handler flushes every message, so a line emitted moments ago is already counted.

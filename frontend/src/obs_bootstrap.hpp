@@ -541,6 +541,12 @@ void RunOverlayAudioSelfTest();
 // adoption and fan-out are queued onto the UI thread. Saves the active collection (adoption
 // saves by design) and saves it again once its subjects are removed. Smoke path only.
 void RunOverlayVoiceSelfTest();
+// Ends an overlay-voice self-test still in flight: removes its subjects, saves the collection
+// without them and drops the chain, so a Tick still queued finds nothing to run. Called during
+// teardown ahead of the scene-collection save, while libobs and the bridge are still up; a
+// chain left running would reach obs_shutdown holding its scenes, private canvas and sources.
+// No-op when the test is not running.
+void CancelOverlayVoiceSelfTest();
 // Headless proof for native projectors: open a WINDOWED PROGRAM projector via the
 // manager directly (no monitor needed), confirm it got a live obs_display, then
 // close it, leaving no state behind. Also logs the monitor count. Gated by the

@@ -8,6 +8,7 @@
 #include "../log.hpp"
 #include "../scene/scene_collections.hpp"
 #include "../scene/scene_persistence.hpp"
+#include "../util/selftest_paths.hpp"
 
 #include <obs.h>
 #include <obs.hpp>
@@ -289,7 +290,7 @@ void TearDown()
 	c.legacy.clear();
 	c.priorChannel = nullptr;
 	// Adoption saved the subjects into the collection; this saves them back out.
-	SceneCollection::Save();
+	SceneCollection::SaveUnlessBrowserSourcesDisabled();
 }
 
 std::vector<Step> BuildSteps()
@@ -441,4 +442,18 @@ void ObsBootstrap::RunOverlayVoiceSelfTest()
 	// Started once the UI thread is free: the rest of the smoke battery runs synchronously
 	// after this call, and adoption and fan-out wait on the UI thread.
 	CefPostTask(TID_UI, base::BindOnce(&Tick));
+}
+
+void ObsBootstrap::CancelOverlayVoiceSelfTest()
+{
+	if (!g_ctx) {
+		return;
+	}
+	TearDown();
+	// Reports through the log alone: this battery's verdict is its closing line, not an exit code.
+	int exitCode = SelfTest::kUndecided;
+	HostLog(std::string(kTag) + ": " +
+		SelfTest::SettleCancelled(exitCode, nullptr, g_ctx->index, g_ctx->steps.size(), "steps",
+					  g_ctx->failures));
+	g_ctx.reset();
 }

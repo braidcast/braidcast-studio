@@ -329,7 +329,7 @@ struct Placed {
 struct State {
 	Phase phase = Phase::Idle;
 	Clock::time_point phaseStart;
-	int exitCode = -1;
+	int exitCode = SelfTest::kUndecided;
 	std::vector<std::string> failures;
 	std::vector<std::string> passes;
 	std::vector<std::string> inconclusive; // the machine, not the code, decided these
@@ -1259,6 +1259,21 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 	}
 	}
 	return true;
+}
+
+void ObsBootstrap::CancelCaptureRateSelfTest()
+{
+	State &st = g_state;
+	if (st.phase == Phase::Idle || st.phase == Phase::Done) {
+		return;
+	}
+	// Checks run as each phase ends, so every failure so far belongs to a finished phase.
+	Say(SelfTest::SettleCancelled(st.exitCode, nullptr, size_t(st.phase) - size_t(Phase::Settle),
+				      size_t(Phase::Finish) - size_t(Phase::Settle), "phases",
+				      int(st.failures.size())));
+	Teardown(st);
+	WriteSummary(st);
+	Enter(st, Phase::Done);
 }
 
 int ObsBootstrap::CaptureRateSelfTestExitCode()

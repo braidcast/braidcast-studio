@@ -34,9 +34,9 @@
 
 namespace GpuDiag {
 
-// True when BRAIDCAST_DISABLE_BROWSER_SOURCES is set (resolved once). The host
-// reads this to skip the teardown scene-collection save so neutralized
-// browser-source settings never persist.
+// True when BRAIDCAST_DISABLE_BROWSER_SOURCES is set (resolved once).
+// SceneCollection::SaveUnlessBrowserSourcesDisabled reads this to skip the saves made
+// at shutdown and by self-test teardowns, so neutralized browser-source settings never persist.
 bool BrowserSourcesDisabled();
 
 // Arm the browser-source kill switch when BRAIDCAST_DISABLE_BROWSER_SOURCES is
