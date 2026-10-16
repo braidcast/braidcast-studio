@@ -62,6 +62,24 @@ if(NOT DEFINED CEF_ROOT_DIR OR CEF_ROOT_DIR STREQUAL "")
   )
 endif()
 
+# find_path/find_library/find_program never search again while their cache entry holds a found
+# path, so after CEF_ROOT_DIR moves to another distribution they would keep naming the old one.
+# Drop them whenever the root differs from the one they were found under.
+if(NOT "${_CEF_FOUND_UNDER_ROOT}" STREQUAL "${CEF_ROOT_DIR}")
+  foreach(
+    _cef_cached
+    CEF_INCLUDE_DIR
+    CEF_IMPLIB_RELEASE
+    CEF_LIBRARY_RELEASE
+    CEF_LIBRARY_DEBUG
+    CEF_LIBRARY_WRAPPER_RELEASE
+    CEF_LIBRARY_WRAPPER_DEBUG
+  )
+    unset(${_cef_cached} CACHE)
+  endforeach()
+  set(_CEF_FOUND_UNDER_ROOT "${CEF_ROOT_DIR}" CACHE INTERNAL "CEF_ROOT_DIR the cached CEF paths were found under")
+endif()
+
 find_path(
   CEF_INCLUDE_DIR
   "cef_version.h"
