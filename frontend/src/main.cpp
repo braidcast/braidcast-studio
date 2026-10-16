@@ -16,7 +16,6 @@
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
-#include "include/cef_version.h"
 #include "include/wrapper/cef_closure_task.h"
 
 #include "app.hpp"
@@ -68,27 +67,30 @@ constexpr UINT_PTR kSelfTestStreamTimerId = 3;
 
 // The BRAIDCAST_SELFTEST_STREAM modes. Each drives its own state machine one step per
 // timer tick and owns the process exit code once it reports finished. Adding a mode is a
-// row here plus its three functions -- arm, tick, exit code.
+// row here plus its functions -- arm, tick, exit code, and cancel when it holds anything
+// across ticks that must not survive a quit mid-run (Teardown calls it before the save).
 struct SelfTestStreamMode {
 	const char *name;
 	void (*arm)(HWND host);
 	bool (*tick)();
 	int (*exitCode)();
+	void (*cancel)(); // nullptr: nothing to release
 };
 
 constexpr SelfTestStreamMode kSelfTestStreamModes[] = {
 	{"perf-repro", ObsBootstrap::ArmPerfReproSelfTest, ObsBootstrap::RunPerfReproSelfTest,
-	 ObsBootstrap::PerfReproSelfTestExitCode},
+	 ObsBootstrap::PerfReproSelfTestExitCode, nullptr},
 	{"loopback-silence", ObsBootstrap::ArmLoopbackSilenceSelfTest, ObsBootstrap::RunLoopbackSilenceSelfTest,
-	 ObsBootstrap::LoopbackSilenceSelfTestExitCode},
+	 ObsBootstrap::LoopbackSilenceSelfTestExitCode, ObsBootstrap::CancelLoopbackSilenceSelfTest},
 	{"overlay-audio", ObsBootstrap::ArmOverlayAudioCaptureSelfTest, ObsBootstrap::RunOverlayAudioCaptureSelfTest,
-	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
+	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode, ObsBootstrap::CancelOverlayAudioCaptureSelfTest},
 	{"overlay-audio-monitor", ObsBootstrap::ArmOverlayAudioMonitorSelfTest,
-	 ObsBootstrap::RunOverlayAudioCaptureSelfTest, ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
+	 ObsBootstrap::RunOverlayAudioCaptureSelfTest, ObsBootstrap::OverlayAudioCaptureSelfTestExitCode,
+	 ObsBootstrap::CancelOverlayAudioCaptureSelfTest},
 	{"overlay-voice", ObsBootstrap::ArmOverlayVoiceCaptureSelfTest, ObsBootstrap::RunOverlayAudioCaptureSelfTest,
-	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
+	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode, ObsBootstrap::CancelOverlayAudioCaptureSelfTest},
 	{"capture-rate", ObsBootstrap::ArmCaptureRateSelfTest, ObsBootstrap::RunCaptureRateSelfTest,
-	 ObsBootstrap::CaptureRateSelfTestExitCode},
+	 ObsBootstrap::CaptureRateSelfTestExitCode, ObsBootstrap::CancelCaptureRateSelfTest},
 };
 
 // The armed mode, or nullptr. Set once during startup, read on the UI thread only.
@@ -588,15 +590,19 @@ void Teardown()
 		// it; what must not happen is the timer firing later, after TeardownScene has
 		// unbound every scene, and saving a gutted collection over the user's real one.
 		Overlay::CancelPendingCommits();
+		// Same for a smoke run quit mid overlay-voice self-test: its queued steps must not
+		// outlive this point, and its subjects must not reach the save below.
+		ObsBootstrap::CancelOverlayVoiceSelfTest();
+		// And for a BRAIDCAST_SELFTEST_STREAM mode quit mid-run: what it holds across ticks
+		// (scenes, canvases, audio taps, threads) goes now, before the save below could persist it.
+		if (g_selfTestStream && g_selfTestStream->cancel) {
+			g_selfTestStream->cancel();
+		}
 
 		// Capture the latest global scene collection while channel 0 and every scene
 		// source are still bound -- TeardownScene below unbinds and removes the
-		// placeholder default scene, so this must run first. Skipped under the
-		// browser-source kill switch: that run blanked every browser source's URL in
-		// memory, so saving would persist about:blank over the user's real URLs.
-		if (!GpuDiag::BrowserSourcesDisabled()) {
-			SceneCollection::Save();
-		}
+		// placeholder default scene, so this must run first.
+		SceneCollection::SaveUnlessBrowserSourcesDisabled();
 
 		// Release the test scene + browser source, then pump CEF so the source's
 		// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
@@ -681,8 +687,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// abandoned "security" shims -- is unmapped again instead of running inside the
 	// process that owns the encode pipeline. The search-path hardening above governs
 	// where a DLL may come from, not what may be injected, so neither substitutes for
-	// the other. obs.dll, libcef.dll and libcurl.dll are static imports, so the loader
-	// mapped them and their graphs before wWinMain was entered and the hook can never
+	// the other. obs.dll and libcurl.dll are static imports, mapped with their graphs
+	// before wWinMain was entered; libcef.dll is delay-loaded, and the CefExecuteProcess
+	// call above mapped it and its static imports (chrome_elf.dll included). The hook can never
 	// filter those; what it covers is every map after this point, which is where an
 	// injector reaches a running process. Main process only: patching ntdll inside the
 	// CEF subprocesses is not what this buys, and they returned above.
@@ -792,16 +799,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		os_mkdirs(cefCache.c_str());
 		CefString(&settings.root_cache_path).FromString(cefCache);
 	}
-#if CHROME_VERSION_MAJOR >= 136
-	else if (devToolsPort != 0) {
-		// Chromium 136 and later refuse remote debugging on the default user-data
-		// directory, which is where an empty root_cache_path leaves the profile.
-		Log::BootWarn("[devtools] no CEF cache root could be resolved, so the profile is on Chromium's "
-			      "default user-data directory, where Chromium 136 and later refuse remote "
-			      "debugging; port " +
-			      std::to_string(devToolsPort) + " may not open");
-	}
-#endif
 
 	// Pin CEF's own debug.log to a known, findable path under the config base
 	// instead of the default (cwd/"debug.log" in the rundir). This is where the CEF

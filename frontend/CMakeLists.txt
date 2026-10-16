@@ -19,7 +19,20 @@ endif()
 # MSVC runtime globally (this is an add_subdirectory of the whole OBS build, and
 # forcing it would corrupt sibling targets) -- the OBS default is already /MD,
 # and CEF_RUNTIME_LIBRARY_FLAG=/MD aligns the wrapper's Release/Debug configs.
-set(CEF_ROOT "${CMAKE_SOURCE_DIR}/.deps/cef_binary_6533_windows_x64" CACHE PATH "CEF distribution for the new frontend")
+#
+# The distribution is the one the buildspec unpacked for CMakePresets.json's CEF version
+# (CEF_ROOT_DIR). obs-browser's finder (cmake/finders/FindCEF.cmake) reads it too and drops
+# its cached paths when it changes, so a version bump moves both. A plain variable rather
+# than a cache entry: a cached path would keep naming the previous version's directory after
+# the bump.
+if(NOT CEF_ROOT_DIR OR NOT IS_DIRECTORY "${CEF_ROOT_DIR}")
+  message(
+    FATAL_ERROR
+    "CEF_ROOT_DIR ('${CEF_ROOT_DIR}') is not a CEF distribution. The frontend needs ENABLE_BROWSER "
+    "so the buildspec sets it up."
+  )
+endif()
+set(CEF_ROOT "${CEF_ROOT_DIR}")
 
 # Must be set before the dist's find_package(CEF). USE_SANDBOX OFF keeps a plain
 # windowed exe (settings.no_sandbox=true); USE_ATL OFF trims dependencies;

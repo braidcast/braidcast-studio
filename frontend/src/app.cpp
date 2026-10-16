@@ -104,8 +104,10 @@ size_t MergedListSwitchIndex(const std::string &name)
 
 // Chrome profile preferences that turn off browser features nothing here uses: autofill,
 // sign-in, payments, printing, search suggestions, translation, extensions. Names are
-// Chromium's (chrome/common/pref_names.h); the list mirrors obs-browser's Chrome-runtime
-// lockdown.
+// Chromium's (chrome/common/pref_names.h) and each is registered in the bundled Chromium;
+// the list is obs-browser's Chrome-runtime lockdown without the names Chromium no longer
+// registers, with one difference: upstream's "translate" is not a registered preference, so
+// translation is turned off through "translate.enabled", the name Chromium does register.
 struct ChromePreference {
 	const char *name;
 	bool value;
@@ -113,11 +115,9 @@ struct ChromePreference {
 constexpr ChromePreference kChromePreferences[] = {
 	{"autofill.credit_card_enabled", false},
 	{"autofill.enabled", false},
-	{"autofill.iban_enabled", false},
 	{"autofill.payment_card_benefits", false},
 	{"autofill.payment_cvc_storage", false},
 	{"autofill.profile_enabled", false},
-	{"autologin.enabled", false},
 	{"browser_labs_enabled", false},
 	{"credentials_enable_autosignin", false},
 	{"credentials_enable_service", false},
@@ -129,7 +129,7 @@ constexpr ChromePreference kChromePreferences[] = {
 	{"side_search.enabled", false},
 	{"signin.allowed", false},
 	{"signin.allowed_on_next_startup", false},
-	{"translate", false},
+	{"translate.enabled", false},
 	{"url_keyed_anonymized_data_collection.enabled", false},
 	{"extensions.block_external_extensions", true},
 	{"extensions.disabled", true},
@@ -140,8 +140,9 @@ constexpr ChromePreference kChromePreferences[] = {
 // Browser-process UI thread only (CefPreferenceManager::SetPreference).
 void LockDownChromePreferences()
 {
-	// Deferred as well as immediate: this runs inside CefInitialize, before
-	// ObsBootstrap::Start() installs the session-log handler.
+	// BootWarn, not blog: with multi_threaded_message_loop off, CEF calls
+	// OnContextInitialized on the main thread before CefInitialize returns, so the
+	// session-log handler (ObsBootstrap::Start) is not installed yet.
 	CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
 	if (!context) {
 		Log::BootWarn("[cef] no global request context; Chrome preferences left at their defaults");

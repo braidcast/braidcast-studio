@@ -99,8 +99,7 @@ $CefRequiredFiles = @(
     'chrome_100_percent.pak',
     'chrome_200_percent.pak',
     'icudtl.dat',
-    'v8_context_snapshot.bin',
-    'snapshot_blob.bin'
+    'v8_context_snapshot.bin'
 )
 
 # Minimal reviewed required-DLL floor used ONLY when no -ReferenceRoot is given.

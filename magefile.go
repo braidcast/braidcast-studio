@@ -390,6 +390,10 @@ func Deps() error {
 	}
 
 	pb, qt, cef := d.Prebuilt, d.Qt6, d.Cef
+	cefRevision := ""
+	if r := cef.Revision["windows-x64"]; r > 0 {
+		cefRevision = fmt.Sprintf("_v%d", r)
+	}
 	entries := []depEntry{
 		{
 			url:    fmt.Sprintf("%s/%s/windows-deps-%s-x64.zip", pb.BaseURL, pb.Version, pb.Version),
@@ -405,9 +409,10 @@ func Deps() error {
 			sha256: qt.Hashes["windows-x64"],
 		},
 		{
-			// CEF differs: baseUrl/file directly (no version path segment) with
-			// a _v{revision} suffix on the filename.
-			url:    fmt.Sprintf("%s/cef_binary_%s_windows_x64_v%d.zip", cef.BaseURL, cef.Version, cef.Revision["windows-x64"]),
+			// CEF differs: baseUrl/file directly (no version path segment), with
+			// a _v{revision} suffix on the filename only when the preset names a
+			// revision -- buildspec_common.cmake drops it the same way.
+			url:    fmt.Sprintf("%s/cef_binary_%s_windows_x64%s.zip", cef.BaseURL, cef.Version, cefRevision),
 			sha256: cef.Hashes["windows-x64"],
 		},
 	}
