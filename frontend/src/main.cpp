@@ -792,8 +792,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Give CEF an explicit cache root under our config base. Without it CEF warns and
 	// derives a process-singleton lock from a default AppData\Local\CEF path that can
 	// collide across installs; scoping it here silences the warning and pins the
-	// singleton to this install. cache_path is left empty (unchanged in-memory profile
-	// behavior); only installation data lands on disk under this root.
+	// singleton to this install. cache_path is left empty, so browsers run incognito with
+	// in-memory storage; what lands on disk under this root is installation data plus the
+	// Default profile directory the Chrome bootstrap creates regardless.
 	const std::string cefCache = BraidcastConfigPath("cef_cache");
 	if (!cefCache.empty()) {
 		os_mkdirs(cefCache.c_str());
