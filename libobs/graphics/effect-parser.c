@@ -1877,6 +1877,7 @@ static void ep_makeshaderstring(struct effect_parser *ep, struct dstr *shader, c
 
 	func = ep_getfunc_strref(ep, &func_name->str);
 	if (!func) {
+		dstr_free(&call_str);
 		return;
 	}
 
