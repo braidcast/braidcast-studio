@@ -37,6 +37,18 @@ function(check_obs_composite_blur)
   endif()
 endfunction()
 
+# Shaderfilter (exeldro/obs-shaderfilter, hardened in braidcast/braidcast-shaderfilter) builds through upstream's own
+# CMakeLists, whose in-tree branch calls set_target_properties_obs, so the DLL and data/ install like any other plugin.
+# A function, not a macro, so the compile warnings-as-errors override stays scoped to it: its compiler warnings are
+# upstream's to fix. Linker /WX from cmake/windows/compilerconfig.cmake still applies. Windows only, as the app is.
+function(check_obs_shaderfilter)
+  if(OS_WINDOWS)
+    require_submodule(obs-shaderfilter)
+    set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+    add_subdirectory(obs-shaderfilter)
+  endif()
+endfunction()
+
 macro(check_obs_websocket)
   require_submodule(obs-websocket)
   add_subdirectory(obs-websocket)
@@ -86,6 +98,7 @@ add_obs_plugin(nv-filters PLATFORMS WINDOWS)
 
 check_obs_browser()
 check_obs_composite_blur()
+check_obs_shaderfilter()
 
 add_obs_plugin(obs-ffmpeg)
 add_obs_plugin(obs-filters)
