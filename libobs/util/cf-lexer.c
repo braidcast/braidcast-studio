@@ -706,6 +706,16 @@ static void cf_preprocess_include(struct cf_preprocessor *pp, struct cf_token **
 		goto exit;
 	}
 
+	/* Text with no file name (a shader pasted into a filter, say) has no folder to resolve an include against,
+	 * and an absolute or UNC name would open any file on disk or the network. Callers that need includes in
+	 * such text inline them themselves first. */
+	if (!pp->lex || !pp->lex->file || !*pp->lex->file) {
+		cf_adderror(pp, cur_token, "#include is not allowed in an effect created without a file name", NULL,
+			    NULL, NULL);
+		go_to_newline(&cur_token);
+		goto exit;
+	}
+
 	if (is_sys_include(&cur_token->str)) {
 		/* TODO */
 	} else if (is_loc_include(&cur_token->str)) {
